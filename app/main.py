@@ -29,8 +29,16 @@ async def run() -> None:
     setup_routers(dp)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    except asyncio.CancelledError:
+        logging.info("Polling cancelled")
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        logging.info("Bot stopped")

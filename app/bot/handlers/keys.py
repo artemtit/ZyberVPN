@@ -4,9 +4,9 @@ from datetime import datetime
 from html import escape
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery
 
-from app.bot.keyboards.inline import key_detail_keyboard, keys_menu_keyboard
+from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.subscriptions import SubscriptionsRepository
@@ -17,47 +17,39 @@ from app.utils.datetime import utcnow
 router = Router()
 
 
-def _subscription_status(subscription: dict | None) -> tuple[str, str]:
-    if not subscription:
-        return "истёк", "—"
-    expires_at = datetime.fromisoformat(subscription["expires_at"])
-    if expires_at > utcnow():
-        return "активен", expires_at.strftime("%d.%m.%Y %H:%M")
-    return "истёк", expires_at.strftime("%d.%m.%Y %H:%M")
+def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
+    delta = expires_at - utcnow()
+    total_seconds = int(max(delta.total_seconds(), 0))
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+    return days, hours, minutes
 
 
-async def _keys_overview(tg_id: int, db: Database) -> tuple[dict, list[dict], dict | None]:
+@router.callback_query(F.data == "menu_keys")
+async def keys_list(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
-    user = await users_repo.get_or_create(tg_id)
+    user = await users_repo.get_or_create(callback.from_user.id)
     keys = await keys_repo.list_by_user(user["id"])
-    sub = await subs_repo.get_latest(user["id"])
-    return user, keys, sub
+    active_sub = await subs_repo.get_active(user["id"])
 
+    months_left = 0
+    if active_sub:
+        expires_at = datetime.fromisoformat(active_sub["expires_at"])
+        days, _, _ = _remaining_parts(expires_at)
+        months_left = max(days // 30, 0)
 
-@router.message(F.text == "🔑 Мои ключи")
-async def my_keys(message: Message, db: Database) -> None:
-    _, keys, sub = await _keys_overview(message.from_user.id, db)
-    status, expires = _subscription_status(sub)
-    text = (
-        f"Ваши ключи: {len(keys)}\n"
-        f"Статус подписки: {status}\n"
-        f"Срок: {expires}"
+    key_rows: list[tuple[str, str]] = []
+    for index, key_data in enumerate(keys, start=1):
+        status = "✅" if active_sub else "⚪"
+        key_rows.append((f"{status} #{index} (Основной) ({months_left} мес)", str(key_data["id"])))
+
+    await callback.message.edit_text(
+        "🔑 Ваши ключи доступа\n\nНиже представлен список ваших активных и истекших ключей:",
+        reply_markup=keys_list_keyboard(key_rows),
     )
-    await message.answer(text, reply_markup=keys_menu_keyboard(keys))
-
-
-@router.callback_query(F.data == "keys_back")
-async def keys_back(callback: CallbackQuery, db: Database) -> None:
-    _, keys, sub = await _keys_overview(callback.from_user.id, db)
-    status, expires = _subscription_status(sub)
-    text = (
-        f"Ваши ключи: {len(keys)}\n"
-        f"Статус подписки: {status}\n"
-        f"Срок: {expires}"
-    )
-    await callback.message.edit_text(text, reply_markup=keys_menu_keyboard(keys))
     await callback.answer()
 
 
@@ -72,12 +64,37 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
-    sub = await subs_repo.get_latest(user["id"])
-    status, expires = _subscription_status(sub)
-    await callback.message.edit_text(
-        f"Ключ #{key_data['id']}\nСтатус: {status}\nСрок: {expires}",
-        reply_markup=key_detail_keyboard(key_id),
+
+    created_at = datetime.fromisoformat(key_data["created_at"])
+    active_sub = await subs_repo.get_active(user["id"])
+    if active_sub:
+        expires_at = datetime.fromisoformat(active_sub["expires_at"])
+        status_text = "Активен"
+        status_emoji = "🟢"
+    else:
+        expires_at = created_at
+        status_text = "Истек"
+        status_emoji = "🔴"
+
+    days, hours, minutes = _remaining_parts(expires_at)
+    key_uid = f"trial_ligr{key_data['id']}@bot"
+    key_link = key_data["key"]
+
+    text = (
+        f"🔑 Информация о ключе #{key_data['id']}\n\n"
+        "📅 Сроки действия:\n"
+        f"{status_emoji} Статус: {status_text}\n"
+        f"➕ Куплен: {created_at.strftime('%d.%m.%Y')}\n"
+        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y %H:%M')}\n"
+        f"⌛ Осталось: {days}д. {hours}ч. {minutes}мин\n"
+        f"💌 ID ключа: {key_uid}\n\n"
+        "📉 Использование:\n"
+        "📡 Лимит трафика: 466.20 GiB / ∞\n"
+        "📱 Лимит устройств: 20 / ∞\n\n"
+        "🔗 Ваш ключ:\n"
+        f"{key_link}"
     )
+    await callback.message.edit_text(text, reply_markup=key_card_keyboard(key_id))
     await callback.answer()
 
 
@@ -91,7 +108,7 @@ async def key_connect(callback: CallbackQuery, db: Database) -> None:
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
-    await callback.message.answer(f"Ссылка для подключения:\n<code>{escape(key_data['key'])}</code>")
+    await callback.message.answer(f"🔗 Ваш ключ:\n<code>{escape(key_data['key'])}</code>")
     await callback.answer()
 
 
@@ -108,6 +125,11 @@ async def key_qr(callback: CallbackQuery, db: Database) -> None:
     qr_bytes = qr_png_from_text(key_data["key"])
     await callback.message.answer_photo(
         BufferedInputFile(qr_bytes, filename=f"vpn-key-{key_id}.png"),
-        caption=f"QR для ключа #{key_id}",
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("key_comment:"))
+async def key_comment(callback: CallbackQuery) -> None:
+    await callback.message.answer("Комментарии к ключу отсутствуют.")
     await callback.answer()

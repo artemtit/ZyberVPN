@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Optional
 
+import aiosqlite
+
 from app.db.database import Database
 
 
 class PaymentsRepository:
     def __init__(self, db: Database) -> None:
-        self.db = db
+        self.db_path = db.db_path
 
     async def create_pending(
         self,
@@ -17,7 +19,8 @@ class PaymentsRepository:
         email: str | None,
         payload: str,
     ) -> dict:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 INSERT INTO payments (user_id, amount, status, tariff_code, email, payload)
@@ -34,7 +37,8 @@ class PaymentsRepository:
             return dict(row)
 
     async def get_by_payload(self, payload: str) -> Optional[dict]:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 "SELECT * FROM payments WHERE payload = ? LIMIT 1",
                 (payload,),
@@ -43,7 +47,7 @@ class PaymentsRepository:
             return dict(row) if row else None
 
     async def mark_paid(self, payload: str, telegram_charge_id: str | None = None) -> None:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
                 UPDATE payments

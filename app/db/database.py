@@ -20,6 +20,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tg_id INTEGER NOT NULL UNIQUE,
                     balance INTEGER NOT NULL DEFAULT 0,
+                    trial_used INTEGER NOT NULL DEFAULT 0,
                     ref_id INTEGER NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (ref_id) REFERENCES users(id)
@@ -56,6 +57,10 @@ class Database:
                 );
                 """
             )
+            cursor = await conn.execute("PRAGMA table_info(users)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "trial_used" not in columns:
+                await conn.execute("ALTER TABLE users ADD COLUMN trial_used INTEGER NOT NULL DEFAULT 0")
             await conn.commit()
 
     async def connect(self) -> aiosqlite.Connection:

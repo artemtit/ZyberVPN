@@ -5,7 +5,7 @@ from html import escape
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, Message, PreCheckoutQuery
 
-from app.bot.keyboards.reply import main_menu_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -34,7 +34,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     payment = await payments_repo.get_by_payload(payment_info.invoice_payload)
     if not payment or payment["status"] == "paid":
-        await message.answer("Оплата обработана ранее.")
+        await message.answer("Платеж уже обработан.")
         return
 
     await payments_repo.mark_paid(
@@ -56,12 +56,15 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     bonus = await referral_service.accrue_bonus(user, payment["amount"])
 
     await message.answer(
-        f"Оплата успешна ✅\nКлюч создан.\nСсылка:\n<code>{escape(link)}</code>",
-        reply_markup=main_menu_keyboard(),
+        f"Оплата успешна ✅\nVPN подключен.\nСсылка:\n<code>{escape(link)}</code>",
     )
     await message.answer_photo(
         BufferedInputFile(qr_bytes, filename="vpn-qr.png"),
-        caption="QR-код для подключения",
+        caption="QR для подключения",
+    )
+    await message.answer(
+        "🏠 Главное меню\nВыберите действие:",
+        reply_markup=main_menu_keyboard(settings.support_url),
     )
     if bonus > 0:
-        await message.answer(f"Реферальный бонус начислен: {bonus} RUB")
+        await message.answer(f"Реферальный бонус: +{bonus} RUB")

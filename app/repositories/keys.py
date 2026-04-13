@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from typing import Optional
 
+import aiosqlite
+
 from app.db.database import Database
 
 
 class KeysRepository:
     def __init__(self, db: Database) -> None:
-        self.db = db
+        self.db_path = db.db_path
 
     async def create(self, user_id: int, key: str) -> dict:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 'INSERT INTO keys (user_id, "key") VALUES (?, ?)',
                 (user_id, key),
@@ -24,7 +27,8 @@ class KeysRepository:
             return dict(row)
 
     async def list_by_user(self, user_id: int) -> list[dict]:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 SELECT * FROM keys
@@ -37,7 +41,8 @@ class KeysRepository:
             return [dict(row) for row in rows]
 
     async def get_by_id_for_user(self, key_id: int, user_id: int) -> Optional[dict]:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 SELECT * FROM keys

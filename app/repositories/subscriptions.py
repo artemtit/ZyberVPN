@@ -3,16 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+import aiosqlite
+
 from app.db.database import Database
 from app.utils.datetime import add_months, utcnow
 
 
 class SubscriptionsRepository:
     def __init__(self, db: Database) -> None:
-        self.db = db
+        self.db_path = db.db_path
 
     async def get_latest(self, user_id: int) -> Optional[dict]:
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 SELECT * FROM subscriptions
@@ -27,7 +30,8 @@ class SubscriptionsRepository:
 
     async def get_active(self, user_id: int) -> Optional[dict]:
         now_iso = utcnow().isoformat(sep=" ")
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 SELECT * FROM subscriptions
@@ -45,7 +49,7 @@ class SubscriptionsRepository:
         start_from = utcnow()
         if latest:
             start_from = datetime.fromisoformat(latest["expires_at"])
-            async with await self.db.connect() as conn:
+            async with aiosqlite.connect(self.db_path) as conn:
                 await conn.execute(
                     "UPDATE subscriptions SET status = 'expired' WHERE id = ?",
                     (latest["id"],),
@@ -53,7 +57,8 @@ class SubscriptionsRepository:
                 await conn.commit()
 
         expires_at = add_months(start_from, months)
-        async with await self.db.connect() as conn:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
                 INSERT INTO subscriptions (user_id, expires_at, status)

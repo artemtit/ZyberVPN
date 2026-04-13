@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
 
-from app.bot.keyboards.inline import email_keyboard, payment_methods_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import email_keyboard, payment_keyboard, tariffs_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.db.database import Database
 from app.repositories.payments import PaymentsRepository
@@ -18,7 +18,10 @@ router = Router()
 @router.callback_query(F.data == "buy_open")
 async def buy_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.edit_text("Выберите тариф:", reply_markup=tariffs_keyboard())
+    await callback.message.edit_text(
+        "💳 Выбор тарифа: Основной\n\nВыберите подходящий период подписки:",
+        reply_markup=tariffs_keyboard(),
+    )
     await callback.answer()
 
 
@@ -29,10 +32,10 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
     if not tariff:
         await callback.answer("Тариф не найден", show_alert=True)
         return
-    await state.set_state(PurchaseState.waiting_email)
     await state.update_data(tariff_code=tariff_code)
+    await state.set_state(PurchaseState.waiting_email)
     await callback.message.edit_text(
-        f"Тариф: {tariff['title']} ({tariff['price_rub']} RUB)\nВведите email для чека:",
+        "📧 Ввод Email\nВведите адрес почты или пропустите этот шаг:",
         reply_markup=email_keyboard(),
     )
     await callback.answer()
@@ -42,15 +45,15 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
 async def input_email(message: Message, state: FSMContext) -> None:
     email = (message.text or "").strip()
     if "@" not in email or "." not in email:
-        await message.answer("Введите корректный email или нажмите «Продолжить без email».")
+        await message.answer("Введите корректный email или нажмите кнопку «Продолжить без почты».")
         return
-    data = await state.get_data()
-    tariff_code = data["tariff_code"]
     await state.update_data(email=email)
     await state.set_state(PurchaseState.waiting_payment)
+    data = await state.get_data()
+    tariff = TARIFFS[data["tariff_code"]]
     await message.answer(
-        "Выберите способ оплаты:",
-        reply_markup=payment_methods_keyboard(tariff_code),
+        f"💰 К оплате: {tariff['price_rub']:.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(),
     )
 
 
@@ -63,28 +66,29 @@ async def skip_email(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.update_data(email=None)
     await state.set_state(PurchaseState.waiting_payment)
+    tariff = TARIFFS[tariff_code]
     await callback.message.edit_text(
-        "Выберите способ оплаты:",
-        reply_markup=payment_methods_keyboard(tariff_code),
+        f"💰 К оплате: {tariff['price_rub']:.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "pay:other")
-async def pay_other(callback: CallbackQuery) -> None:
-    await callback.answer("Метод в разработке", show_alert=True)
+@router.callback_query(F.data.in_({"pay:sbp", "pay:crypto"}))
+async def pay_other_methods(callback: CallbackQuery) -> None:
+    await callback.answer("Метод временно недоступен", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("pay:stars:"))
+@router.callback_query(F.data == "pay:stars")
 async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
-    tariff_code = callback.data.split(":")[2]
-    tariff = TARIFFS.get(tariff_code)
-    if not tariff:
-        await callback.answer("Тариф не найден", show_alert=True)
-        return
-
     data = await state.get_data()
+    tariff_code = data.get("tariff_code")
+    if not tariff_code:
+        await callback.answer("Сначала выберите тариф", show_alert=True)
+        return
+    tariff = TARIFFS[tariff_code]
     email = data.get("email")
+
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
     user = await users_repo.get_or_create(callback.from_user.id)
@@ -106,10 +110,4 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         prices=[LabeledPrice(label=tariff["title"], amount=tariff["price_stars"])],
         provider_token="",
     )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "back_main")
-async def back_main(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("Выберите действие в главном меню.")
     await callback.answer()
