@@ -10,12 +10,14 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import ClientSession, ClientTimeout, web
 
+from app.api.subscription import register_subscription_routes
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
+from app.repositories.users import UsersRepository
 
 
-async def _start_health_server() -> web.AppRunner:
+async def _start_health_server(db: Database) -> web.AppRunner:
     app = web.Application()
 
     async def health(_: web.Request) -> web.Response:
@@ -23,6 +25,7 @@ async def _start_health_server() -> web.AppRunner:
 
     app.router.add_get("/", health)
     app.router.add_get("/healthz", health)
+    register_subscription_routes(app, db)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -45,6 +48,18 @@ async def _keepalive_ping_loop(url: str, interval_seconds: int) -> None:
                 logging.warning("Keepalive ping failed for %s: %s", url, error)
 
 
+async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600) -> None:
+    users_repo = UsersRepository(db)
+    while True:
+        try:
+            updated = await users_repo.deactivate_expired_users()
+            if updated:
+                logging.info("Subscription watchdog deactivated %s expired users", updated)
+        except Exception as error:
+            logging.warning("Subscription watchdog failed: %s", error)
+        await asyncio.sleep(interval_seconds)
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
@@ -60,8 +75,9 @@ async def run() -> None:
     dp["settings"] = settings
     setup_routers(dp)
 
-    web_runner = await _start_health_server()
+    web_runner = await _start_health_server(db)
     keepalive_task: asyncio.Task | None = None
+    subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     keepalive_url = os.getenv("KEEPALIVE_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
     keepalive_interval = int(os.getenv("KEEPALIVE_INTERVAL_SECONDS", "300"))
     if keepalive_url:
@@ -79,6 +95,11 @@ async def run() -> None:
                 await keepalive_task
             except asyncio.CancelledError:
                 pass
+        subscription_watchdog_task.cancel()
+        try:
+            await subscription_watchdog_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
         await web_runner.cleanup()
 

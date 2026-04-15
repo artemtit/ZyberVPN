@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from html import escape
 
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery
 
 from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
+from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.subscriptions import SubscriptionsRepository
@@ -87,7 +87,7 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
         f"➕ Куплен: {created_at.strftime('%d.%m.%Y')}\n"
         f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y %H:%M')}\n"
         f"⌛ Осталось: {days}д. {hours}ч. {minutes}мин\n"
-        f"💌 ID ключа: {key_uid}\n\n"
+        f"💊 ID ключа: {key_uid}\n\n"
         "📉 Использование:\n"
         "📡 Лимит трафика: 466.20 GiB / ∞\n"
         "📱 Лимит устройств: 20 / ∞\n\n"
@@ -95,20 +95,6 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
         f"{key_link}"
     )
     await callback.message.edit_text(text, reply_markup=key_card_keyboard(key_id))
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("key_connect:"))
-async def key_connect(callback: CallbackQuery, db: Database) -> None:
-    key_id = int(callback.data.split(":")[1])
-    users_repo = UsersRepository(db)
-    keys_repo = KeysRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, user["id"])
-    if not key_data:
-        await callback.answer("Ключ не найден", show_alert=True)
-        return
-    await callback.message.answer(f"🔗 Ваш ключ:\n<code>{escape(key_data['key'])}</code>")
     await callback.answer()
 
 
@@ -125,6 +111,39 @@ async def key_qr(callback: CallbackQuery, db: Database) -> None:
     qr_bytes = qr_png_from_text(key_data["key"])
     await callback.message.answer_photo(
         BufferedInputFile(qr_bytes, filename=f"vpn-key-{key_id}.png"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("key_sub:"))
+async def key_subscription(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    key_id = int(callback.data.split(":")[1])
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+
+    user = await users_repo.get_or_create(callback.from_user.id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, user["id"])
+    if not key_data:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    if not settings.public_base_url:
+        await callback.answer("Сервис подписки не настроен", show_alert=True)
+        return
+
+    supabase_user = await users_repo.get_by_tg_id(callback.from_user.id)
+    if supabase_user and not users_repo.is_user_active(supabase_user):
+        await users_repo.update_status(callback.from_user.id, False)
+        await callback.answer("❌ Подписка истекла", show_alert=True)
+        return
+    sub_token = (supabase_user or {}).get("sub_token")
+    if not sub_token:
+        sub_token = await users_repo.ensure_sub_token(user["id"])
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}"
+    await callback.message.answer(
+        "🔗 Ваша subscription-ссылка:\n"
+        f"<code>{sub_url}</code>",
+        disable_web_page_preview=True,
     )
     await callback.answer()
 

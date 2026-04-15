@@ -1,58 +1,93 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from app.bot.keyboards.inline import profile_keyboard, promo_keyboard, referral_keyboard, topup_keyboard
+from app.bot.keyboards.inline import (
+    profile_keyboard,
+    promo_keyboard,
+    referral_keyboard,
+    subscription_info_keyboard,
+    topup_keyboard,
+)
 from app.bot.states.purchase import ProfileState
 from app.db.database import Database
-from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
-from app.utils.datetime import utcnow
 
 router = Router()
 
 
-def _remaining(subscription: dict | None) -> tuple[str, str, int]:
-    if not subscription:
-        return "Не активна ❌", "0 д. 0 ч.", 0
-    expires_at = datetime.fromisoformat(subscription["expires_at"])
-    if expires_at <= utcnow() or subscription["status"] != "active":
-        return "Не активна ❌", "0 д. 0 ч.", 0
-    delta = expires_at - utcnow()
-    total_seconds = int(delta.total_seconds())
-    days = total_seconds // 86400
-    hours = (total_seconds % 86400) // 3600
-    return "Активна ✅", f"{days} д. {hours} ч.", max(days // 30, 0)
+def _format_expiry(raw_value: str | None) -> str:
+    if not raw_value:
+        return "не задан"
+    try:
+        dt = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+    except Exception:
+        return str(raw_value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+
+
+def _status_text(is_active: bool) -> str:
+    return "активна ✅" if is_active else "истекла ❌"
 
 
 @router.callback_query(F.data == "menu_profile")
 async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     await state.clear()
     users_repo = UsersRepository(db)
-    subs_repo = SubscriptionsRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    sub = await subs_repo.get_latest(user["id"])
-    sub_status, left, months_total = _remaining(sub)
+    local_user = await users_repo.get_or_create(callback.from_user.id)
+    supabase_user = await users_repo.get_by_tg_id(callback.from_user.id)
+
+    is_active = users_repo.is_user_active(supabase_user) if supabase_user else False
+    if supabase_user and not is_active:
+        await users_repo.update_status(callback.from_user.id, False)
+
     username = callback.from_user.username or callback.from_user.full_name
-    invited = await users_repo.count_referrals(user["id"])
+    invited = await users_repo.count_referrals(local_user["id"])
 
     await callback.message.edit_text(
         f"👤 ПРОФИЛЬ: {username} / ID: {callback.from_user.id}\n\n"
         "💎 ПОДПИСКА\n"
-        f"🏅 Подписка: {sub_status}\n"
-        f"⏳ Осталось: {left}\n"
-        f"📅 Приобретено месяцев: {months_total}\n\n"
+        f"🏅 Статус: {_status_text(is_active)}\n"
+        f"📅 Действует до: {_format_expiry((supabase_user or {}).get('expires_at'))}\n"
+        f"📦 План: {(supabase_user or {}).get('plan') or 'не задан'}\n\n"
         "💼 ФИНАНСЫ\n"
-        f"💳 Основной баланс: {user['balance']} RUB\n"
+        f"💳 Основной баланс: {local_user['balance']} RUB\n"
         f"👥 Рефералов: {invited}\n"
-        "💰 Заработано: 0.00 RUB\n\n"
-        "📢 Новости\n"
-        "🆘 Поддержка",
+        "💰 Заработано: 0.00 RUB",
         reply_markup=profile_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "profile_subscription")
+async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
+    users_repo = UsersRepository(db)
+    supabase_user = await users_repo.get_by_tg_id(callback.from_user.id)
+
+    if not supabase_user:
+        await callback.message.edit_text(
+            "👤 Моя подписка\n\nПодписка не найдена. Нажмите «🔌 Подключиться», чтобы создать триал.",
+            reply_markup=subscription_info_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    is_active = users_repo.is_user_active(supabase_user)
+    if not is_active:
+        await users_repo.update_status(callback.from_user.id, False)
+
+    await callback.message.edit_text(
+        "👤 Моя подписка\n\n"
+        f"Статус: {_status_text(is_active)}\n"
+        f"Срок действия: {_format_expiry(supabase_user.get('expires_at'))}\n"
+        f"План: {supabase_user.get('plan') or 'не задан'}",
+        reply_markup=subscription_info_keyboard(),
     )
     await callback.answer()
 
@@ -95,13 +130,13 @@ async def promo_input(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "profile_ref")
 async def referral_open(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    invited = await users_repo.count_referrals(user["id"])
+    local_user = await users_repo.get_or_create(callback.from_user.id)
+    invited = await users_repo.count_referrals(local_user["id"])
     me = await callback.bot.get_me()
     link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
     await callback.message.edit_text(
         "🌟 Реферальная программа\n\n"
-        "Приглашайте друзей и получайте бонусы! 💸\n\n"
+        "Приглашайте друзей и получайте бонусы! 💰\n\n"
         "💎 Ваша награда:\n"
         "• Вы зарабатываете 20% от каждой покупки ваших друзей\n\n"
         "🎁 Бонус другу:\n"
