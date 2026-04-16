@@ -143,6 +143,9 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     instruction = INSTRUCTIONS.get(app_callback, "Инструкция скоро появится.")
+    sub_block = ""
+    if sub_url:
+        sub_block = f"🔗 Subscription: <code>{escape(str(sub_url))}</code>\n\n"
 
     await state.set_state(ConnectFlowState.done)
     await state.update_data(app_callback=app_callback, app_name=app_name)
@@ -152,7 +155,7 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
         f"📱 Устройство: {device_name}\n"
         f"⚙️ Приложение: {app_name}\n\n"
         f"🔑 Ваш ключ: <code>{escape(vpn_key)}</code>\n\n"
-        f"{'🔗 Subscription: <code>' + escape(str(sub_url)) + '</code>\\n\\n' if sub_url else ''}"
+        f"{sub_block}"
         "📋 Инструкция:\n"
         f"{instruction}"
     )
