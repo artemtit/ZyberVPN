@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 #   is_active boolean NOT NULL DEFAULT true,
 #   plan text,
 #   promo_used boolean NOT NULL DEFAULT false,
+#   last_activated_at timestamp with time zone NULL,
 #   created_at timestamp with time zone NOT NULL DEFAULT now()
 # );
 #

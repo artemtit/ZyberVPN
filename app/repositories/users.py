@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 import aiosqlite
 
@@ -16,22 +17,34 @@ class UsersRepository:
     def __init__(self, db: Database) -> None:
         self.db_path = db.db_path
         self._supabase = get_supabase_client()
+        self._last_supabase_error = False
+
+    @property
+    def has_supabase(self) -> bool:
+        return self._supabase is not None
+
+    @property
+    def last_supabase_error(self) -> bool:
+        return self._last_supabase_error
 
     # Supabase storage (primary for tg_id/vpn_key/sub_token + subscription fields)
     async def get_by_tg_id(self, tg_id: int) -> Optional[dict]:
         if not self._supabase:
+            self._last_supabase_error = True
             return None
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,created_at")
+                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at")
                 .eq("tg_id", tg_id)
                 .limit(1)
                 .execute()
             )
             data = response.data or []
+            self._last_supabase_error = False
             return data[0] if data else None
         except Exception:
+            self._last_supabase_error = True
             logger.exception("Supabase get_by_tg_id failed")
             return None
 
@@ -43,6 +56,7 @@ class UsersRepository:
         expires_at: str | None = None,
         is_active: bool = True,
         plan: str = "trial",
+        last_activated_at: str | None = None,
     ) -> Optional[dict]:
         if not self._supabase:
             return None
@@ -55,6 +69,8 @@ class UsersRepository:
         }
         if expires_at:
             payload["expires_at"] = expires_at
+        if last_activated_at:
+            payload["last_activated_at"] = last_activated_at
         try:
             response = self._supabase.table("users").insert(payload).execute()
             data = response.data or []
@@ -97,18 +113,21 @@ class UsersRepository:
 
     async def get_by_sub_token(self, token: str) -> Optional[dict]:
         if not self._supabase:
+            self._last_supabase_error = True
             return None
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,created_at")
+                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at")
                 .eq("sub_token", token)
                 .limit(1)
                 .execute()
             )
             data = response.data or []
+            self._last_supabase_error = False
             return data[0] if data else None
         except Exception:
+            self._last_supabase_error = True
             logger.exception("Supabase get_by_sub_token failed")
             return None
 
@@ -144,6 +163,23 @@ class UsersRepository:
             logger.exception("Supabase update_promo_used failed")
             return None
 
+    async def mark_activated(self, tg_id: int, activated_at: str | None = None) -> Optional[dict]:
+        if not self._supabase:
+            return None
+        value = activated_at or datetime.now(timezone.utc).isoformat()
+        try:
+            response = (
+                self._supabase.table("users")
+                .update({"last_activated_at": value})
+                .eq("tg_id", tg_id)
+                .execute()
+            )
+            data = response.data or []
+            return data[0] if data else None
+        except Exception:
+            logger.exception("Supabase mark_activated failed")
+            return None
+
     async def set_expiry(
         self,
         tg_id: int,
@@ -151,6 +187,7 @@ class UsersRepository:
         is_active: bool | None = None,
         plan: str | None = None,
         promo_used: bool | None = None,
+        last_activated_at: str | None = None,
     ) -> Optional[dict]:
         if not self._supabase:
             return None
@@ -161,6 +198,8 @@ class UsersRepository:
             payload["plan"] = plan
         if promo_used is not None:
             payload["promo_used"] = promo_used
+        if last_activated_at is not None:
+            payload["last_activated_at"] = last_activated_at
         try:
             response = self._supabase.table("users").update(payload).eq("tg_id", tg_id).execute()
             data = response.data or []
@@ -260,8 +299,8 @@ class UsersRepository:
         if not user:
             raise RuntimeError("User not found")
         existing = user.get("sub_token")
-        if existing:
-            return existing
+        if existing and self.is_valid_sub_token(str(existing)):
+            return str(existing)
         token = await self._generate_unique_sub_token()
         await self._set_sub_token(user_id, token)
         return token
@@ -269,12 +308,12 @@ class UsersRepository:
     async def ensure_sub_token_for_tg(self, tg_id: int) -> str:
         supabase_user = await self.get_by_tg_id(tg_id)
         existing = (supabase_user or {}).get("sub_token")
-        if existing:
+        if existing and self.is_valid_sub_token(str(existing)):
             return str(existing)
 
         local_user = await self.get_or_create(tg_id)
         token = local_user.get("sub_token")
-        if not token:
+        if not token or not self.is_valid_sub_token(str(token)):
             token = await self.ensure_sub_token(local_user["id"])
 
         if supabase_user:
@@ -282,6 +321,16 @@ class UsersRepository:
             if not updated:
                 logger.error("Failed to sync sub_token to Supabase for tg_id=%s", tg_id)
         return str(token)
+
+    @staticmethod
+    def is_valid_sub_token(token: str) -> bool:
+        value = (token or "").strip()
+        if len(value) != 36:
+            return False
+        try:
+            return str(UUID(value)) == value.lower()
+        except Exception:
+            return False
 
     async def _set_sub_token(self, user_id: int, sub_token: str) -> None:
         async with aiosqlite.connect(self.db_path) as conn:

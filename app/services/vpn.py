@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from io import BytesIO
 import json
 import logging
@@ -29,6 +30,10 @@ def create_vpn_key(user_id: int) -> tuple[str, bytes]:
 
 
 class VPNProvisionError(RuntimeError):
+    pass
+
+
+class VPNProvisionRetryableError(VPNProvisionError):
     pass
 
 
@@ -89,37 +94,72 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
         ),
     }
 
-    timeout = ClientTimeout(total=20)
-    try:
-        async with ClientSession(timeout=timeout) as session:
-            login_response = await session.post(
-                f"{settings.xui_base_url}/login",
-                data={"username": settings.xui_username, "password": settings.xui_password},
-            )
-            if login_response.status != 200:
-                logger.error("3x-ui login failed status=%s tg_id=%s", login_response.status, tg_id)
-                raise VPNProvisionError("3x-ui login failed")
-            login_json = await login_response.json(content_type=None)
-            if isinstance(login_json, dict) and login_json.get("success") is False:
-                logger.error("3x-ui login rejected credentials for tg_id=%s", tg_id)
-                raise VPNProvisionError("3x-ui login rejected credentials")
+    timeout = ClientTimeout(total=5)
+    max_attempts = 3  # 1 original + 2 retries
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with ClientSession(timeout=timeout) as session:
+                login_response = await session.post(
+                    f"{settings.xui_base_url}/login",
+                    data={"username": settings.xui_username, "password": settings.xui_password},
+                )
+                if login_response.status != 200:
+                    logger.error(
+                        "3x-ui login failed status=%s tg_id=%s attempt=%s/%s",
+                        login_response.status,
+                        tg_id,
+                        attempt,
+                        max_attempts,
+                    )
+                    if login_response.status >= 500:
+                        raise VPNProvisionRetryableError("3x-ui login failed")
+                    raise VPNProvisionError("3x-ui login failed")
+                login_json = await login_response.json(content_type=None)
+                if isinstance(login_json, dict) and login_json.get("success") is False:
+                    logger.error("3x-ui login rejected credentials for tg_id=%s", tg_id)
+                    raise VPNProvisionError("3x-ui login rejected credentials")
 
-            create_response = await session.post(
-                f"{settings.xui_base_url}/panel/api/inbounds/addClient",
-                json=payload,
-            )
-            if create_response.status != 200:
-                logger.error("3x-ui addClient failed status=%s tg_id=%s", create_response.status, tg_id)
-                raise VPNProvisionError("3x-ui addClient request failed")
-            create_json = await create_response.json(content_type=None)
-            if not isinstance(create_json, dict) or create_json.get("success") is not True:
-                logger.error("3x-ui addClient returned error tg_id=%s payload=%s", tg_id, create_json)
-                raise VPNProvisionError("3x-ui addClient returned error")
-    except VPNProvisionError:
-        raise
-    except Exception as error:
-        logger.exception("3x-ui unavailable for tg_id=%s", tg_id)
-        raise VPNProvisionError("3x-ui is unavailable") from error
+                create_response = await session.post(
+                    f"{settings.xui_base_url}/panel/api/inbounds/addClient",
+                    json=payload,
+                )
+                if create_response.status != 200:
+                    logger.error(
+                        "3x-ui addClient failed status=%s tg_id=%s attempt=%s/%s",
+                        create_response.status,
+                        tg_id,
+                        attempt,
+                        max_attempts,
+                    )
+                    if create_response.status >= 500:
+                        raise VPNProvisionRetryableError("3x-ui addClient request failed")
+                    raise VPNProvisionError("3x-ui addClient request failed")
+                create_json = await create_response.json(content_type=None)
+                if not isinstance(create_json, dict) or create_json.get("success") is not True:
+                    logger.error(
+                        "3x-ui addClient returned error tg_id=%s attempt=%s/%s payload=%s",
+                        tg_id,
+                        attempt,
+                        max_attempts,
+                        create_json,
+                    )
+                    raise VPNProvisionError("3x-ui addClient returned error")
+                logger.info("VPN key created via 3x-ui for tg_id=%s", tg_id)
+                return _build_vless_link(settings, client_uuid, tg_id)
+        except VPNProvisionRetryableError as error:
+            last_error = error
+            if attempt >= max_attempts:
+                break
+            await asyncio.sleep(0.2 * attempt)
+        except VPNProvisionError as error:
+            last_error = error
+            break
+        except Exception as error:
+            last_error = error
+            logger.exception("3x-ui unavailable for tg_id=%s attempt=%s/%s", tg_id, attempt, max_attempts)
+            if attempt >= max_attempts:
+                break
+            await asyncio.sleep(0.2 * attempt)
 
-    logger.info("VPN key created via 3x-ui for tg_id=%s", tg_id)
-    return _build_vless_link(settings, client_uuid, tg_id)
+    raise VPNProvisionError("3x-ui is unavailable") from last_error

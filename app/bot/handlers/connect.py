@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
 from html import escape
 
 from aiogram import F, Router
@@ -12,9 +11,7 @@ from app.bot.keyboards.inline import connect_apps_keyboard, connect_devices_keyb
 from app.bot.states.connect import ConnectFlowState
 from app.config import Settings
 from app.db.database import Database
-from app.repositories.keys import KeysRepository
-from app.repositories.users import UsersRepository
-from app.services.vpn import VPNProvisionError, create_vpn_key_via_3xui
+from app.services.access import AccessEnsureError, ensure_user_access
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -65,60 +62,27 @@ def _app_name(callback_data: str) -> str | None:
 
 @router.callback_query(F.data.startswith("key_connect:"))
 async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
-    key_id = int(callback.data.split(":")[1])
-    users_repo = UsersRepository(db)
-    keys_repo = KeysRepository(db)
-
     tg_id = callback.from_user.id
-    supabase_user = await users_repo.get_by_tg_id(tg_id)
-    await users_repo.ensure_sub_token_for_tg(tg_id)
-
-    if supabase_user:
-        if not users_repo.is_user_active(supabase_user):
-            await users_repo.update_status(tg_id, False)
+    try:
+        access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
+    except AccessEnsureError as error:
+        logger.warning("Connect access failed for tg_id=%s: %s", tg_id, error)
+        if "inactive" in str(error).lower():
             await callback.answer("❌ Подписка истекла", show_alert=True)
             return
-        vpn_key = supabase_user.get("vpn_key") or ""
-    else:
-        vpn_key = ""
+        await callback.answer("Не удалось подготовить доступ. Попробуйте позже.", show_alert=True)
+        return
 
+    vpn_key = str(access_user.get("vpn_key") or "")
+    sub_token = str(access_user.get("sub_token") or "")
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if settings.public_base_url and sub_token else ""
     if not vpn_key:
-        try:
-            vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
-            logger.info("VPN key provisioned in connect flow for tg_id=%s", tg_id)
-        except VPNProvisionError:
-            logger.exception("Failed to provision VPN key via 3x-ui for tg_id=%s", tg_id)
-            local_user = await users_repo.get_or_create(tg_id)
-            local_key = await keys_repo.get_by_id_for_user(key_id, local_user["id"])
-            if not local_key:
-                all_local_keys = await keys_repo.list_by_user(local_user["id"])
-                local_key = all_local_keys[0] if all_local_keys else None
-            if not local_key:
-                await callback.answer("Не удалось создать VPN-ключ. Попробуйте позже.", show_alert=True)
-                return
-            vpn_key = local_key["key"]
-        else:
-            if supabase_user:
-                await users_repo.update_key(tg_id, vpn_key)
-            else:
-                sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
-                expires_at = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
-                created = await users_repo.create(
-                    tg_id=tg_id,
-                    vpn_key=vpn_key,
-                    sub_token=sub_token,
-                    expires_at=expires_at,
-                    is_active=True,
-                    plan="trial",
-                )
-                if not created:
-                    logger.error("Supabase create failed in connect flow for tg_id=%s", tg_id)
-                else:
-                    logger.info("Supabase user created in connect flow for tg_id=%s", tg_id)
+        await callback.answer("Не удалось получить VPN-ключ. Попробуйте позже.", show_alert=True)
+        return
 
     await state.clear()
     await state.set_state(ConnectFlowState.choosing_device)
-    await state.update_data(vpn_key=vpn_key)
+    await state.update_data(vpn_key=vpn_key, sub_url=sub_url)
 
     await callback.message.edit_text(
         "🚀 Подключение к ZyberVPN\n\nВыберите устройство:",
@@ -159,6 +123,7 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
 async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     vpn_key = data.get("vpn_key")
+    sub_url = data.get("sub_url")
     device_code = data.get("device_code")
     device_name = data.get("device_name")
 
@@ -187,6 +152,7 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
         f"📱 Устройство: {device_name}\n"
         f"⚙️ Приложение: {app_name}\n\n"
         f"🔑 Ваш ключ: <code>{escape(vpn_key)}</code>\n\n"
+        f"{'🔗 Subscription: <code>' + escape(str(sub_url)) + '</code>\\n\\n' if sub_url else ''}"
         "📋 Инструкция:\n"
         f"{instruction}"
     )
@@ -199,11 +165,15 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
 async def connect_copy_key(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     vpn_key = data.get("vpn_key")
+    sub_url = data.get("sub_url")
     if not vpn_key:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
-    await callback.message.answer(f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>")
+    text = f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>"
+    if sub_url:
+        text += f"\n\n🔗 Subscription:\n<code>{escape(str(sub_url))}</code>"
+    await callback.message.answer(text)
     await callback.answer("Ключ отправлен")
 
 

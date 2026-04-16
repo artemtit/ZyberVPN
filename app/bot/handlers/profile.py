@@ -21,8 +21,8 @@ from app.config import Settings
 from app.db.database import Database
 from app.repositories.promo import PromoRepository
 from app.repositories.users import UsersRepository
+from app.services.access import AccessEnsureError, ensure_user_access
 from app.services.promo import validate_promo
-from app.services.vpn import VPNProvisionError, create_vpn_key_via_3xui
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -168,6 +168,7 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
 
     promo = validation.promo or {}
     days = int(promo.get("days") or 30)
+    activated_at = datetime.now(timezone.utc).isoformat()
     new_expiry = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
     updated = await users_repo.set_expiry(
@@ -176,6 +177,7 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
         is_active=True,
         plan="promo",
         promo_used=True,
+        last_activated_at=activated_at,
     )
     if not updated:
         local_user = await users_repo.get_or_create(tg_id)
@@ -187,6 +189,7 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
             expires_at=new_expiry,
             is_active=True,
             plan="promo",
+            last_activated_at=activated_at,
         )
         if not created:
             logger.error("Promo activation failed: cannot create/update supabase user tg_id=%s", tg_id)
@@ -203,23 +206,16 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
             await promo_repo.deactivate(code)
 
     await state.clear()
-    await users_repo.ensure_sub_token_for_tg(tg_id)
-    current_user = await users_repo.get_by_tg_id(tg_id)
-    vpn_key = (current_user or {}).get("vpn_key")
-    if not vpn_key:
-        try:
-            vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
-            logger.info("VPN key provisioned after promo for tg_id=%s", tg_id)
-        except VPNProvisionError:
-            logger.exception("Promo key provisioning failed for tg_id=%s", tg_id)
-            await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
-            await message.answer("⚠️ Подписка активна, но создать VPN-ключ сейчас не удалось. Попробуйте позже в разделе «Мои ключи».")
-            return
-        saved = await users_repo.update_key(tg_id, vpn_key)
-        if not saved:
-            logger.error("Promo activation key save failed for tg_id=%s", tg_id)
+    try:
+        access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
+    except AccessEnsureError:
+        logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
+        await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
+        await message.answer("⚠️ Подписка активна, но создать VPN-ключ сейчас не удалось. Попробуйте позже в разделе «Мои ключи».")
+        return
 
     await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
+    vpn_key = (access_user or {}).get("vpn_key")
     if vpn_key:
         await message.answer(f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>")
         await message.answer(PROMO_CONNECT_INSTRUCTION)

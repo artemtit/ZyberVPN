@@ -10,13 +10,13 @@ from aiogram.types import BufferedInputFile, Message, PreCheckoutQuery
 from app.bot.keyboards.inline import main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
-from app.repositories.keys import KeysRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
+from app.services.access import AccessEnsureError, ensure_user_access
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
-from app.services.vpn import VPNProvisionError, create_vpn_key_via_3xui, qr_png_from_text
+from app.services.vpn import qr_png_from_text
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -33,7 +33,6 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     payments_repo = PaymentsRepository(db)
     users_repo = UsersRepository(db)
     subs_repo = SubscriptionsRepository(db)
-    keys_repo = KeysRepository(db)
 
     payment = await payments_repo.get_by_payload(payment_info.invoice_payload)
     if not payment or payment["status"] == "paid":
@@ -55,38 +54,17 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     link = ""
     qr_bytes = b""
-    supabase_user = await users_repo.get_by_tg_id(user["tg_id"])
-    existing_key = (supabase_user or {}).get("vpn_key")
-    if existing_key:
-        link = str(existing_key)
-    else:
-        local_keys = await keys_repo.list_by_user(user["id"])
-        if local_keys:
-            link = str(local_keys[0]["key"])
-
-    if not link:
-        try:
-            link = await create_vpn_key_via_3xui(settings=settings, tg_id=user["tg_id"])
-            logger.info("VPN key provisioned after payment for tg_id=%s", user["tg_id"])
-        except VPNProvisionError:
-            logger.exception("Failed to provision VPN key after payment for tg_id=%s", user["tg_id"])
-            await message.answer("Оплата прошла, но ключ пока не создан. Нажмите «🔌 Подключиться» через пару минут.")
-        else:
-            if not await keys_repo.exists_for_user(user["id"], link):
-                await keys_repo.create(user["id"], link)
-
+    activated_at = datetime.now(timezone.utc).isoformat()
     expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     sub_token = await users_repo.ensure_sub_token_for_tg(user["tg_id"])
+    supabase_user = await users_repo.get_by_tg_id(user["tg_id"])
     if supabase_user:
-        if link:
-            updated_key = await users_repo.update_key(user["tg_id"], link)
-            if not updated_key:
-                logger.error("Supabase update_key failed for tg_id=%s", user["tg_id"])
         updated_sub = await users_repo.set_expiry(
             user["tg_id"],
             expires_at=expires_at,
             is_active=True,
             plan="monthly",
+            last_activated_at=activated_at,
         )
         if not updated_sub:
             logger.error("Supabase set_expiry failed for tg_id=%s", user["tg_id"])
@@ -100,13 +78,19 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             expires_at=expires_at,
             is_active=True,
             plan="monthly",
+            last_activated_at=activated_at,
         )
         if not created:
             logger.error("Supabase create failed for tg_id=%s", user["tg_id"])
 
+    try:
+        access_user = await ensure_user_access(tg_id=user["tg_id"], db=db, settings=settings, require_active=True)
+        link = str(access_user.get("vpn_key") or "")
+    except AccessEnsureError:
+        logger.exception("Failed to bootstrap access after payment for tg_id=%s", user["tg_id"])
+        await message.answer("Оплата прошла, но ключ пока не создан. Нажмите «🔌 Подключиться» через пару минут.")
+
     if link:
-        if not await keys_repo.exists_for_user(user["id"], link):
-            await keys_repo.create(user["id"], link)
         qr_bytes = qr_png_from_text(link)
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
