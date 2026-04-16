@@ -59,7 +59,6 @@ def payment_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💳 СБП / Platega", callback_data="pay:sbp")],
             [InlineKeyboardButton(text="🪙 Crypto / Platega", callback_data="pay:crypto")],
             [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars")],
-            [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_open")],
         ]
     )

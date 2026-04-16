@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -16,13 +17,23 @@ from app.bot.keyboards.inline import (
 )
 from app.bot.states.promo import PromoState
 from app.bot.states.purchase import ProfileState
+from app.config import Settings
 from app.db.database import Database
 from app.repositories.promo import PromoRepository
 from app.repositories.users import UsersRepository
 from app.services.promo import validate_promo
+from app.services.vpn import VPNProvisionError, create_vpn_key_via_3xui
 
 router = Router()
 logger = logging.getLogger(__name__)
+PROMO_CONNECT_INSTRUCTION = (
+    "📋 Инструкция подключения:\n"
+    "1. Установите приложение v2rayNG / v2rayN / Shadowrocket\n"
+    "2. Откройте приложение\n"
+    "3. Выберите импорт из буфера обмена\n"
+    "4. Вставьте ключ\n"
+    "5. Подключитесь"
+)
 
 
 def _format_expiry(raw_value: str | None) -> str:
@@ -127,7 +138,7 @@ async def promo_open(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(PromoState.waiting_code)
-async def promo_input(message: Message, state: FSMContext, db: Database) -> None:
+async def promo_input(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
     code = (message.text or "").strip()
     if not code:
         await message.answer("❌ Промокод не найден")
@@ -192,7 +203,24 @@ async def promo_input(message: Message, state: FSMContext, db: Database) -> None
             await promo_repo.deactivate(code)
 
     await state.clear()
+    current_user = await users_repo.get_by_tg_id(tg_id)
+    vpn_key = (current_user or {}).get("vpn_key")
+    if not vpn_key:
+        try:
+            vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
+        except VPNProvisionError:
+            logger.exception("Promo key provisioning failed for tg_id=%s", tg_id)
+            await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
+            await message.answer("⚠️ Подписка активна, но создать VPN-ключ сейчас не удалось. Попробуйте позже в разделе «Мои ключи».")
+            return
+        saved = await users_repo.update_key(tg_id, vpn_key)
+        if not saved:
+            logger.error("Promo activation key save failed for tg_id=%s", tg_id)
+
     await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
+    if vpn_key:
+        await message.answer(f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>")
+        await message.answer(PROMO_CONNECT_INSTRUCTION)
 
 
 @router.callback_query(F.data == "profile_ref")
