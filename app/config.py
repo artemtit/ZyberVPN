@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import ipaddress
 import os
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -29,22 +31,34 @@ def load_settings() -> Settings:
     bot_token = os.getenv("BOT_TOKEN", "").strip()
     if not bot_token:
         raise ValueError("BOT_TOKEN is required")
+    xui_public_host = os.getenv("XUI_PUBLIC_HOST", "").strip()
+    public_base_url = (
+        os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    )
+    if not public_base_url and xui_public_host:
+        public_base_url = f"https://{xui_public_host}".rstrip("/")
+    if public_base_url and xui_public_host:
+        try:
+            public_host = (urlparse(public_base_url).hostname or "").strip()
+            ipaddress.ip_address(public_host)
+        except ValueError:
+            pass
+        else:
+            public_base_url = f"https://{xui_public_host}".rstrip("/")
     return Settings(
         bot_token=bot_token,
         db_path=os.getenv("DB_PATH", "./data/vpn_bot.sqlite3"),
         support_url=os.getenv("SUPPORT_URL", "https://t.me/"),
         referral_bonus_percent=int(os.getenv("REFERRAL_BONUS_PERCENT", "10")),
-        public_base_url=(
-            os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-            or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-        ),
+        public_base_url=public_base_url,
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),
         supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY", "").strip(),
         xui_base_url=os.getenv("XUI_BASE_URL", "").rstrip("/"),
         xui_username=os.getenv("XUI_USERNAME", "").strip(),
         xui_password=os.getenv("XUI_PASSWORD", "").strip(),
         xui_inbound_id=int(os.getenv("XUI_INBOUND_ID", "0")),
-        xui_public_host=os.getenv("XUI_PUBLIC_HOST", "").strip(),
+        xui_public_host=xui_public_host,
         xui_public_port=int(os.getenv("XUI_PUBLIC_PORT", "443")),
         xui_transport=os.getenv("XUI_TRANSPORT", "tcp").strip() or "tcp",
         xui_security=os.getenv("XUI_SECURITY", "tls").strip() or "tls",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from html import escape
-from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -72,6 +71,7 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
 
     tg_id = callback.from_user.id
     supabase_user = await users_repo.get_by_tg_id(tg_id)
+    await users_repo.ensure_sub_token_for_tg(tg_id)
 
     if supabase_user:
         if not users_repo.is_user_active(supabase_user):
@@ -85,6 +85,7 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
     if not vpn_key:
         try:
             vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
+            logger.info("VPN key provisioned in connect flow for tg_id=%s", tg_id)
         except VPNProvisionError:
             logger.exception("Failed to provision VPN key via 3x-ui for tg_id=%s", tg_id)
             local_user = await users_repo.get_or_create(tg_id)
@@ -100,17 +101,20 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
             if supabase_user:
                 await users_repo.update_key(tg_id, vpn_key)
             else:
+                sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
                 expires_at = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
                 created = await users_repo.create(
                     tg_id=tg_id,
                     vpn_key=vpn_key,
-                    sub_token=str(uuid4()),
+                    sub_token=sub_token,
                     expires_at=expires_at,
                     is_active=True,
                     plan="trial",
                 )
                 if not created:
                     logger.error("Supabase create failed in connect flow for tg_id=%s", tg_id)
+                else:
+                    logger.info("Supabase user created in connect flow for tg_id=%s", tg_id)
 
     await state.clear()
     await state.set_state(ConnectFlowState.choosing_device)

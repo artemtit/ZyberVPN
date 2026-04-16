@@ -53,3 +53,17 @@ class KeysRepository:
             )
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def exists_for_user(self, user_id: int, key: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """
+                SELECT 1 FROM keys
+                WHERE user_id = ? AND "key" = ?
+                LIMIT 1
+                """,
+                (user_id, key),
+            )
+            row = await cursor.fetchone()
+            return row is not None

@@ -203,11 +203,13 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
             await promo_repo.deactivate(code)
 
     await state.clear()
+    await users_repo.ensure_sub_token_for_tg(tg_id)
     current_user = await users_repo.get_by_tg_id(tg_id)
     vpn_key = (current_user or {}).get("vpn_key")
     if not vpn_key:
         try:
             vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
+            logger.info("VPN key provisioned after promo for tg_id=%s", tg_id)
         except VPNProvisionError:
             logger.exception("Promo key provisioning failed for tg_id=%s", tg_id)
             await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")

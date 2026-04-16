@@ -79,6 +79,22 @@ class UsersRepository:
             logger.exception("Supabase update_key failed")
             return None
 
+    async def update_sub_token(self, tg_id: int, sub_token: str) -> Optional[dict]:
+        if not self._supabase:
+            return None
+        try:
+            response = (
+                self._supabase.table("users")
+                .update({"sub_token": sub_token})
+                .eq("tg_id", tg_id)
+                .execute()
+            )
+            data = response.data or []
+            return data[0] if data else None
+        except Exception:
+            logger.exception("Supabase update_sub_token failed")
+            return None
+
     async def get_by_sub_token(self, token: str) -> Optional[dict]:
         if not self._supabase:
             return None
@@ -249,6 +265,23 @@ class UsersRepository:
         token = await self._generate_unique_sub_token()
         await self._set_sub_token(user_id, token)
         return token
+
+    async def ensure_sub_token_for_tg(self, tg_id: int) -> str:
+        supabase_user = await self.get_by_tg_id(tg_id)
+        existing = (supabase_user or {}).get("sub_token")
+        if existing:
+            return str(existing)
+
+        local_user = await self.get_or_create(tg_id)
+        token = local_user.get("sub_token")
+        if not token:
+            token = await self.ensure_sub_token(local_user["id"])
+
+        if supabase_user:
+            updated = await self.update_sub_token(tg_id, token)
+            if not updated:
+                logger.error("Failed to sync sub_token to Supabase for tg_id=%s", tg_id)
+        return str(token)
 
     async def _set_sub_token(self, user_id: int, sub_token: str) -> None:
         async with aiosqlite.connect(self.db_path) as conn:

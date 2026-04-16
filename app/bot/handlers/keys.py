@@ -136,9 +136,7 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
         await users_repo.update_status(callback.from_user.id, False)
         await callback.answer("❌ Подписка истекла", show_alert=True)
         return
-    sub_token = (supabase_user or {}).get("sub_token")
-    if not sub_token:
-        sub_token = await users_repo.ensure_sub_token(user["id"])
+    sub_token = await users_repo.ensure_sub_token_for_tg(callback.from_user.id)
     sub_url = f"{settings.public_base_url}/sub/{sub_token}"
     await callback.message.answer(
         "🔗 Ваша subscription-ссылка:\n"
