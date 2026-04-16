@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -13,11 +14,15 @@ from app.bot.keyboards.inline import (
     subscription_info_keyboard,
     topup_keyboard,
 )
+from app.bot.states.promo import PromoState
 from app.bot.states.purchase import ProfileState
 from app.db.database import Database
+from app.repositories.promo import PromoRepository
 from app.repositories.users import UsersRepository
+from app.services.promo import validate_promo
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _format_expiry(raw_value: str | None) -> str:
@@ -113,18 +118,81 @@ async def topup_input(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "profile_promo")
 async def promo_open(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ProfileState.waiting_promo_code)
+    await state.set_state(PromoState.waiting_code)
     await callback.message.edit_text(
-        "🎁 Активация бонусного промокода\n\nВведите ваш универсальный промокод:",
+        "🎁 Введите промокод",
         reply_markup=promo_keyboard(),
     )
     await callback.answer()
 
 
-@router.message(ProfileState.waiting_promo_code)
-async def promo_input(message: Message, state: FSMContext) -> None:
+@router.message(PromoState.waiting_code)
+async def promo_input(message: Message, state: FSMContext, db: Database) -> None:
+    code = (message.text or "").strip()
+    if not code:
+        await message.answer("❌ Промокод не найден")
+        return
+
+    users_repo = UsersRepository(db)
+    promo_repo = PromoRepository()
+    tg_id = message.from_user.id
+
+    supabase_user = await users_repo.get_by_tg_id(tg_id)
+    if supabase_user and bool(supabase_user.get("promo_used")):
+        await state.clear()
+        await message.answer("❌ Промокод уже использован")
+        return
+
+    validation = await validate_promo(code, promo_repo)
+    if not validation.ok:
+        await state.clear()
+        if validation.error == "expired":
+            await message.answer("❌ Срок действия истёк")
+            return
+        if validation.error in {"max_uses_reached"}:
+            await message.answer("❌ Промокод уже использован")
+            return
+        await message.answer("❌ Промокод не найден")
+        return
+
+    promo = validation.promo or {}
+    days = int(promo.get("days") or 30)
+    new_expiry = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+    updated = await users_repo.set_expiry(
+        tg_id=tg_id,
+        expires_at=new_expiry,
+        is_active=True,
+        plan="promo",
+        promo_used=True,
+    )
+    if not updated:
+        local_user = await users_repo.get_or_create(tg_id)
+        sub_token = await users_repo.ensure_sub_token(local_user["id"])
+        created = await users_repo.create(
+            tg_id=tg_id,
+            vpn_key="",
+            sub_token=sub_token,
+            expires_at=new_expiry,
+            is_active=True,
+            plan="promo",
+        )
+        if not created:
+            logger.error("Promo activation failed: cannot create/update supabase user tg_id=%s", tg_id)
+            await state.clear()
+            await message.answer("❌ Не удалось активировать промокод, попробуйте позже")
+            return
+        await users_repo.update_promo_used(tg_id, True)
+
+    usage = await promo_repo.increment_usage(code)
+    if usage:
+        max_uses = usage.get("max_uses")
+        used_count = int(usage.get("used_count") or 0)
+        if max_uses is not None and used_count >= int(max_uses):
+            await promo_repo.deactivate(code)
+
     await state.clear()
-    await message.answer("Промокод принят.")
+    await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
 
 
 @router.callback_query(F.data == "profile_ref")

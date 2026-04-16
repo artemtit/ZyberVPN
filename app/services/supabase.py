@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 #   expires_at timestamp with time zone,
 #   is_active boolean NOT NULL DEFAULT true,
 #   plan text,
+#   promo_used boolean NOT NULL DEFAULT false,
+#   created_at timestamp with time zone NOT NULL DEFAULT now()
+# );
+#
+# CREATE TABLE IF NOT EXISTS public.promo_codes (
+#   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+#   code text NOT NULL UNIQUE,
+#   days int NOT NULL DEFAULT 30,
+#   max_uses int NULL,
+#   used_count int NOT NULL DEFAULT 0,
+#   expires_at timestamp with time zone NULL,
+#   is_active boolean NOT NULL DEFAULT true,
 #   created_at timestamp with time zone NOT NULL DEFAULT now()
 # );
 

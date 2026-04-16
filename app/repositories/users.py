@@ -24,7 +24,7 @@ class UsersRepository:
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,created_at")
+                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,created_at")
                 .eq("tg_id", tg_id)
                 .limit(1)
                 .execute()
@@ -85,7 +85,7 @@ class UsersRepository:
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,created_at")
+                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,created_at")
                 .eq("sub_token", token)
                 .limit(1)
                 .execute()
@@ -112,12 +112,29 @@ class UsersRepository:
             logger.exception("Supabase update_status failed")
             return None
 
+    async def update_promo_used(self, tg_id: int, promo_used: bool) -> Optional[dict]:
+        if not self._supabase:
+            return None
+        try:
+            response = (
+                self._supabase.table("users")
+                .update({"promo_used": promo_used})
+                .eq("tg_id", tg_id)
+                .execute()
+            )
+            data = response.data or []
+            return data[0] if data else None
+        except Exception:
+            logger.exception("Supabase update_promo_used failed")
+            return None
+
     async def set_expiry(
         self,
         tg_id: int,
         expires_at: str,
         is_active: bool | None = None,
         plan: str | None = None,
+        promo_used: bool | None = None,
     ) -> Optional[dict]:
         if not self._supabase:
             return None
@@ -126,6 +143,8 @@ class UsersRepository:
             payload["is_active"] = is_active
         if plan is not None:
             payload["plan"] = plan
+        if promo_used is not None:
+            payload["promo_used"] = promo_used
         try:
             response = self._supabase.table("users").update(payload).eq("tg_id", tg_id).execute()
             data = response.data or []
