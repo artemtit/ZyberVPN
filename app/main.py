@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import web
 
 from app.api.subscription import register_subscription_routes
 from app.bot.handlers import setup_routers
@@ -34,18 +34,6 @@ async def _start_health_server(db: Database) -> web.AppRunner:
     await site.start()
     logging.info("Health server started on 0.0.0.0:%s", port)
     return runner
-
-
-async def _keepalive_ping_loop(url: str, interval_seconds: int) -> None:
-    timeout = ClientTimeout(total=10)
-    async with ClientSession(timeout=timeout) as session:
-        while True:
-            await asyncio.sleep(interval_seconds)
-            try:
-                async with session.get(url) as response:
-                    logging.info("Keepalive ping %s -> %s", url, response.status)
-            except Exception as error:
-                logging.warning("Keepalive ping failed for %s: %s", url, error)
 
 
 async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600) -> None:
@@ -76,12 +64,7 @@ async def run() -> None:
     setup_routers(dp)
 
     web_runner = await _start_health_server(db)
-    keepalive_task: asyncio.Task | None = None
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
-    keepalive_url = os.getenv("KEEPALIVE_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
-    keepalive_interval = int(os.getenv("KEEPALIVE_INTERVAL_SECONDS", "300"))
-    if keepalive_url:
-        keepalive_task = asyncio.create_task(_keepalive_ping_loop(keepalive_url, keepalive_interval))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -89,12 +72,6 @@ async def run() -> None:
     except asyncio.CancelledError:
         logging.info("Polling cancelled")
     finally:
-        if keepalive_task:
-            keepalive_task.cancel()
-            try:
-                await keepalive_task
-            except asyncio.CancelledError:
-                pass
         subscription_watchdog_task.cancel()
         try:
             await subscription_watchdog_task

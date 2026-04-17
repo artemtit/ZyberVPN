@@ -67,7 +67,6 @@ def payment_keyboard() -> InlineKeyboardMarkup:
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="👤 Моя подписка", callback_data="profile_subscription")],
             [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref")],
             [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],

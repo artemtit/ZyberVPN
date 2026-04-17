@@ -63,14 +63,7 @@ def _validate_xui_config(settings: Settings) -> None:
 
 
 def _build_vless_link(settings: Settings, client_uuid: str, tg_id: int) -> str:
-    query_parts = [
-        f"type={settings.xui_transport}",
-        f"security={settings.xui_security}",
-        "flow=xtls-rprx-vision",
-    ]
-    if settings.xui_sni:
-        query_parts.append(f"sni={settings.xui_sni}")
-    query = "&".join(query_parts)
+    query = f"type=tcp&security=reality&flow=xtls-rprx-vision&sni={settings.xui_sni}"
     return (
         f"vless://{client_uuid}@{settings.xui_public_host}:{settings.xui_public_port}"
         f"?{query}#ZyberVPN-{tg_id}"
@@ -81,7 +74,8 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
     _validate_xui_config(settings)
     logger.info("Provisioning VPN key via 3x-ui for tg_id=%s inbound_id=%s", tg_id, settings.xui_inbound_id)
 
-    client_uuid = str(uuid4())
+    client_id = str(uuid4())
+    sub_id = secrets.token_urlsafe(8)
     email = str(tg_id)
     payload = {
         "id": settings.xui_inbound_id,
@@ -89,14 +83,14 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
             {
                 "clients": [
                     {
-                        "id": client_uuid,
+                        "id": client_id,
                         "email": email,
                         "flow": "xtls-rprx-vision",
                         "enable": True,
                         "limitIp": 0,
                         "totalGB": 0,
                         "expiryTime": 0,
-                        "subId": "",
+                        "subId": sub_id,
                         "tgId": "",
                         "reset": 0,
                     }
@@ -148,8 +142,11 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                     raise VPNProvisionError("3x-ui login rejected credentials")
 
                 logger.info(
-                    "3x-ui request url=%s payload=%s tg_id=%s attempt=%s/%s",
+                    "3x-ui request url=%s inbound_id=%s client_id=%s sub_id=%s payload=%s tg_id=%s attempt=%s/%s",
                     add_client_url,
+                    settings.xui_inbound_id,
+                    client_id,
+                    sub_id,
                     payload,
                     tg_id,
                     attempt,
@@ -162,8 +159,11 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                 if create_response.status != 200:
                     create_body = await create_response.text()
                     logger.error(
-                        "3x-ui addClient failed url=%s status=%s tg_id=%s attempt=%s/%s body=%s",
+                        "3x-ui addClient failed url=%s inbound_id=%s client_id=%s sub_id=%s status=%s tg_id=%s attempt=%s/%s body=%s",
                         add_client_url,
+                        settings.xui_inbound_id,
+                        client_id,
+                        sub_id,
                         create_response.status,
                         tg_id,
                         attempt,
@@ -177,6 +177,17 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                     if create_response.status >= 500:
                         raise VPNProvisionRetryableError("3x-ui addClient request failed")
                     raise VPNProvisionError("3x-ui addClient request failed")
+                logger.info(
+                    "3x-ui addClient response url=%s inbound_id=%s client_id=%s sub_id=%s status=%s tg_id=%s attempt=%s/%s",
+                    add_client_url,
+                    settings.xui_inbound_id,
+                    client_id,
+                    sub_id,
+                    create_response.status,
+                    tg_id,
+                    attempt,
+                    max_attempts,
+                )
                 create_json = await create_response.json(content_type=None)
                 if not isinstance(create_json, dict) or create_json.get("success") is not True:
                     logger.error(
@@ -187,13 +198,14 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                         create_json,
                     )
                     raise VPNProvisionError("3x-ui addClient returned error")
-                vpn_link = _build_vless_link(settings, client_uuid, tg_id)
-                _validate_vless_link(vpn_link, client_uuid)
+                vpn_link = _build_vless_link(settings, client_id, tg_id)
+                _validate_vless_link(vpn_link, client_id)
                 logger.info(
-                    "VPN key created via 3x-ui for tg_id=%s inbound_id=%s client_id=%s link=%s",
+                    "VPN key created via 3x-ui for tg_id=%s inbound_id=%s client_id=%s sub_id=%s link=%s",
                     tg_id,
                     settings.xui_inbound_id,
-                    client_uuid,
+                    client_id,
+                    sub_id,
                     vpn_link,
                 )
                 return vpn_link

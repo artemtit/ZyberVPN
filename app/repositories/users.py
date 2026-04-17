@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import UUID
 
 import aiosqlite
 
@@ -325,12 +325,7 @@ class UsersRepository:
     @staticmethod
     def is_valid_sub_token(token: str) -> bool:
         value = (token or "").strip()
-        if len(value) != 36:
-            return False
-        try:
-            return str(UUID(value)) == value.lower()
-        except Exception:
-            return False
+        return len(value) >= 10
 
     async def _set_sub_token(self, user_id: int, sub_token: str) -> None:
         async with aiosqlite.connect(self.db_path) as conn:
@@ -341,13 +336,22 @@ class UsersRepository:
             await conn.commit()
 
     async def _generate_unique_sub_token(self) -> str:
-        import uuid
-
         while True:
-            candidate = str(uuid.uuid4())
-            exists = await self._sqlite_get_by_sub_token(candidate)
-            if not exists:
+            candidate = secrets.token_urlsafe(12)
+            exists_local = await self._sqlite_get_by_sub_token(candidate)
+            exists_remote = await self._supabase_token_exists(candidate)
+            if not exists_local and not exists_remote:
                 return candidate
+
+    async def _supabase_token_exists(self, token: str) -> bool:
+        if not self._supabase:
+            return False
+        try:
+            response = self._supabase.table("users").select("id").eq("sub_token", token).limit(1).execute()
+            return bool(response.data)
+        except Exception:
+            logger.exception("Supabase token uniqueness check failed")
+            return False
 
     async def count_referrals(self, user_id: int) -> int:
         async with aiosqlite.connect(self.db_path) as conn:

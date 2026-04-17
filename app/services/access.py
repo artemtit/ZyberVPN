@@ -4,6 +4,8 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
+from aiohttp import ClientSession, web
+
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -58,6 +60,7 @@ async def ensure_user_access(
     lock = _lock_for_tg(tg_id)
 
     async with lock:
+        logger.info("Access ensure started tg_id=%s require_active=%s", tg_id, require_active)
         local_user = await users_repo.get_or_create(tg_id)
         supabase_user = await users_repo.get_by_tg_id(tg_id)
         if users_repo.has_supabase and users_repo.last_supabase_error:
@@ -79,11 +82,13 @@ async def ensure_user_access(
 
         sub_token = supabase_user.get("sub_token")
         if not sub_token or not users_repo.is_valid_sub_token(str(sub_token)):
+            logger.info("Access ensure: generating sub_token tg_id=%s", tg_id)
             sub_token = await users_repo.ensure_sub_token(local_user["id"])
             updated = await users_repo.update_sub_token(tg_id, str(sub_token))
             if not updated:
                 raise AccessEnsureError("Failed to persist sub_token")
             supabase_user["sub_token"] = str(sub_token)
+            logger.info("Access ensure: sub_token persisted tg_id=%s token_len=%s", tg_id, len(str(sub_token)))
 
         if require_active and not users_repo.is_user_active(supabase_user):
             await users_repo.update_status(tg_id, False)
@@ -93,12 +98,14 @@ async def ensure_user_access(
         fresh_user = await users_repo.get_by_tg_id(tg_id)
         if fresh_user and _is_vpn_key_valid(fresh_user.get("vpn_key")):
             existing_key = str(fresh_user["vpn_key"])
+            logger.info("Access ensure: reusing existing vpn_key tg_id=%s", tg_id)
             if not await keys_repo.exists_for_user(local_user["id"], existing_key):
                 await keys_repo.create(local_user["id"], existing_key)
             return fresh_user
 
         vpn_key = (fresh_user or supabase_user or {}).get("vpn_key")
         if not _is_vpn_key_valid(vpn_key):
+            logger.info("Access ensure: creating/recreating vpn_key tg_id=%s", tg_id)
             if require_recent_activation_for_key_creation and not _is_recent_activation((fresh_user or supabase_user or {}).get("last_activated_at")):
                 raise AccessEnsureError("Activation too old for auto key creation")
             try:
@@ -123,4 +130,98 @@ async def ensure_user_access(
             supabase_user["vpn_key"] = final_key
 
         refreshed = await users_repo.get_by_tg_id(tg_id)
-        return refreshed or supabase_user
+        final_user = refreshed or supabase_user
+        final_token = str((final_user or {}).get("sub_token") or "")
+        if not users_repo.is_valid_sub_token(final_token):
+            raise AccessEnsureError("Invalid sub_token after ensure")
+        final_key = str((final_user or {}).get("vpn_key") or "")
+        if final_key and not _is_vpn_key_valid(final_key):
+            raise AccessEnsureError("Invalid vpn_key after ensure")
+        logger.info(
+            "Access ensure completed tg_id=%s has_vpn_key=%s has_sub_token=%s",
+            tg_id,
+            bool(final_key),
+            bool(final_token),
+        )
+        return final_user
+
+
+async def test_full_flow(tg_id: int, db: Database | None = None, settings: Settings | None = None) -> dict:
+    settings = settings or load_settings()
+    db = db or Database(settings.db_path)
+    await db.init()
+
+    users_repo = UsersRepository(db)
+    local_user = await users_repo.get_or_create(tg_id)
+    sub_token = await users_repo.ensure_sub_token(local_user["id"])
+
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(days=1)).isoformat()
+    supabase_user = await users_repo.get_by_tg_id(tg_id)
+    if not supabase_user:
+        created = await users_repo.create(
+            tg_id=tg_id,
+            vpn_key="",
+            sub_token=sub_token,
+            expires_at=expires_at,
+            is_active=True,
+            plan="trial",
+            last_activated_at=now.isoformat(),
+        )
+        if not created:
+            raise AccessEnsureError("test_full_flow: failed to create Supabase user")
+    else:
+        if not users_repo.is_valid_sub_token(str(supabase_user.get("sub_token") or "")):
+            updated_token = await users_repo.update_sub_token(tg_id, sub_token)
+            if not updated_token:
+                raise AccessEnsureError("test_full_flow: failed to update sub_token")
+        updated_expiry = await users_repo.set_expiry(
+            tg_id=tg_id,
+            expires_at=expires_at,
+            is_active=True,
+            last_activated_at=now.isoformat(),
+        )
+        if not updated_expiry:
+            raise AccessEnsureError("test_full_flow: failed to activate subscription")
+
+    access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
+    vpn_key = str((access_user or {}).get("vpn_key") or "")
+    token = str((access_user or {}).get("sub_token") or "")
+    if not _is_vpn_key_valid(vpn_key):
+        raise AccessEnsureError("test_full_flow: vpn_key is invalid")
+    if not users_repo.is_valid_sub_token(token):
+        raise AccessEnsureError("test_full_flow: sub_token is invalid")
+
+    from app.api.subscription import register_subscription_routes
+
+    app = web.Application()
+    register_subscription_routes(app, db)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+
+    sockets = list(getattr(site._server, "sockets", []))  # noqa: SLF001
+    if not sockets:
+        await runner.cleanup()
+        raise AccessEnsureError("test_full_flow: failed to bind local subscription server")
+    port = sockets[0].getsockname()[1]
+    sub_url = f"http://127.0.0.1:{port}/sub/{token}"
+
+    try:
+        async with ClientSession() as session:
+            async with session.get(sub_url) as response:
+                body = await response.text()
+                if response.status != 200:
+                    raise AccessEnsureError(f"test_full_flow: /sub returned {response.status}")
+                if body.strip() != vpn_key:
+                    raise AccessEnsureError("test_full_flow: /sub payload does not match vpn_key")
+    finally:
+        await runner.cleanup()
+
+    return {
+        "tg_id": tg_id,
+        "vpn_key": vpn_key,
+        "sub_token": token,
+        "sub_url": sub_url,
+    }
