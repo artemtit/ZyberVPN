@@ -46,6 +46,10 @@ def _validate_vless_link(link: str, client_uuid: str) -> None:
         raise VPNProvisionError("Generated VPN link has invalid scheme")
     if client_uuid not in link:
         raise VPNProvisionError("Generated VPN link does not contain client UUID")
+    if "pbk=" not in link:
+        raise VPNProvisionError("Generated VPN link does not contain pbk")
+    if "sid=" not in link:
+        raise VPNProvisionError("Generated VPN link does not contain sid")
 
 
 def _validate_xui_config(settings: Settings) -> None:
@@ -62,9 +66,19 @@ def _validate_xui_config(settings: Settings) -> None:
         raise VPNProvisionError("XUI_PUBLIC_HOST is not configured")
 
 
-def _build_vless_link(settings: Settings, client_uuid: str, tg_id: int) -> str:
-    query = f"type=tcp&security=reality&flow=xtls-rprx-vision&sni={settings.xui_sni}"
-    return f"vless://{client_uuid}@sub.zybervpn.ru:443?{query}#ZyberVPN-{tg_id}"
+def _build_vless_link(client_uuid: str, tg_id: int, sni: str, public_key: str, short_id: str) -> str:
+    return (
+        f"vless://{client_uuid}@sub.zybervpn.ru:443"
+        f"?type=tcp"
+        f"&security=reality"
+        f"&flow=xtls-rprx-vision"
+        f"&sni={sni}"
+        f"&pbk={public_key}"
+        f"&sid={short_id}"
+        f"&fp=chrome"
+        f"&spx=/"
+        f"#ZyberVPN-{tg_id}"
+    )
 
 
 async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
@@ -152,6 +166,33 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                     logger.error("3x-ui: inbound not found id=%s", settings.xui_inbound_id)
                     raise VPNProvisionError(f"3x-ui inbound not found id={settings.xui_inbound_id}")
 
+                raw_stream_settings = target_inbound.get("streamSettings")
+                if isinstance(raw_stream_settings, str):
+                    try:
+                        stream_settings = json.loads(raw_stream_settings)
+                    except Exception as error:
+                        raise VPNProvisionError("3x-ui inbound streamSettings JSON is invalid") from error
+                elif isinstance(raw_stream_settings, dict):
+                    stream_settings = raw_stream_settings
+                else:
+                    stream_settings = {}
+
+                reality_settings = stream_settings.get("realitySettings")
+                if not isinstance(reality_settings, dict):
+                    raise VPNProvisionError("3x-ui inbound streamSettings has no realitySettings")
+                public_key = str(reality_settings.get("publicKey") or "").strip()
+                short_ids = reality_settings.get("shortIds")
+                if isinstance(short_ids, list):
+                    short_id = str(short_ids[0]).strip() if short_ids else ""
+                else:
+                    short_id = str(short_ids or "").strip()
+                if not public_key:
+                    raise VPNProvisionError("3x-ui inbound realitySettings.publicKey is missing")
+                if not short_id:
+                    raise VPNProvisionError("3x-ui inbound realitySettings.shortIds is missing")
+                logger.info("3x-ui: reality public_key=%s", public_key)
+                logger.info("3x-ui: reality short_id=%s", short_id)
+
                 existing_client_id: str | None = None
                 raw_settings = target_inbound.get("settings")
                 try:
@@ -169,8 +210,15 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
 
                 if existing_client_id:
                     logger.info("3x-ui: found existing client uuid=%s", existing_client_id)
-                    vpn_link = _build_vless_link(settings, existing_client_id, tg_id)
+                    vpn_link = _build_vless_link(
+                        client_uuid=existing_client_id,
+                        tg_id=tg_id,
+                        sni=settings.xui_sni,
+                        public_key=public_key,
+                        short_id=short_id,
+                    )
                     _validate_vless_link(vpn_link, existing_client_id)
+                    logger.info("3x-ui: generated link for tg_id=%s", tg_id)
                     return vpn_link
 
                 logger.info("3x-ui: creating new client tg_id=%s", tg_id)
@@ -255,8 +303,15 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                         create_json,
                     )
                     raise VPNProvisionError("3x-ui addClient returned error")
-                vpn_link = _build_vless_link(settings, client_id, tg_id)
+                vpn_link = _build_vless_link(
+                    client_uuid=client_id,
+                    tg_id=tg_id,
+                    sni=settings.xui_sni,
+                    public_key=public_key,
+                    short_id=short_id,
+                )
                 _validate_vless_link(vpn_link, client_id)
+                logger.info("3x-ui: generated link for tg_id=%s", tg_id)
                 logger.info(
                     "VPN key created via 3x-ui for tg_id=%s inbound_id=%s client_id=%s sub_id=%s link=%s",
                     tg_id,
