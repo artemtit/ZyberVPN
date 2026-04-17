@@ -166,28 +166,44 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                     logger.error("3x-ui: inbound not found id=%s", settings.xui_inbound_id)
                     raise VPNProvisionError(f"3x-ui inbound not found id={settings.xui_inbound_id}")
 
-                raw_stream_settings = target_inbound.get("streamSettings")
-                if isinstance(raw_stream_settings, str):
-                    try:
-                        stream_settings = json.loads(raw_stream_settings)
-                    except Exception as error:
-                        raise VPNProvisionError("3x-ui inbound streamSettings JSON is invalid") from error
-                elif isinstance(raw_stream_settings, dict):
-                    stream_settings = raw_stream_settings
-                else:
-                    stream_settings = {}
+                stream_settings_raw = target_inbound.get("streamSettings")
+                if not stream_settings_raw:
+                    raise VPNProvisionError("3x-ui inbound streamSettings is missing")
 
-                reality_settings = stream_settings.get("realitySettings")
+                if isinstance(stream_settings_raw, str):
+                    try:
+                        stream_settings = json.loads(stream_settings_raw)
+                    except Exception as error:
+                        logger.error("3x-ui: failed to parse streamSettings JSON: %s", stream_settings_raw)
+                        raise VPNProvisionError("3x-ui inbound streamSettings JSON parse failed") from error
+                elif isinstance(stream_settings_raw, dict):
+                    stream_settings = stream_settings_raw
+                else:
+                    raise VPNProvisionError("3x-ui inbound streamSettings invalid type")
+
+                reality_settings = stream_settings.get("realitySettings") or stream_settings.get("securitySettings")
+                if not reality_settings:
+                    logger.error("3x-ui: realitySettings missing in streamSettings=%s", stream_settings)
+                    raise VPNProvisionError("3x-ui inbound realitySettings is missing")
                 if not isinstance(reality_settings, dict):
-                    raise VPNProvisionError("3x-ui inbound streamSettings has no realitySettings")
-                public_key = str(reality_settings.get("publicKey") or "").strip()
+                    raise VPNProvisionError("3x-ui inbound realitySettings invalid type")
+
+                public_key = reality_settings.get("publicKey")
+                if not public_key:
+                    logger.error("3x-ui: publicKey missing in realitySettings=%s", reality_settings)
+                    raise VPNProvisionError("3x-ui inbound realitySettings.publicKey is missing")
+                public_key = str(public_key).strip()
+
                 short_ids = reality_settings.get("shortIds")
+                if not short_ids:
+                    logger.error("3x-ui: shortIds missing in realitySettings=%s", reality_settings)
+                    raise VPNProvisionError("3x-ui inbound realitySettings.shortIds is missing")
                 if isinstance(short_ids, list):
                     short_id = str(short_ids[0]).strip() if short_ids else ""
+                elif isinstance(short_ids, str):
+                    short_id = short_ids.strip()
                 else:
-                    short_id = str(short_ids or "").strip()
-                if not public_key:
-                    raise VPNProvisionError("3x-ui inbound realitySettings.publicKey is missing")
+                    raise VPNProvisionError("3x-ui inbound realitySettings.shortIds invalid type")
                 if not short_id:
                     raise VPNProvisionError("3x-ui inbound realitySettings.shortIds is missing")
                 logger.info("3x-ui: reality public_key=%s", public_key)
