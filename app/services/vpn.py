@@ -64,45 +64,20 @@ def _validate_xui_config(settings: Settings) -> None:
 
 def _build_vless_link(settings: Settings, client_uuid: str, tg_id: int) -> str:
     query = f"type=tcp&security=reality&flow=xtls-rprx-vision&sni={settings.xui_sni}"
-    return (
-        f"vless://{client_uuid}@{settings.xui_public_host}:{settings.xui_public_port}"
-        f"?{query}#ZyberVPN-{tg_id}"
-    )
+    return f"vless://{client_uuid}@sub.zybervpn.ru:443?{query}#ZyberVPN-{tg_id}"
 
 
 async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
     _validate_xui_config(settings)
     logger.info("Provisioning VPN key via 3x-ui for tg_id=%s inbound_id=%s", tg_id, settings.xui_inbound_id)
 
-    client_id = str(uuid4())
-    sub_id = secrets.token_urlsafe(8)
     email = str(tg_id)
-    payload = {
-        "id": settings.xui_inbound_id,
-        "settings": json.dumps(
-            {
-                "clients": [
-                    {
-                        "id": client_id,
-                        "email": email,
-                        "flow": "xtls-rprx-vision",
-                        "enable": True,
-                        "limitIp": 0,
-                        "totalGB": 0,
-                        "expiryTime": 0,
-                        "subId": sub_id,
-                        "tgId": "",
-                        "reset": 0,
-                    }
-                ]
-            }
-        ),
-    }
 
     timeout = ClientTimeout(total=5)
     max_attempts = 3  # 1 original + 2 retries
     last_error: Exception | None = None
     login_url = f"{settings.xui_base_url}/login"
+    list_inbounds_url = f"{settings.xui_base_url}/panel/api/inbounds/list"
     add_client_url = f"{settings.xui_base_url}/panel/api/inbounds/addClient"
     login_payload = {"username": settings.xui_username, "password": settings.xui_password}
     for attempt in range(1, max_attempts + 1):
@@ -140,6 +115,88 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                 if isinstance(login_json, dict) and login_json.get("success") is False:
                     logger.error("3x-ui login rejected credentials for tg_id=%s", tg_id)
                     raise VPNProvisionError("3x-ui login rejected credentials")
+
+                logger.info("3x-ui: checking existing client tg_id=%s", tg_id)
+                list_response = await session.get(list_inbounds_url)
+                if list_response.status != 200:
+                    list_body = await list_response.text()
+                    logger.error(
+                        "3x-ui inbounds list failed url=%s status=%s tg_id=%s attempt=%s/%s body=%s",
+                        list_inbounds_url,
+                        list_response.status,
+                        tg_id,
+                        attempt,
+                        max_attempts,
+                        list_body,
+                    )
+                    if list_response.status in {401, 403}:
+                        raise VPNProvisionError("3x-ui authorization failed for inbounds list")
+                    if list_response.status >= 500:
+                        raise VPNProvisionRetryableError("3x-ui inbounds list request failed")
+                    raise VPNProvisionError("3x-ui inbounds list request failed")
+
+                list_json = await list_response.json(content_type=None)
+                inbound_items: list[dict] = []
+                if isinstance(list_json, dict):
+                    raw_obj = list_json.get("obj")
+                    if isinstance(raw_obj, list):
+                        inbound_items = [item for item in raw_obj if isinstance(item, dict)]
+
+                target_inbound: dict | None = None
+                for inbound in inbound_items:
+                    inbound_id = str(inbound.get("id", "")).strip()
+                    if inbound_id == str(settings.xui_inbound_id):
+                        target_inbound = inbound
+                        break
+                if not target_inbound:
+                    logger.error("3x-ui: inbound not found id=%s", settings.xui_inbound_id)
+                    raise VPNProvisionError(f"3x-ui inbound not found id={settings.xui_inbound_id}")
+
+                existing_client_id: str | None = None
+                raw_settings = target_inbound.get("settings")
+                try:
+                    inbound_settings = json.loads(raw_settings) if isinstance(raw_settings, str) and raw_settings else {}
+                    inbound_clients = inbound_settings.get("clients")
+                    clients = inbound_clients if isinstance(inbound_clients, list) else []
+                    for client in clients:
+                        if isinstance(client, dict) and str(client.get("email")) == email:
+                            candidate_id = str(client.get("id") or "").strip()
+                            if candidate_id:
+                                existing_client_id = candidate_id
+                                break
+                except Exception:
+                    logger.exception("3x-ui inbound settings JSON parse failed inbound_id=%s", settings.xui_inbound_id)
+
+                if existing_client_id:
+                    logger.info("3x-ui: found existing client uuid=%s", existing_client_id)
+                    vpn_link = _build_vless_link(settings, existing_client_id, tg_id)
+                    _validate_vless_link(vpn_link, existing_client_id)
+                    return vpn_link
+
+                logger.info("3x-ui: creating new client tg_id=%s", tg_id)
+                client_id = str(uuid4())
+                sub_id = secrets.token_urlsafe(8)
+                payload = {
+                    "id": settings.xui_inbound_id,
+                    "settings": json.dumps(
+                        {
+                            "clients": [
+                                {
+                                    "id": client_id,
+                                    "email": email,
+                                    "flow": "xtls-rprx-vision",
+                                    "enable": True,
+                                    "limitIp": 0,
+                                    "totalGB": 0,
+                                    "expiryTime": 0,
+                                    "subId": sub_id,
+                                    "tgId": "",
+                                    "reset": 0,
+                                }
+                            ]
+                        }
+                    ),
+                }
 
                 logger.info(
                     "3x-ui request url=%s inbound_id=%s client_id=%s sub_id=%s payload=%s tg_id=%s attempt=%s/%s",
