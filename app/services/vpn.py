@@ -41,16 +41,11 @@ def _sanitize_login_payload(payload: dict[str, str]) -> dict[str, str]:
     return {"username": payload.get("username", ""), "password": "***"}
 
 
-def _extract_created_client_data(response_json: object, fallback_uuid: str) -> tuple[str, str | None]:
-    if not isinstance(response_json, dict):
-        return fallback_uuid, None
-    for root_key in ("obj", "data", "client"):
-        root = response_json.get(root_key)
-        if isinstance(root, dict):
-            client_uuid = root.get("id") or root.get("uuid") or fallback_uuid
-            link = root.get("link") or root.get("vless")
-            return str(client_uuid), str(link) if isinstance(link, str) else None
-    return fallback_uuid, None
+def _validate_vless_link(link: str, client_uuid: str) -> None:
+    if not link.startswith("vless://"):
+        raise VPNProvisionError("Generated VPN link has invalid scheme")
+    if client_uuid not in link:
+        raise VPNProvisionError("Generated VPN link does not contain client UUID")
 
 
 def _validate_xui_config(settings: Settings) -> None:
@@ -114,7 +109,7 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
     max_attempts = 3  # 1 original + 2 retries
     last_error: Exception | None = None
     login_url = f"{settings.xui_base_url}/login"
-    add_client_url = f"{settings.xui_base_url}/addClient"
+    add_client_url = f"{settings.xui_base_url}/panel/api/inbounds/addClient"
     login_payload = {"username": settings.xui_username, "password": settings.xui_password}
     for attempt in range(1, max_attempts + 1):
         try:
@@ -162,7 +157,7 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                 )
                 create_response = await session.post(
                     add_client_url,
-                    json=payload,
+                    data=payload,
                 )
                 if create_response.status != 200:
                     create_body = await create_response.text()
@@ -176,7 +171,7 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                         create_body,
                     )
                     if create_response.status == 404:
-                        raise VPNProvisionError("3x-ui addClient endpoint not found (/addClient)")
+                        raise VPNProvisionError("3x-ui addClient endpoint not found (/panel/api/inbounds/addClient)")
                     if create_response.status in {401, 403}:
                         raise VPNProvisionError("3x-ui authorization failed for addClient")
                     if create_response.status >= 500:
@@ -192,9 +187,16 @@ async def create_vpn_key_via_3xui(settings: Settings, tg_id: int) -> str:
                         create_json,
                     )
                     raise VPNProvisionError("3x-ui addClient returned error")
-                resolved_uuid, resolved_link = _extract_created_client_data(create_json, client_uuid)
-                logger.info("VPN key created via 3x-ui for tg_id=%s", tg_id)
-                return resolved_link or _build_vless_link(settings, resolved_uuid, tg_id)
+                vpn_link = _build_vless_link(settings, client_uuid, tg_id)
+                _validate_vless_link(vpn_link, client_uuid)
+                logger.info(
+                    "VPN key created via 3x-ui for tg_id=%s inbound_id=%s client_id=%s link=%s",
+                    tg_id,
+                    settings.xui_inbound_id,
+                    client_uuid,
+                    vpn_link,
+                )
+                return vpn_link
         except VPNProvisionRetryableError as error:
             last_error = error
             if attempt >= max_attempts:
