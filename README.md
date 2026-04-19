@@ -1,102 +1,115 @@
-# ZyberVPN Telegram Bot
+# ZyberVPN MVP
 
-Полностью рабочий Telegram VPN-бот с монетизацией:
-- Python 3.11+
-- aiogram 3
-- SQLite
-- Чистая модульная архитектура (handlers/repositories/services)
-- Docker + docker-compose
+Python-проект VPN-сервиса: Telegram-бот + backend + Supabase + 3x-ui API.
 
-## Функции
+## Что реализовано в MVP
 
-- Главное меню кнопками: `🔑 Мои ключи`, `👤 Личный кабинет`, `🆘 Поддержка`
-- Ключи: список, статус, срок, подключение, QR, продление
-- Покупка подписки (1/3/6 месяцев) через Telegram Stars
-- Email чека (опционально) + `Продолжить без email`
-- После оплаты: создание VPN-ключа (заглушка), сохранение в БД, выдача ссылки и QR
-- Личный кабинет: ID, статус подписки, срок, баланс
-- Реферальная система: deeplink, учёт приглашённых, начисление %
+- Абстракция VPN-провайдера (`VPNProvider`)
+- Реализация `XUIProvider` для 3x-ui
+- Multi-server через таблицу `servers`
+- Балансировка по минимальному числу пользователей на сервере
+- Связь `user -> server -> uuid` через таблицу `user_vpn`
+- Subscription endpoint:
+  - `GET /sub/{token}` (legacy + multi-config payload)
+  - `GET /subscription/{user_id}` (новый endpoint)
+- Генерация VLESS REALITY c обязательными параметрами:
+  - `pbk`, `sid`, `fp=chrome`, `flow=xtls-rprx-vision`
+- Fallback протокол:
+  - `VLESS + WS + TLS`
+- Лимиты при создании клиента:
+  - `limitIp`, `expiryTime`, `totalGB`
+- Периодический health-check серверов и автоматическое отключение нерабочих
+- В боте команда подключения отдает subscription URL и набор конфигов
 
-## Структура проекта
+## Обновленная структура проекта
 
 ```text
 app/
-  main.py
-  config.py
+  api/
+    subscription.py
   bot/
     handlers/
-      start.py
+      connect.py
       keys.py
-      purchase.py
       payments.py
       profile.py
-      support.py
-    keyboards/
-      reply.py
-      inline.py
-    states/
       purchase.py
+      start.py
+      support.py
   db/
     database.py
   repositories/
-    users.py
-    subscriptions.py
     keys.py
     payments.py
+    promo.py
+    servers.py
+    subscriptions.py
+    user_vpn.py
+    users.py
   services/
-    vpn.py
-    tariffs.py
-    payments.py
-    referrals.py
-  utils/
-    datetime.py
-requirements.txt
-Dockerfile
-docker-compose.yml
-.env.example
+    access.py
+    supabase.py
+    vpn/
+      __init__.py
+      base.py
+      manager.py
+      xui_provider.py
+  main.py
+  config.py
+migrations/
+  2026_04_mvp_supabase.sql
 ```
 
-## База данных (SQLite)
+## ENV
 
-Создаётся автоматически при старте:
-- `users (id, tg_id, balance, ref_id, created_at)`
-- `subscriptions (id, user_id, expires_at, status, created_at)`
-- `keys (id, user_id, key, created_at)`
-- `payments (id, user_id, amount, status, tariff_code, email, payload, telegram_payment_charge_id, created_at)`
-
-## Запуск локально
-
-1. Создать `.env`:
 ```env
-BOT_TOKEN=123456:your_bot_token
+BOT_TOKEN=
 DB_PATH=./data/vpn_bot.sqlite3
 SUPPORT_URL=https://t.me/your_support
 REFERRAL_BONUS_PERCENT=10
+
+SUPABASE_URL=
+SUPABASE_SERVICE_KEY=
+
+PUBLIC_BASE_URL=https://your-domain
+
+XUI_BASE_URL=http://xui-host:54321
+XUI_USERNAME=
+XUI_PASSWORD=
+XUI_INBOUND_ID=1
+XUI_PUBLIC_HOST=your-vpn-host
+XUI_PUBLIC_PORT=443
+XUI_SNI=www.cloudflare.com
+XUI_WS_PATH=/ws
+
+VPN_LIMIT_IP=1
+VPN_TOTAL_GB=50
+VPN_DEFAULT_EXPIRY_DAYS=30
+VPN_HEALTHCHECK_INTERVAL_SECONDS=120
 ```
 
-2. Установить зависимости:
+## Запуск
+
+1. Установить зависимости:
 ```bash
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
-# Linux/macOS
-source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Запуск:
+2. Применить SQL в Supabase:
+- `[migrations/2026_04_mvp_supabase.sql](/c:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/migrations/2026_04_mvp_supabase.sql)`
+
+3. Запустить приложение:
 ```bash
 python -m app.main
 ```
 
-## Запуск в Docker
+## Важно
 
-```bash
-docker compose up --build -d
-```
-
-## Важно по оплате Stars
-
-- Используется `currency="XTR"` и `provider_token=""` (официальный сценарий Telegram Stars).
-- Для тестов убедитесь, что бот и аккаунт поддерживают Stars-платежи.
-# ZyberVPN
+- Не храните реальные секреты в репозитории.
+- Если секреты уже попали в `.env`/git-историю, сразу ротируйте:
+  - `BOT_TOKEN`
+  - `SUPABASE_SERVICE_KEY`
+  - `XUI_USERNAME/XUI_PASSWORD`

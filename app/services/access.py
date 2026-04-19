@@ -9,8 +9,11 @@ from aiohttp import ClientSession, web
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
+from app.repositories.servers import ServersRepository
+from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
-from app.services.vpn import VPNProvisionError, create_vpn_key_via_3xui
+from app.services.vpn.manager import VPNManager, VPNManagerError
+from app.services.vpn.xui_provider import XUIProvider
 
 logger = logging.getLogger(__name__)
 _ACCESS_LOCKS: dict[int, asyncio.Lock] = {}
@@ -45,6 +48,30 @@ def _is_recent_activation(raw_value: str | None) -> bool:
     return datetime.now(timezone.utc) - activated_at <= MAX_SUB_AUTO_CREATE_AGE
 
 
+def _expiry_to_ms(raw_value: str | None) -> int | None:
+    if not raw_value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def build_vpn_manager(db: Database, settings: Settings) -> VPNManager:
+    servers_repo = ServersRepository(db)
+    user_vpn_repo = UserVpnRepository(db)
+    providers = {"xui": XUIProvider()}
+    return VPNManager(
+        providers=providers,
+        servers_repo=servers_repo,
+        user_vpn_repo=user_vpn_repo,
+        settings=settings,
+    )
+
+
 async def ensure_user_access(
     tg_id: int,
     db: Database | None = None,
@@ -57,10 +84,10 @@ async def ensure_user_access(
 
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
+    manager = build_vpn_manager(db, settings)
     lock = _lock_for_tg(tg_id)
 
     async with lock:
-        logger.info("Access ensure started tg_id=%s require_active=%s", tg_id, require_active)
         local_user = await users_repo.get_or_create(tg_id)
         supabase_user = await users_repo.get_by_tg_id(tg_id)
         if users_repo.has_supabase and users_repo.last_supabase_error:
@@ -78,71 +105,48 @@ async def ensure_user_access(
             if not created:
                 raise AccessEnsureError("Failed to create Supabase user")
             supabase_user = created
-            logger.info("Access bootstrap: created Supabase user for tg_id=%s", tg_id)
 
         sub_token = supabase_user.get("sub_token")
         if not sub_token or not users_repo.is_valid_sub_token(str(sub_token)):
-            logger.info("Access ensure: generating sub_token tg_id=%s", tg_id)
             sub_token = await users_repo.ensure_sub_token(local_user["id"])
             updated = await users_repo.update_sub_token(tg_id, str(sub_token))
             if not updated:
                 raise AccessEnsureError("Failed to persist sub_token")
             supabase_user["sub_token"] = str(sub_token)
-            logger.info("Access ensure: sub_token persisted tg_id=%s token_len=%s", tg_id, len(str(sub_token)))
 
         if require_active and not users_repo.is_user_active(supabase_user):
             await users_repo.update_status(tg_id, False)
             raise AccessEnsureError("Subscription inactive")
 
-        # Re-read before provisioning to reduce race probability.
-        fresh_user = await users_repo.get_by_tg_id(tg_id)
-        if fresh_user and _is_vpn_key_valid(fresh_user.get("vpn_key")):
-            existing_key = str(fresh_user["vpn_key"])
-            logger.info("Access ensure: reusing existing vpn_key tg_id=%s", tg_id)
-            if not await keys_repo.exists_for_user(local_user["id"], existing_key):
-                await keys_repo.create(local_user["id"], existing_key)
-            return fresh_user
+        if require_recent_activation_for_key_creation and not _is_recent_activation((supabase_user or {}).get("last_activated_at")):
+            raise AccessEnsureError("Activation too old for auto key creation")
 
-        vpn_key = (fresh_user or supabase_user or {}).get("vpn_key")
-        if not _is_vpn_key_valid(vpn_key):
-            logger.info("Access ensure: creating/recreating vpn_key tg_id=%s", tg_id)
-            if require_recent_activation_for_key_creation and not _is_recent_activation((fresh_user or supabase_user or {}).get("last_activated_at")):
-                raise AccessEnsureError("Activation too old for auto key creation")
-            try:
-                vpn_key = await create_vpn_key_via_3xui(settings=settings, tg_id=tg_id)
-                logger.info("Access bootstrap: created vpn_key for tg_id=%s", tg_id)
-            except VPNProvisionError as error:
-                logger.exception("Access bootstrap: failed to create vpn_key for tg_id=%s", tg_id)
-                raise AccessEnsureError("Failed to create VPN key") from error
+        expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
+        try:
+            vpn_configs = await manager.get_subscription(tg_id)
+            if not vpn_configs:
+                vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
+        except VPNManagerError as error:
+            logger.exception("VPNManager failed for tg_id=%s", tg_id)
+            raise AccessEnsureError("Failed to create VPN access") from error
 
-            # Re-read again: if another flow persisted key while we were creating, do not overwrite.
-            post_create_user = await users_repo.get_by_tg_id(tg_id)
-            existing_after_create = (post_create_user or {}).get("vpn_key")
-            final_key = str(existing_after_create or vpn_key)
-            if not _is_vpn_key_valid(existing_after_create):
-                updated = await users_repo.update_key(tg_id, str(vpn_key))
-                if not updated:
-                    raise AccessEnsureError("Failed to persist vpn_key")
-                final_key = str(vpn_key)
+        primary_key = vpn_configs[0] if vpn_configs else ""
+        if primary_key and not _is_vpn_key_valid(primary_key):
+            raise AccessEnsureError("Invalid vpn_key after ensure")
 
-            if not await keys_repo.exists_for_user(local_user["id"], final_key):
-                await keys_repo.create(local_user["id"], final_key)
-            supabase_user["vpn_key"] = final_key
+        current_key = str((supabase_user or {}).get("vpn_key") or "")
+        if primary_key and current_key != primary_key:
+            updated_key = await users_repo.update_key(tg_id, primary_key)
+            if not updated_key:
+                raise AccessEnsureError("Failed to persist vpn_key")
+            supabase_user["vpn_key"] = primary_key
+        if primary_key and not await keys_repo.exists_for_user(local_user["id"], primary_key):
+            await keys_repo.create(local_user["id"], primary_key)
 
         refreshed = await users_repo.get_by_tg_id(tg_id)
         final_user = refreshed or supabase_user
-        final_token = str((final_user or {}).get("sub_token") or "")
-        if not users_repo.is_valid_sub_token(final_token):
-            raise AccessEnsureError("Invalid sub_token after ensure")
-        final_key = str((final_user or {}).get("vpn_key") or "")
-        if final_key and not _is_vpn_key_valid(final_key):
-            raise AccessEnsureError("Invalid vpn_key after ensure")
-        logger.info(
-            "Access ensure completed tg_id=%s has_vpn_key=%s has_sub_token=%s",
-            tg_id,
-            bool(final_key),
-            bool(final_token),
-        )
+        final_user["vpn_key"] = primary_key
+        final_user["vpn_configs"] = vpn_configs
         return final_user
 
 
@@ -214,8 +218,9 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
                 body = await response.text()
                 if response.status != 200:
                     raise AccessEnsureError(f"test_full_flow: /sub returned {response.status}")
-                if body.strip() != vpn_key:
-                    raise AccessEnsureError("test_full_flow: /sub payload does not match vpn_key")
+                lines = [line.strip() for line in body.splitlines() if line.strip()]
+                if not lines or lines[0] != vpn_key:
+                    raise AccessEnsureError("test_full_flow: /sub payload does not contain vpn_key")
     finally:
         await runner.cleanup()
 

@@ -29,6 +29,35 @@ logger = logging.getLogger(__name__)
 #   created_at timestamp with time zone NOT NULL DEFAULT now()
 # );
 #
+# CREATE TABLE IF NOT EXISTS public.servers (
+#   id bigint generated always as identity primary key,
+#   name text not null,
+#   host text not null,
+#   api_url text not null,
+#   username text not null,
+#   password text not null,
+#   inbound_id int not null,
+#   public_key text,
+#   short_id text,
+#   country text not null default 'unknown',
+#   is_active boolean not null default true,
+#   sni text,
+#   public_port int not null default 443,
+#   ws_path text not null default '/ws',
+#   ws_host text
+# );
+#
+# CREATE TABLE IF NOT EXISTS public.user_vpn (
+#   id bigint generated always as identity primary key,
+#   user_id bigint not null,
+#   server_id bigint not null references public.servers(id),
+#   uuid text not null,
+#   protocol text not null default 'vless-reality',
+#   config text not null,
+#   created_at timestamp with time zone not null default now(),
+#   unique(user_id, server_id, protocol)
+# );
+#
 # CREATE TABLE IF NOT EXISTS public.promo_codes (
 #   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 #   code text NOT NULL UNIQUE,

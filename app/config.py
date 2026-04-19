@@ -24,6 +24,11 @@ class Settings:
     xui_transport: str
     xui_security: str
     xui_sni: str
+    xui_ws_path: str
+    vpn_limit_ip: int
+    vpn_total_gb: int
+    vpn_default_expiry_days: int
+    vpn_healthcheck_interval_seconds: int
 
 
 def load_settings() -> Settings:
@@ -63,4 +68,9 @@ def load_settings() -> Settings:
         xui_transport=os.getenv("XUI_TRANSPORT", "tcp").strip() or "tcp",
         xui_security=os.getenv("XUI_SECURITY", "tls").strip() or "tls",
         xui_sni=os.getenv("XUI_SNI", "").strip(),
+        xui_ws_path=os.getenv("XUI_WS_PATH", "/ws").strip() or "/ws",
+        vpn_limit_ip=max(1, int(os.getenv("VPN_LIMIT_IP", "1"))),
+        vpn_total_gb=max(1, int(os.getenv("VPN_TOTAL_GB", "50"))),
+        vpn_default_expiry_days=max(1, int(os.getenv("VPN_DEFAULT_EXPIRY_DAYS", "30"))),
+        vpn_healthcheck_interval_seconds=max(10, int(os.getenv("VPN_HEALTHCHECK_INTERVAL_SECONDS", "120"))),
     )

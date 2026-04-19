@@ -15,9 +15,10 @@ from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
 from app.repositories.users import UsersRepository
+from app.services.access import build_vpn_manager
 
 
-async def _start_health_server(db: Database) -> web.AppRunner:
+async def _start_health_server(db: Database, settings) -> web.AppRunner:
     app = web.Application()
 
     async def health(_: web.Request) -> web.Response:
@@ -25,6 +26,7 @@ async def _start_health_server(db: Database) -> web.AppRunner:
 
     app.router.add_get("/", health)
     app.router.add_get("/healthz", health)
+    app["settings"] = settings
     register_subscription_routes(app, db)
 
     runner = web.AppRunner(app)
@@ -48,6 +50,16 @@ async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600
         await asyncio.sleep(interval_seconds)
 
 
+async def _vpn_healthcheck_loop(db: Database, settings) -> None:
+    manager = build_vpn_manager(db, settings)
+    while True:
+        try:
+            await manager.refresh_server_health()
+        except Exception as error:
+            logging.warning("VPN healthcheck failed: %s", error)
+        await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
@@ -63,8 +75,9 @@ async def run() -> None:
     dp["settings"] = settings
     setup_routers(dp)
 
-    web_runner = await _start_health_server(db)
+    web_runner = await _start_health_server(db, settings)
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
+    healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -73,8 +86,13 @@ async def run() -> None:
         logging.info("Polling cancelled")
     finally:
         subscription_watchdog_task.cancel()
+        healthcheck_task.cancel()
         try:
             await subscription_watchdog_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await healthcheck_task
         except asyncio.CancelledError:
             pass
         await bot.session.close()

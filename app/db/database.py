@@ -57,6 +57,36 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS servers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    api_url TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    inbound_id INTEGER NOT NULL,
+                    public_key TEXT,
+                    short_id TEXT,
+                    country TEXT NOT NULL DEFAULT 'unknown',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    sni TEXT,
+                    public_port INTEGER NOT NULL DEFAULT 443,
+                    ws_path TEXT NOT NULL DEFAULT '/ws',
+                    ws_host TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS user_vpn (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    server_id INTEGER NOT NULL,
+                    uuid TEXT NOT NULL,
+                    protocol TEXT NOT NULL DEFAULT 'vless-reality',
+                    config TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (server_id) REFERENCES servers(id),
+                    UNIQUE(user_id, server_id, protocol)
+                );
                 """
             )
             cursor = await conn.execute("PRAGMA table_info(users)")
@@ -68,6 +98,8 @@ class Database:
             if "sub_token" not in columns:
                 await conn.execute("ALTER TABLE users ADD COLUMN sub_token TEXT")
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_sub_token ON users(sub_token)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_vpn_user_id ON user_vpn(user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_vpn_server_id ON user_vpn(server_id)")
             await conn.commit()
 
     async def connect(self) -> aiosqlite.Connection:

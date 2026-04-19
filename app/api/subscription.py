@@ -7,11 +7,10 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
+from app.config import load_settings
 from app.db.database import Database
-from app.repositories.keys import KeysRepository
-from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
-from app.services.access import AccessEnsureError, ensure_user_access
+from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 
 logger = logging.getLogger(__name__)
 _TOKEN_WINDOW_SECONDS = 60
@@ -35,10 +34,6 @@ def _track_token_rate(token: str) -> tuple[int, bool]:
     return count, count > _TOKEN_RATE_LIMIT
 
 
-def _is_vpn_key_valid(vpn_key: str | None) -> bool:
-    return bool(vpn_key and str(vpn_key).startswith("vless://"))
-
-
 def _is_expired(expires_at: object) -> bool:
     if not expires_at:
         return False
@@ -51,8 +46,14 @@ def _is_expired(expires_at: object) -> bool:
     return parsed <= datetime.now(timezone.utc)
 
 
+def _format_subscription(configs: list[str]) -> str:
+    lines = [line.strip() for line in configs if str(line).strip().startswith("vless://")]
+    return "\n".join(lines)
+
+
 async def get_subscription(request: web.Request) -> web.Response:
     db = request.app["db"]
+    settings = request.app.get("settings") or load_settings()
     user_token = request.match_info.get("user_token", "").strip()
     if not user_token:
         raise web.HTTPBadRequest(text="missing token")
@@ -68,64 +69,49 @@ async def get_subscription(request: web.Request) -> web.Response:
         raise web.HTTPTooManyRequests(text="rate limit exceeded")
 
     user = await users_repo.get_by_sub_token(user_token)
-
-    if user:
-        if bool(user.get("is_active")) is False:
-            await users_repo.update_status(int(user["tg_id"]), False)
-            logger.info("Subscription result=403 token=%s tg_id=%s reason=inactive", user_token, user.get("tg_id"))
-            raise web.HTTPForbidden(text="subscription inactive")
-        if _is_expired(user.get("expires_at")):
-            await users_repo.update_status(int(user["tg_id"]), False)
-            logger.info("Subscription result=403 token=%s tg_id=%s reason=expired", user_token, user.get("tg_id"))
-            raise web.HTTPForbidden(text="subscription inactive")
-        vpn_key = (user or {}).get("vpn_key")
-        if not _is_vpn_key_valid(vpn_key):
-            tg_id = int(user["tg_id"])
-            logger.warning("Subscription missing vpn_key, trying self-heal tg_id=%s token=%s", tg_id, user_token)
-            try:
-                healed = await ensure_user_access(
-                    tg_id=tg_id,
-                    db=db,
-                    require_active=True,
-                )
-                vpn_key = (healed or {}).get("vpn_key")
-            except AccessEnsureError:
-                logger.exception("Subscription self-heal failed for tg_id=%s", tg_id)
-                raise web.HTTPServiceUnavailable(text="vpn key unavailable")
-            if not _is_vpn_key_valid(vpn_key):
-                logger.error("Subscription self-heal returned no vpn_key for tg_id=%s", tg_id)
-                raise web.HTTPServiceUnavailable(text="vpn key unavailable")
-        logger.info("Subscription result=200 token=%s tg_id=%s", user_token, user.get("tg_id"))
-        return web.Response(text=str(vpn_key), content_type="text/plain")
-
-    if users_repo.has_supabase and not users_repo.last_supabase_error:
-        logger.info("Subscription result=404 token=%s reason=user_not_found", user_token)
+    if not user:
         raise web.HTTPNotFound(text="subscription not found")
-
-    logger.warning("Supabase unavailable for /sub lookup, using sqlite fallback token=%s", user_token)
-    local_user = await users_repo._sqlite_get_by_sub_token(user_token)  # noqa: SLF001
-    if not local_user:
-        logger.info("Subscription result=404 token=%s reason=local_user_not_found", user_token)
-        raise web.HTTPNotFound(text="subscription not found")
-
-    subs_repo = SubscriptionsRepository(db)
-    active_sub = await subs_repo.get_active(local_user["id"])
-    if not active_sub:
-        logger.info("Subscription result=403 token=%s tg_id=%s reason=legacy_inactive", user_token, local_user.get("tg_id"))
+    if bool(user.get("is_active")) is False or _is_expired(user.get("expires_at")):
+        await users_repo.update_status(int(user["tg_id"]), False)
         raise web.HTTPForbidden(text="subscription inactive")
 
-    keys_repo = KeysRepository(db)
-    rows = await keys_repo.list_by_user(local_user["id"])
-    configs = [row["key"] for row in rows if row.get("key")]
+    manager = build_vpn_manager(db, settings)
+    configs = await manager.get_subscription(int(user["tg_id"]))
     if not configs:
-        logger.warning("Legacy subscription rejected: no configs for tg_id=%s", local_user.get("tg_id"))
-        raise web.HTTPNotFound(text="no configs")
+        try:
+            ensured = await ensure_user_access(tg_id=int(user["tg_id"]), db=db, settings=settings, require_active=True)
+        except AccessEnsureError as error:
+            raise web.HTTPServiceUnavailable(text="vpn key unavailable") from error
+        configs = list(ensured.get("vpn_configs") or [])
+    payload = _format_subscription(configs)
+    if not payload:
+        raise web.HTTPServiceUnavailable(text="vpn key unavailable")
+    return web.Response(text=payload, content_type="text/plain")
 
-    payload = "\n".join(configs)
-    logger.info("Subscription result=200 token=%s tg_id=%s source=legacy configs=%s", user_token, local_user.get("tg_id"), len(configs))
+
+async def get_subscription_by_user_id(request: web.Request) -> web.Response:
+    db = request.app["db"]
+    settings = request.app.get("settings") or load_settings()
+    raw_user_id = request.match_info.get("user_id", "").strip()
+    if not raw_user_id.isdigit():
+        raise web.HTTPBadRequest(text="invalid user_id")
+    user_id = int(raw_user_id)
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(user_id)
+    if not user:
+        raise web.HTTPNotFound(text="subscription not found")
+    if bool(user.get("is_active")) is False or _is_expired(user.get("expires_at")):
+        await users_repo.update_status(user_id, False)
+        raise web.HTTPForbidden(text="subscription inactive")
+    manager = build_vpn_manager(db, settings)
+    configs = await manager.get_subscription(user_id)
+    payload = _format_subscription(configs)
+    if not payload:
+        raise web.HTTPServiceUnavailable(text="vpn key unavailable")
     return web.Response(text=payload, content_type="text/plain")
 
 
 def register_subscription_routes(app: web.Application, db: Database) -> None:
     app["db"] = db
     app.router.add_get("/sub/{user_token}", get_subscription)
+    app.router.add_get("/subscription/{user_id}", get_subscription_by_user_id)
