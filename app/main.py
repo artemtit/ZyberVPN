@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 
@@ -10,24 +11,72 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
+from app.api.middlewares import (
+    InMemoryRateLimiter,
+    RateLimitConfig,
+    RedisRateLimiter,
+    build_rate_limit_middleware,
+    error_middleware,
+    request_logging_middleware,
+)
 from app.api.subscription import register_subscription_routes
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
+from app.services.subscription import build_subscription_service
+
+try:
+    from aiogram.fsm.storage.redis import RedisStorage
+except Exception:  # pragma: no cover
+    RedisStorage = None  # type: ignore[assignment]
+
+try:
+    from redis.asyncio import Redis
+except Exception:  # pragma: no cover
+    Redis = None  # type: ignore[assignment]
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root.handlers = [handler]
 
 
 async def _start_health_server(db: Database, settings) -> web.AppRunner:
-    app = web.Application()
+    middlewares = [
+        error_middleware,
+        request_logging_middleware,
+        build_rate_limit_middleware(RateLimitConfig(per_minute=settings.api_rate_limit_per_minute)),
+    ]
+    app = web.Application(middlewares=middlewares)
 
     async def health(_: web.Request) -> web.Response:
-        return web.Response(text="ok")
+        return web.json_response({"status": "ok"})
 
     app.router.add_get("/", health)
     app.router.add_get("/healthz", health)
     app["settings"] = settings
-    register_subscription_routes(app, db)
+    app["subscription_service"] = build_subscription_service(db, settings)
+    if settings.redis_url and Redis is not None:
+        redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+        app["rate_limiter"] = RedisRateLimiter(redis, settings.api_rate_limit_per_minute)
+    else:
+        app["rate_limiter"] = InMemoryRateLimiter(settings.api_rate_limit_per_minute)
+    register_subscription_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -38,6 +87,16 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     return runner
 
 
+def _build_dispatcher(settings) -> Dispatcher:
+    if settings.redis_url and RedisStorage is not None:
+        try:
+            storage = RedisStorage.from_url(settings.redis_url)
+            return Dispatcher(storage=storage)
+        except Exception:
+            logging.exception("Redis storage init failed, fallback to MemoryStorage")
+    return Dispatcher(storage=MemoryStorage())
+
+
 async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600) -> None:
     users_repo = UsersRepository(db)
     while True:
@@ -45,8 +104,8 @@ async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600
             updated = await users_repo.deactivate_expired_users()
             if updated:
                 logging.info("Subscription watchdog deactivated %s expired users", updated)
-        except Exception as error:
-            logging.warning("Subscription watchdog failed: %s", error)
+        except Exception:
+            logging.exception("Subscription watchdog failed")
         await asyncio.sleep(interval_seconds)
 
 
@@ -55,8 +114,8 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
     while True:
         try:
             await manager.refresh_server_health()
-        except Exception as error:
-            logging.warning("VPN healthcheck failed: %s", error)
+        except Exception:
+            logging.exception("VPN healthcheck failed")
         await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
 
 
@@ -69,22 +128,19 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
             for tg_id in expired_tg_ids:
                 await manager.disable_user_access(tg_id)
                 await users_repo.update_status(tg_id, False)
-        except Exception as error:
-            logging.warning("Disable expired access loop failed: %s", error)
+        except Exception:
+            logging.exception("Disable expired access loop failed")
         await asyncio.sleep(interval_seconds)
 
 
 async def run() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     settings = load_settings()
     db = Database(settings.db_path)
     await db.init()
 
-    bot = Bot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    dp = Dispatcher(storage=MemoryStorage())
+    bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = _build_dispatcher(settings)
     dp["db"] = db
     dp["settings"] = settings
     setup_routers(dp)
@@ -100,21 +156,12 @@ async def run() -> None:
     except asyncio.CancelledError:
         logging.info("Polling cancelled")
     finally:
-        subscription_watchdog_task.cancel()
-        healthcheck_task.cancel()
-        disable_expired_task.cancel()
-        try:
-            await subscription_watchdog_task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await healthcheck_task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await disable_expired_task
-        except asyncio.CancelledError:
-            pass
+        for task in (subscription_watchdog_task, healthcheck_task, disable_expired_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await bot.session.close()
         await web_runner.cleanup()
 
@@ -124,3 +171,4 @@ if __name__ == "__main__":
         asyncio.run(run())
     except KeyboardInterrupt:
         logging.info("Bot stopped")
+

@@ -31,6 +31,8 @@ class Settings:
     vpn_healthcheck_interval_seconds: int
     vpn_circuit_break_minutes: int
     vpn_create_rate_limit_seconds: int
+    redis_url: str
+    api_rate_limit_per_minute: int
 
 
 def load_settings() -> Settings:
@@ -77,4 +79,6 @@ def load_settings() -> Settings:
         vpn_healthcheck_interval_seconds=max(10, int(os.getenv("VPN_HEALTHCHECK_INTERVAL_SECONDS", "120"))),
         vpn_circuit_break_minutes=max(1, int(os.getenv("VPN_CIRCUIT_BREAK_MINUTES", "5"))),
         vpn_create_rate_limit_seconds=max(1, int(os.getenv("VPN_CREATE_RATE_LIMIT_SECONDS", "30"))),
+        redis_url=os.getenv("REDIS_URL", "").strip(),
+        api_rate_limit_per_minute=max(1, int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))),
     )

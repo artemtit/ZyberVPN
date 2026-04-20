@@ -11,6 +11,7 @@ from app.bot.keyboards.inline import connect_apps_keyboard, connect_devices_keyb
 from app.bot.states.connect import ConnectFlowState
 from app.config import Settings
 from app.db.database import Database
+from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
 
 router = Router()
@@ -63,6 +64,7 @@ def _app_name(callback_data: str) -> str | None:
 @router.callback_query(F.data.startswith("key_connect:"))
 async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     tg_id = callback.from_user.id
+    users_repo = UsersRepository(db)
     try:
         access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
     except AccessEnsureError as error:
@@ -75,7 +77,12 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
 
     vpn_configs = [str(item) for item in (access_user.get("vpn_configs") or []) if str(item).startswith("vless://")]
     vpn_key = str(access_user.get("vpn_key") or (vpn_configs[0] if vpn_configs else ""))
-    sub_token = str(access_user.get("sub_token") or "")
+    try:
+        sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
+    except Exception:
+        logger.exception("Failed to issue subscription token for tg_id=%s", tg_id)
+        await callback.answer("Не удалось подготовить subscription-ссылку. Попробуйте позже.", show_alert=True)
+        return
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if settings.public_base_url and sub_token else ""
     if not vpn_key and not vpn_configs:
         await callback.answer("Не удалось получить VPN-ключ. Попробуйте позже.", show_alert=True)

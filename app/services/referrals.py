@@ -9,10 +9,10 @@ class ReferralService:
         self.percent = percent
 
     async def accrue_bonus(self, buyer_user: dict, payment_amount_rub: int) -> int:
-        inviter_id = buyer_user.get("ref_id")
-        if not inviter_id:
+        inviter_tg_id = buyer_user.get("ref_tg_id")
+        if not inviter_tg_id:
             return 0
         bonus = int(payment_amount_rub * self.percent / 100)
         if bonus > 0:
-            await self.users_repo.add_balance(inviter_id, bonus)
+            await self.users_repo.add_balance(int(inviter_tg_id), bonus)
         return bonus

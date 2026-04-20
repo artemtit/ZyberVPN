@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-import aiosqlite
-
 from app.db.database import Database
 from app.services.supabase import get_supabase_client
+from app.utils.security import sha256_hex
 
 logger = logging.getLogger(__name__)
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class UsersRepository:
-    def __init__(self, db: Database) -> None:
-        self.db_path = db.db_path
+    def __init__(self, db: Database) -> None:  # noqa: ARG002
         self._supabase = get_supabase_client()
         self._last_supabase_error = False
 
@@ -27,7 +27,6 @@ class UsersRepository:
     def last_supabase_error(self) -> bool:
         return self._last_supabase_error
 
-    # Supabase storage (primary for tg_id/vpn_key/sub_token + subscription fields)
     async def get_by_tg_id(self, tg_id: int) -> Optional[dict]:
         if not self._supabase:
             self._last_supabase_error = True
@@ -35,7 +34,9 @@ class UsersRepository:
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at")
+                .select(
+                    "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                )
                 .eq("tg_id", tg_id)
                 .limit(1)
                 .execute()
@@ -57,15 +58,17 @@ class UsersRepository:
         is_active: bool = True,
         plan: str = "trial",
         last_activated_at: str | None = None,
+        ref_tg_id: int | None = None,
     ) -> Optional[dict]:
         if not self._supabase:
             return None
         payload: dict = {
             "tg_id": tg_id,
             "vpn_key": vpn_key,
-            "sub_token": sub_token,
+            "sub_token": self.hash_sub_token(sub_token),
             "is_active": is_active,
             "plan": plan,
+            "ref_tg_id": ref_tg_id,
         }
         if expires_at:
             payload["expires_at"] = expires_at
@@ -79,16 +82,28 @@ class UsersRepository:
             logger.exception("Supabase create user failed")
             return None
 
+    async def get_or_create(self, tg_id: int, ref_tg_id: int | None = None) -> dict:
+        existing = await self.get_by_tg_id(tg_id)
+        if existing:
+            return existing
+        token = await self._generate_unique_sub_token()
+        created = await self.create(
+            tg_id=tg_id,
+            vpn_key="",
+            sub_token=token,
+            is_active=False,
+            plan="none",
+            ref_tg_id=ref_tg_id,
+        )
+        if not created:
+            raise RuntimeError("Failed to create user")
+        return created
+
     async def update_key(self, tg_id: int, vpn_key: str) -> Optional[dict]:
         if not self._supabase:
             return None
         try:
-            response = (
-                self._supabase.table("users")
-                .update({"vpn_key": vpn_key})
-                .eq("tg_id", tg_id)
-                .execute()
-            )
+            response = self._supabase.table("users").update({"vpn_key": vpn_key}).eq("tg_id", tg_id).execute()
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -101,7 +116,7 @@ class UsersRepository:
         try:
             response = (
                 self._supabase.table("users")
-                .update({"sub_token": sub_token})
+                .update({"sub_token": self.hash_sub_token(sub_token)})
                 .eq("tg_id", tg_id)
                 .execute()
             )
@@ -115,11 +130,16 @@ class UsersRepository:
         if not self._supabase:
             self._last_supabase_error = True
             return None
+        if not self.is_valid_sub_token(token):
+            return None
+        token_hash = self.hash_sub_token(token)
         try:
             response = (
                 self._supabase.table("users")
-                .select("id,tg_id,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at")
-                .eq("sub_token", token)
+                .select(
+                    "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                )
+                .eq("sub_token", token_hash)
                 .limit(1)
                 .execute()
             )
@@ -131,16 +151,22 @@ class UsersRepository:
             logger.exception("Supabase get_by_sub_token failed")
             return None
 
+    async def ensure_sub_token(self, tg_id: int) -> str:
+        token = await self._generate_unique_sub_token()
+        updated = await self.update_sub_token(tg_id, token)
+        if not updated:
+            raise RuntimeError(f"Failed to update sub_token for tg_id={tg_id}")
+        return token
+
+    async def ensure_sub_token_for_tg(self, tg_id: int) -> str:
+        await self.get_or_create(tg_id)
+        return await self.ensure_sub_token(tg_id)
+
     async def update_status(self, tg_id: int, is_active: bool) -> Optional[dict]:
         if not self._supabase:
             return None
         try:
-            response = (
-                self._supabase.table("users")
-                .update({"is_active": is_active})
-                .eq("tg_id", tg_id)
-                .execute()
-            )
+            response = self._supabase.table("users").update({"is_active": is_active}).eq("tg_id", tg_id).execute()
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -151,33 +177,11 @@ class UsersRepository:
         if not self._supabase:
             return None
         try:
-            response = (
-                self._supabase.table("users")
-                .update({"promo_used": promo_used})
-                .eq("tg_id", tg_id)
-                .execute()
-            )
+            response = self._supabase.table("users").update({"promo_used": promo_used}).eq("tg_id", tg_id).execute()
             data = response.data or []
             return data[0] if data else None
         except Exception:
             logger.exception("Supabase update_promo_used failed")
-            return None
-
-    async def mark_activated(self, tg_id: int, activated_at: str | None = None) -> Optional[dict]:
-        if not self._supabase:
-            return None
-        value = activated_at or datetime.now(timezone.utc).isoformat()
-        try:
-            response = (
-                self._supabase.table("users")
-                .update({"last_activated_at": value})
-                .eq("tg_id", tg_id)
-                .execute()
-            )
-            data = response.data or []
-            return data[0] if data else None
-        except Exception:
-            logger.exception("Supabase mark_activated failed")
             return None
 
     async def set_expiry(
@@ -220,8 +224,7 @@ class UsersRepository:
                 .lt("expires_at", now_iso)
                 .execute()
             )
-            data = response.data or []
-            return len(data)
+            return len(response.data or [])
         except Exception:
             logger.exception("Supabase deactivate_expired_users failed")
             return 0
@@ -234,6 +237,7 @@ class UsersRepository:
             response = (
                 self._supabase.table("users")
                 .select("tg_id")
+                .eq("is_active", True)
                 .not_.is_("expires_at", "null")
                 .lt("expires_at", now_iso)
                 .limit(limit)
@@ -245,13 +249,37 @@ class UsersRepository:
             logger.exception("Supabase list_expired_active_tg_ids failed")
             return []
 
+    async def count_referrals(self, tg_id: int) -> int:
+        if not self._supabase:
+            return 0
+        response = self._supabase.table("users").select("tg_id").eq("ref_tg_id", tg_id).execute()
+        return len(response.data or [])
+
+    async def add_balance(self, tg_id: int, amount: int) -> None:
+        user = await self.get_by_tg_id(tg_id)
+        if not user or not self._supabase:
+            return
+        current = int(user.get("balance") or 0)
+        self._supabase.table("users").update({"balance": current + amount}).eq("tg_id", tg_id).execute()
+
+    async def is_trial_available(self, tg_id: int) -> bool:
+        user = await self.get_by_tg_id(tg_id)
+        if not user:
+            return False
+        return not bool(user.get("trial_used"))
+
+    async def mark_trial_used(self, tg_id: int) -> None:
+        if not self._supabase:
+            return
+        self._supabase.table("users").update({"trial_used": True}).eq("tg_id", tg_id).execute()
+
     @staticmethod
     def is_user_active(user: dict | None) -> bool:
         if not user:
             return False
         expires_at = user.get("expires_at")
         if not expires_at:
-            return True
+            return bool(user.get("is_active", False))
         try:
             expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
         except Exception:
@@ -259,151 +287,35 @@ class UsersRepository:
         now = datetime.now(timezone.utc)
         if expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=timezone.utc)
-        return expiry > now
-
-    # SQLite compatibility layer for existing business logic
-    async def _sqlite_get_by_tg_id(self, tg_id: int) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,))
-            row = await cursor.fetchone()
-            return dict(row) if row else None
-
-    async def _sqlite_get_by_sub_token(self, sub_token: str) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute("SELECT * FROM users WHERE sub_token = ?", (sub_token,))
-            row = await cursor.fetchone()
-            return dict(row) if row else None
-
-    async def get_by_id(self, user_id: int) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-            row = await cursor.fetchone()
-            return dict(row) if row else None
-
-    async def get_or_create(self, tg_id: int, ref_tg_id: int | None = None) -> dict:
-        existing = await self._sqlite_get_by_tg_id(tg_id)
-        if existing:
-            if not existing.get("sub_token"):
-                token = await self._generate_unique_sub_token()
-                await self._set_sub_token(existing["id"], token)
-                existing["sub_token"] = token
-            return existing
-
-        ref_id = None
-        if ref_tg_id and ref_tg_id != tg_id:
-            ref_user = await self._sqlite_get_by_tg_id(ref_tg_id)
-            if ref_user:
-                ref_id = ref_user["id"]
-
-        async with aiosqlite.connect(self.db_path) as conn:
-            sub_token = await self._generate_unique_sub_token()
-            cursor = await conn.execute(
-                "INSERT INTO users (tg_id, ref_id, sub_token) VALUES (?, ?, ?)",
-                (tg_id, ref_id, sub_token),
-            )
-            await conn.commit()
-            new_id = cursor.lastrowid
-        created = await self.get_by_id(new_id)
-        if not created:
-            raise RuntimeError("Failed to create user")
-        return created
-
-    async def ensure_sub_token(self, user_id: int) -> str:
-        user = await self.get_by_id(user_id)
-        if not user:
-            raise RuntimeError("User not found")
-        existing = user.get("sub_token")
-        if existing and self.is_valid_sub_token(str(existing)):
-            return str(existing)
-        token = await self._generate_unique_sub_token()
-        await self._set_sub_token(user_id, token)
-        return token
-
-    async def ensure_sub_token_for_tg(self, tg_id: int) -> str:
-        supabase_user = await self.get_by_tg_id(tg_id)
-        existing = (supabase_user or {}).get("sub_token")
-        if existing and self.is_valid_sub_token(str(existing)):
-            return str(existing)
-
-        local_user = await self.get_or_create(tg_id)
-        token = local_user.get("sub_token")
-        if not token or not self.is_valid_sub_token(str(token)):
-            token = await self.ensure_sub_token(local_user["id"])
-
-        if supabase_user:
-            updated = await self.update_sub_token(tg_id, token)
-            if not updated:
-                logger.error("Failed to sync sub_token to Supabase for tg_id=%s", tg_id)
-        return str(token)
+        return bool(user.get("is_active", False)) and expiry > now
 
     @staticmethod
     def is_valid_sub_token(token: str) -> bool:
         value = (token or "").strip()
-        return len(value) >= 10
+        return len(value) >= 32
 
-    async def _set_sub_token(self, user_id: int, sub_token: str) -> None:
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute(
-                "UPDATE users SET sub_token = ? WHERE id = ?",
-                (sub_token, user_id),
-            )
-            await conn.commit()
+    @staticmethod
+    def is_valid_sub_token_hash(token_hash: str) -> bool:
+        value = (token_hash or "").strip().lower()
+        return bool(_SHA256_HEX_RE.fullmatch(value))
+
+    @staticmethod
+    def hash_sub_token(token: str) -> str:
+        value = (token or "").strip()
+        if not value:
+            raise ValueError("sub_token is empty")
+        return sha256_hex(value)
 
     async def _generate_unique_sub_token(self) -> str:
         while True:
-            candidate = secrets.token_urlsafe(12)
-            exists_local = await self._sqlite_get_by_sub_token(candidate)
-            exists_remote = await self._supabase_token_exists(candidate)
-            if not exists_local and not exists_remote:
+            candidate = secrets.token_urlsafe(32)
+            candidate_hash = self.hash_sub_token(candidate)
+            if not await self._supabase_token_exists(candidate_hash):
                 return candidate
 
-    async def _supabase_token_exists(self, token: str) -> bool:
+    async def _supabase_token_exists(self, token_hash: str) -> bool:
         if not self._supabase:
             return False
-        try:
-            response = self._supabase.table("users").select("id").eq("sub_token", token).limit(1).execute()
-            return bool(response.data)
-        except Exception:
-            logger.exception("Supabase token uniqueness check failed")
-            return False
+        response = self._supabase.table("users").select("id").eq("sub_token", token_hash).limit(1).execute()
+        return bool(response.data)
 
-    async def count_referrals(self, user_id: int) -> int:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                "SELECT COUNT(*) as cnt FROM users WHERE ref_id = ?",
-                (user_id,),
-            )
-            row = await cursor.fetchone()
-            return int(row["cnt"]) if row else 0
-
-    async def add_balance(self, user_id: int, amount: int) -> None:
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute(
-                "UPDATE users SET balance = balance + ? WHERE id = ?",
-                (amount, user_id),
-            )
-            await conn.commit()
-
-    async def is_trial_available(self, user_id: int) -> bool:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                "SELECT trial_used FROM users WHERE id = ? LIMIT 1",
-                (user_id,),
-            )
-            row = await cursor.fetchone()
-            if not row:
-                return False
-            return int(row["trial_used"]) == 0
-
-    async def mark_trial_used(self, user_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute(
-                "UPDATE users SET trial_used = 1 WHERE id = ?",
-                (user_id,),
-            )
-            await conn.commit()

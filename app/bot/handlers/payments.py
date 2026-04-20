@@ -10,10 +10,12 @@ from aiogram.types import BufferedInputFile, Message, PreCheckoutQuery
 from app.bot.keyboards.inline import main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
+from app.services.idempotency import IdempotencyService
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
@@ -33,81 +35,86 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     payments_repo = PaymentsRepository(db)
     users_repo = UsersRepository(db)
     subs_repo = SubscriptionsRepository(db)
+    idem = IdempotencyService(IdempotencyRepository())
 
     payment = await payments_repo.get_by_payload(payment_info.invoice_payload)
-    if not payment or payment["status"] == "paid":
-        await message.answer("Платеж уже обработан.")
+    if not payment:
+        await message.answer("Платеж не найден.")
         return
 
-    await payments_repo.mark_paid(
-        payload=payment_info.invoice_payload,
-        telegram_charge_id=payment_info.telegram_payment_charge_id,
-    )
+    idem_key = f"payment-success:{payment_info.invoice_payload}"
 
-    user = await users_repo.get_by_id(payment["user_id"])
+    async def _process_payment() -> dict:
+        if payment.get("status") != "paid":
+            await payments_repo.mark_paid(
+                payload=payment_info.invoice_payload,
+                telegram_charge_id=payment_info.telegram_payment_charge_id,
+            )
+            tariff = TARIFFS[str(payment["tariff_code"])]
+            await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
+        return {
+            "tg_id": int(payment["tg_id"]),
+            "tariff_code": str(payment["tariff_code"]),
+            "amount": int(payment["amount"]),
+        }
+
+    try:
+        processed = await idem.execute("payment_success", idem_key, _process_payment)
+    except Exception:
+        logger.exception("Payment processing failed")
+        await message.answer("Платеж получен, но обработка временно недоступна. Попробуйте позже.")
+        return
+
+    tg_id = int(processed["tg_id"])
+    user = await users_repo.get_by_tg_id(tg_id)
     if not user:
         await message.answer("Пользователь не найден.")
         return
 
-    tariff = TARIFFS[payment["tariff_code"]]
-    await subs_repo.create_or_extend(user["id"], months=tariff["months"])
-
     link = ""
-    qr_bytes = b""
     activated_at = datetime.now(timezone.utc).isoformat()
     expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    sub_token = await users_repo.ensure_sub_token_for_tg(user["tg_id"])
-    supabase_user = await users_repo.get_by_tg_id(user["tg_id"])
+    try:
+        sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
+    except Exception:
+        logger.exception("Failed to issue subscription token for tg_id=%s", tg_id)
+        sub_token = await users_repo.ensure_sub_token(tg_id)
+    supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user:
-        updated_sub = await users_repo.set_expiry(
-            user["tg_id"],
+        await users_repo.set_expiry(
+            tg_id,
             expires_at=expires_at,
             is_active=True,
             plan="monthly",
             last_activated_at=activated_at,
         )
-        if not updated_sub:
-            logger.error("Supabase set_expiry failed for tg_id=%s", user["tg_id"])
-        if not supabase_user.get("sub_token"):
-            await users_repo.update_sub_token(user["tg_id"], sub_token)
-    else:
-        created = await users_repo.create(
-            tg_id=user["tg_id"],
-            vpn_key=link,
-            sub_token=sub_token,
-            expires_at=expires_at,
-            is_active=True,
-            plan="monthly",
-            last_activated_at=activated_at,
-        )
-        if not created:
-            logger.error("Supabase create failed for tg_id=%s", user["tg_id"])
+        if not users_repo.is_valid_sub_token_hash(str(supabase_user.get("sub_token") or "")):
+            await users_repo.update_sub_token(tg_id, sub_token)
 
     try:
-        access_user = await ensure_user_access(tg_id=user["tg_id"], db=db, settings=settings, require_active=True)
+        access_user = await ensure_user_access(
+            tg_id=tg_id,
+            db=db,
+            settings=settings,
+            require_active=True,
+            idempotency_key=f"vpn-after-payment:{payment_info.invoice_payload}",
+        )
         link = str(access_user.get("vpn_key") or "")
     except AccessEnsureError:
-        logger.exception("Failed to bootstrap access after payment for tg_id=%s", user["tg_id"])
-        await message.answer("Оплата прошла, но ключ пока не создан. Нажмите «🔌 Подключиться» через пару минут.")
+        logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
+        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
     if link:
         qr_bytes = qr_png_from_text(link)
-
-    referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-    bonus = await referral_service.accrue_bonus(user, payment["amount"])
-
-    if link:
-        await message.answer(
-            f"Оплата успешна ✅\nVPN подключен.\nСсылка:\n<code>{escape(link)}</code>",
-        )
+        await message.answer(f"Оплата успешна.\nVPN подключен.\nСсылка:\n<code>{escape(link)}</code>")
         await message.answer_photo(
             BufferedInputFile(qr_bytes, filename="vpn-qr.png"),
             caption="QR для подключения",
         )
 
-    await message.answer(
-        "🏠 Главное меню\nВыберите действие:",
-        reply_markup=main_menu_keyboard(settings.support_url),
-    )
+    referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
+    bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
+    await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if bonus > 0:
         await message.answer(f"Реферальный бонус: +{bonus} RUB")
+

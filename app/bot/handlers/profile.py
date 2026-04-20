@@ -64,7 +64,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
         await users_repo.update_status(callback.from_user.id, False)
 
     username = callback.from_user.username or callback.from_user.full_name
-    invited = await users_repo.count_referrals(local_user["id"])
+    invited = await users_repo.count_referrals(callback.from_user.id)
 
     await callback.message.edit_text(
         f"👤 ПРОФИЛЬ: {username} / ID: {callback.from_user.id}\n\n"
@@ -181,7 +181,7 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
     )
     if not updated:
         local_user = await users_repo.get_or_create(tg_id)
-        sub_token = await users_repo.ensure_sub_token(local_user["id"])
+        sub_token = await users_repo.ensure_sub_token(tg_id)
         created = await users_repo.create(
             tg_id=tg_id,
             vpn_key="",
@@ -225,7 +225,7 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
 async def referral_open(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     local_user = await users_repo.get_or_create(callback.from_user.id)
-    invited = await users_repo.count_referrals(local_user["id"])
+    invited = await users_repo.count_referrals(callback.from_user.id)
     me = await callback.bot.get_me()
     link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
     await callback.message.edit_text(

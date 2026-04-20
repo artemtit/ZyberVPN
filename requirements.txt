@@ -1,7 +1,7 @@
 aiogram==3.22.0
-aiosqlite==0.21.0
 python-dotenv==1.1.1
 qrcode[pil]==8.2
 supabase==2.15.3
 pydantic==2.7.1
 pydantic-core==2.18.2
+redis==5.2.1

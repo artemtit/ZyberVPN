@@ -9,11 +9,13 @@ from aiohttp import ClientSession, web
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
 from app.services.vpn.manager import VPNManager, VPNManagerError
 from app.services.vpn.xui_provider import XUIProvider
+from app.services.idempotency import IdempotencyService
 
 logger = logging.getLogger(__name__)
 _ACCESS_LOCKS: dict[int, asyncio.Lock] = {}
@@ -78,23 +80,27 @@ async def ensure_user_access(
     settings: Settings | None = None,
     require_active: bool = True,
     require_recent_activation_for_key_creation: bool = False,
+    idempotency_key: str | None = None,
 ) -> dict:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
 
     users_repo = UsersRepository(db)
+    if not users_repo.has_supabase:
+        raise AccessEnsureError("Supabase is unavailable")
     keys_repo = KeysRepository(db)
+    idem_service = IdempotencyService(IdempotencyRepository())
     manager = build_vpn_manager(db, settings)
     lock = _lock_for_tg(tg_id)
 
     async with lock:
-        local_user = await users_repo.get_or_create(tg_id)
+        await users_repo.get_or_create(tg_id)
         supabase_user = await users_repo.get_by_tg_id(tg_id)
         if users_repo.has_supabase and users_repo.last_supabase_error:
             raise AccessEnsureError("Supabase is unavailable")
 
         if not supabase_user:
-            sub_token = await users_repo.ensure_sub_token(local_user["id"])
+            sub_token = await users_repo.ensure_sub_token(tg_id)
             created = await users_repo.create(
                 tg_id=tg_id,
                 vpn_key="",
@@ -106,13 +112,10 @@ async def ensure_user_access(
                 raise AccessEnsureError("Failed to create Supabase user")
             supabase_user = created
 
-        sub_token = supabase_user.get("sub_token")
-        if not sub_token or not users_repo.is_valid_sub_token(str(sub_token)):
-            sub_token = await users_repo.ensure_sub_token(local_user["id"])
-            updated = await users_repo.update_sub_token(tg_id, str(sub_token))
-            if not updated:
-                raise AccessEnsureError("Failed to persist sub_token")
-            supabase_user["sub_token"] = str(sub_token)
+        sub_token_hash = supabase_user.get("sub_token")
+        if not sub_token_hash or not users_repo.is_valid_sub_token_hash(str(sub_token_hash)):
+            sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
+            supabase_user["sub_token"] = users_repo.hash_sub_token(sub_token)
 
         if require_active and not users_repo.is_user_active(supabase_user):
             await users_repo.update_status(tg_id, False)
@@ -122,11 +125,18 @@ async def ensure_user_access(
             raise AccessEnsureError("Activation too old for auto key creation")
 
         expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
-        try:
-            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
-        except VPNManagerError as error:
-            logger.exception("VPNManager failed for tg_id=%s", tg_id)
-            raise AccessEnsureError("Failed to create VPN access") from error
+
+        async def _create_vpn() -> dict:
+            try:
+                configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
+            except VPNManagerError as error:
+                logger.exception("VPNManager failed for tg_id=%s", tg_id)
+                raise AccessEnsureError("Failed to create VPN access") from error
+            return {"vpn_configs": configs}
+
+        idem_key = idempotency_key or f"vpn-create:{tg_id}"
+        idem_result = await idem_service.execute("vpn_create", idem_key, _create_vpn)
+        vpn_configs = [str(item) for item in (idem_result.get("vpn_configs") or []) if str(item)]
 
         primary_key = vpn_configs[0] if vpn_configs else ""
         if primary_key and not _is_vpn_key_valid(primary_key):
@@ -138,8 +148,8 @@ async def ensure_user_access(
             if not updated_key:
                 raise AccessEnsureError("Failed to persist vpn_key")
             supabase_user["vpn_key"] = primary_key
-        if primary_key and not await keys_repo.exists_for_user(local_user["id"], primary_key):
-            await keys_repo.create(local_user["id"], primary_key)
+        if primary_key and not await keys_repo.exists_for_user(tg_id, primary_key):
+            await keys_repo.create(tg_id, primary_key)
 
         refreshed = await users_repo.get_by_tg_id(tg_id)
         final_user = refreshed or supabase_user
@@ -154,8 +164,8 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
     await db.init()
 
     users_repo = UsersRepository(db)
-    local_user = await users_repo.get_or_create(tg_id)
-    sub_token = await users_repo.ensure_sub_token(local_user["id"])
+    await users_repo.get_or_create(tg_id)
+    sub_token = await users_repo.ensure_sub_token(tg_id)
 
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=1)).isoformat()
@@ -173,7 +183,7 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
         if not created:
             raise AccessEnsureError("test_full_flow: failed to create Supabase user")
     else:
-        if not users_repo.is_valid_sub_token(str(supabase_user.get("sub_token") or "")):
+        if not users_repo.is_valid_sub_token_hash(str(supabase_user.get("sub_token") or "")):
             updated_token = await users_repo.update_sub_token(tg_id, sub_token)
             if not updated_token:
                 raise AccessEnsureError("test_full_flow: failed to update sub_token")
@@ -188,16 +198,18 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
 
     access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
     vpn_key = str((access_user or {}).get("vpn_key") or "")
-    token = str((access_user or {}).get("sub_token") or "")
+    token = await users_repo.ensure_sub_token_for_tg(tg_id)
     if not _is_vpn_key_valid(vpn_key):
         raise AccessEnsureError("test_full_flow: vpn_key is invalid")
     if not users_repo.is_valid_sub_token(token):
         raise AccessEnsureError("test_full_flow: sub_token is invalid")
 
     from app.api.subscription import register_subscription_routes
+    from app.services.subscription import build_subscription_service
 
     app = web.Application()
-    register_subscription_routes(app, db)
+    app["subscription_service"] = build_subscription_service(db, settings)
+    register_subscription_routes(app)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host="127.0.0.1", port=0)

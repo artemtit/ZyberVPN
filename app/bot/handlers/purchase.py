@@ -91,14 +91,16 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    payload = generate_payload(user["id"], tariff_code)
+    await users_repo.get_or_create(callback.from_user.id)
+    payload = generate_payload(callback.from_user.id, tariff_code)
+    idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}"
     await payments_repo.create_pending(
-        user_id=user["id"],
+        tg_id=callback.from_user.id,
         amount=tariff["price_rub"],
         tariff_code=tariff_code,
         email=email,
         payload=payload,
+        idempotency_key=idempotency_key,
     )
     await state.clear()
 

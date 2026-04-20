@@ -31,9 +31,9 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    keys = await keys_repo.list_by_user(user["id"])
-    active_sub = await subs_repo.get_active(user["id"])
+    await users_repo.get_or_create(callback.from_user.id)
+    keys = await keys_repo.list_by_user(callback.from_user.id)
+    active_sub = await subs_repo.get_active(callback.from_user.id)
 
     months_left = 0
     if active_sub:
@@ -59,14 +59,14 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, user["id"])
+    await users_repo.get_or_create(callback.from_user.id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
 
     created_at = datetime.fromisoformat(key_data["created_at"])
-    active_sub = await subs_repo.get_active(user["id"])
+    active_sub = await subs_repo.get_active(callback.from_user.id)
     if active_sub:
         expires_at = datetime.fromisoformat(active_sub["expires_at"])
         status_text = "Активен"
@@ -103,8 +103,8 @@ async def key_qr(callback: CallbackQuery, db: Database) -> None:
     key_id = int(callback.data.split(":")[1])
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
-    user = await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, user["id"])
+    await users_repo.get_or_create(callback.from_user.id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
@@ -121,8 +121,8 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
 
-    user = await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, user["id"])
+    await users_repo.get_or_create(callback.from_user.id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
@@ -136,7 +136,11 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
         await users_repo.update_status(callback.from_user.id, False)
         await callback.answer("❌ Подписка истекла", show_alert=True)
         return
-    sub_token = await users_repo.ensure_sub_token_for_tg(callback.from_user.id)
+    try:
+        sub_token = await users_repo.ensure_sub_token_for_tg(callback.from_user.id)
+    except Exception:
+        await callback.answer("Не удалось подготовить subscription-ссылку", show_alert=True)
+        return
     sub_url = f"{settings.public_base_url}/sub/{sub_token}"
     await callback.message.answer(
         "🔗 Ваша subscription-ссылка:\n"

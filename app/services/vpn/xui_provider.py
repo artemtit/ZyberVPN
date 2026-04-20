@@ -31,7 +31,7 @@ class InboundContext:
 class XUIProvider(VPNProvider):
     def __init__(self, timeout_seconds: int = 5, retries: int = 3) -> None:
         self._timeout = ClientTimeout(total=timeout_seconds)
-        self._retries = max(1, retries)
+        self._retries = min(3, max(1, retries))
 
     async def create_client(
         self,
@@ -150,14 +150,13 @@ class XUIProvider(VPNProvider):
             try:
                 response = await session.request(method=method, url=url, **kwargs)
                 if response.status != 200:
-                    body = await response.text()
-                    raise XUIProviderError(f"{method.upper()} {url} status={response.status} body={body[:200]}")
+                    raise XUIProviderError(f"{method.upper()} request failed status={response.status}")
                 return await response.json(content_type=None)
             except (asyncio.TimeoutError, ClientError, XUIProviderError, ValueError) as error:
                 last_error = error
                 if attempt >= self._retries:
                     break
-                await asyncio.sleep(0.2 * attempt)
+                await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
         raise XUIProviderError(f"Request failed after retries: {method.upper()} {url}") from last_error
 
     async def _login(self, session: ClientSession, server: ServerInfo) -> None:

@@ -11,7 +11,6 @@ Python-проект VPN-сервиса: Telegram-бот + backend + Supabase + 3
 - Связь `user -> server -> uuid` через таблицу `user_vpn`
 - Subscription endpoint:
   - `GET /sub/{token}` (legacy + multi-config payload)
-  - `GET /subscription/{user_id}` (новый endpoint)
 - Генерация VLESS REALITY c обязательными параметрами:
   - `pbk`, `sid`, `fp=chrome`, `flow=xtls-rprx-vision`
 - Fallback протокол:

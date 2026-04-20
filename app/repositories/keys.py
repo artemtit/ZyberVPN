@@ -1,69 +1,64 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
-import aiosqlite
-
 from app.db.database import Database
+from app.services.supabase import get_supabase_client
+
+logger = logging.getLogger(__name__)
 
 
 class KeysRepository:
-    def __init__(self, db: Database) -> None:
-        self.db_path = db.db_path
+    def __init__(self, db: Database) -> None:  # noqa: ARG002
+        self._supabase = get_supabase_client()
 
-    async def create(self, user_id: int, key: str) -> dict:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                'INSERT INTO keys (user_id, "key") VALUES (?, ?)',
-                (user_id, key),
-            )
-            await conn.commit()
-            key_id = cursor.lastrowid
-            cursor = await conn.execute("SELECT * FROM keys WHERE id = ?", (key_id,))
-            row = await cursor.fetchone()
-            if not row:
-                raise RuntimeError("Failed to create key")
-            return dict(row)
+    async def create(self, tg_id: int, key: str) -> dict:
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        payload = {"tg_id": tg_id, "key": key}
+        response = self._supabase.table("keys").insert(payload).execute()
+        rows = response.data or []
+        if not rows:
+            raise RuntimeError("Failed to create key")
+        return rows[0]
 
-    async def list_by_user(self, user_id: int) -> list[dict]:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                """
-                SELECT * FROM keys
-                WHERE user_id = ?
-                ORDER BY datetime(created_at) DESC
-                """,
-                (user_id,),
-            )
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+    async def list_by_user(self, tg_id: int) -> list[dict]:
+        if not self._supabase:
+            return []
+        response = (
+            self._supabase.table("keys")
+            .select("id,tg_id,key,created_at")
+            .eq("tg_id", tg_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(response.data or [])
 
-    async def get_by_id_for_user(self, key_id: int, user_id: int) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                """
-                SELECT * FROM keys
-                WHERE id = ? AND user_id = ?
-                LIMIT 1
-                """,
-                (key_id, user_id),
-            )
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    async def get_by_id_for_user(self, key_id: int, tg_id: int) -> Optional[dict]:
+        if not self._supabase:
+            return None
+        response = (
+            self._supabase.table("keys")
+            .select("id,tg_id,key,created_at")
+            .eq("id", key_id)
+            .eq("tg_id", tg_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        return rows[0] if rows else None
 
-    async def exists_for_user(self, user_id: int, key: str) -> bool:
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                """
-                SELECT 1 FROM keys
-                WHERE user_id = ? AND "key" = ?
-                LIMIT 1
-                """,
-                (user_id, key),
-            )
-            row = await cursor.fetchone()
-            return row is not None
+    async def exists_for_user(self, tg_id: int, key: str) -> bool:
+        if not self._supabase:
+            return False
+        response = (
+            self._supabase.table("keys")
+            .select("id")
+            .eq("tg_id", tg_id)
+            .eq("key", key)
+            .limit(1)
+            .execute()
+        )
+        return bool(response.data)
+
