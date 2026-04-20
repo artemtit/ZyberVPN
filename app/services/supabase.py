@@ -44,18 +44,23 @@ logger = logging.getLogger(__name__)
 #   sni text,
 #   public_port int not null default 443,
 #   ws_path text not null default '/ws',
-#   ws_host text
+#   ws_host text,
+#   last_health_check timestamptz,
+#   health_errors int not null default 0,
+#   last_error text
 # );
 #
 # CREATE TABLE IF NOT EXISTS public.user_vpn (
 #   id bigint generated always as identity primary key,
 #   user_id bigint not null,
 #   server_id bigint not null references public.servers(id),
-#   uuid text not null,
-#   protocol text not null default 'vless-reality',
-#   config text not null,
+#   reality_uuid text not null,
+#   ws_uuid text,
+#   reality_config text not null,
+#   ws_config text not null,
 #   created_at timestamp with time zone not null default now(),
-#   unique(user_id, server_id, protocol)
+#   updated_at timestamp with time zone not null default now(),
+#   unique(user_id)
 # );
 #
 # CREATE TABLE IF NOT EXISTS public.promo_codes (

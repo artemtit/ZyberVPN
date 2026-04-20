@@ -226,11 +226,28 @@ class UsersRepository:
             logger.exception("Supabase deactivate_expired_users failed")
             return 0
 
+    async def list_expired_active_tg_ids(self, limit: int = 200) -> list[int]:
+        if not self._supabase:
+            return []
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            response = (
+                self._supabase.table("users")
+                .select("tg_id")
+                .not_.is_("expires_at", "null")
+                .lt("expires_at", now_iso)
+                .limit(limit)
+                .execute()
+            )
+            rows = response.data or []
+            return [int(row.get("tg_id")) for row in rows if isinstance(row, dict) and row.get("tg_id") is not None]
+        except Exception:
+            logger.exception("Supabase list_expired_active_tg_ids failed")
+            return []
+
     @staticmethod
     def is_user_active(user: dict | None) -> bool:
         if not user:
-            return False
-        if bool(user.get("is_active")) is False:
             return False
         expires_at = user.get("expires_at")
         if not expires_at:

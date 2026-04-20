@@ -10,7 +10,7 @@ from aiohttp import web
 from app.config import load_settings
 from app.db.database import Database
 from app.repositories.users import UsersRepository
-from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
+from app.services.access import build_vpn_manager
 
 logger = logging.getLogger(__name__)
 _TOKEN_WINDOW_SECONDS = 60
@@ -71,21 +71,14 @@ async def get_subscription(request: web.Request) -> web.Response:
     user = await users_repo.get_by_sub_token(user_token)
     if not user:
         raise web.HTTPNotFound(text="subscription not found")
-    if bool(user.get("is_active")) is False or _is_expired(user.get("expires_at")):
-        await users_repo.update_status(int(user["tg_id"]), False)
+    if _is_expired(user.get("expires_at")):
         raise web.HTTPForbidden(text="subscription inactive")
 
     manager = build_vpn_manager(db, settings)
-    configs = await manager.get_subscription(int(user["tg_id"]))
-    if not configs:
-        try:
-            ensured = await ensure_user_access(tg_id=int(user["tg_id"]), db=db, settings=settings, require_active=True)
-        except AccessEnsureError as error:
-            raise web.HTTPServiceUnavailable(text="vpn key unavailable") from error
-        configs = list(ensured.get("vpn_configs") or [])
+    configs = await manager.get_subscription(int(user["tg_id"]), create_if_missing=False)
     payload = _format_subscription(configs)
     if not payload:
-        raise web.HTTPServiceUnavailable(text="vpn key unavailable")
+        raise web.HTTPNotFound(text="vpn access not found")
     return web.Response(text=payload, content_type="text/plain")
 
 
@@ -100,14 +93,13 @@ async def get_subscription_by_user_id(request: web.Request) -> web.Response:
     user = await users_repo.get_by_tg_id(user_id)
     if not user:
         raise web.HTTPNotFound(text="subscription not found")
-    if bool(user.get("is_active")) is False or _is_expired(user.get("expires_at")):
-        await users_repo.update_status(user_id, False)
+    if _is_expired(user.get("expires_at")):
         raise web.HTTPForbidden(text="subscription inactive")
     manager = build_vpn_manager(db, settings)
-    configs = await manager.get_subscription(user_id)
+    configs = await manager.get_subscription(user_id, create_if_missing=False)
     payload = _format_subscription(configs)
     if not payload:
-        raise web.HTTPServiceUnavailable(text="vpn key unavailable")
+        raise web.HTTPNotFound(text="vpn access not found")
     return web.Response(text=payload, content_type="text/plain")
 
 

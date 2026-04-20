@@ -60,6 +60,20 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
         await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
 
 
+async def _disable_expired_access_loop(db: Database, settings, interval_seconds: int = 120) -> None:
+    users_repo = UsersRepository(db)
+    manager = build_vpn_manager(db, settings)
+    while True:
+        try:
+            expired_tg_ids = await users_repo.list_expired_active_tg_ids(limit=300)
+            for tg_id in expired_tg_ids:
+                await manager.disable_user_access(tg_id)
+                await users_repo.update_status(tg_id, False)
+        except Exception as error:
+            logging.warning("Disable expired access loop failed: %s", error)
+        await asyncio.sleep(interval_seconds)
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
@@ -78,6 +92,7 @@ async def run() -> None:
     web_runner = await _start_health_server(db, settings)
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
+    disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -87,12 +102,17 @@ async def run() -> None:
     finally:
         subscription_watchdog_task.cancel()
         healthcheck_task.cancel()
+        disable_expired_task.cancel()
         try:
             await subscription_watchdog_task
         except asyncio.CancelledError:
             pass
         try:
             await healthcheck_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await disable_expired_task
         except asyncio.CancelledError:
             pass
         await bot.session.close()

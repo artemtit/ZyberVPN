@@ -123,9 +123,7 @@ async def ensure_user_access(
 
         expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
         try:
-            vpn_configs = await manager.get_subscription(tg_id)
-            if not vpn_configs:
-                vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
+            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
         except VPNManagerError as error:
             logger.exception("VPNManager failed for tg_id=%s", tg_id)
             raise AccessEnsureError("Failed to create VPN access") from error

@@ -29,6 +29,8 @@ class Settings:
     vpn_total_gb: int
     vpn_default_expiry_days: int
     vpn_healthcheck_interval_seconds: int
+    vpn_circuit_break_minutes: int
+    vpn_create_rate_limit_seconds: int
 
 
 def load_settings() -> Settings:
@@ -73,4 +75,6 @@ def load_settings() -> Settings:
         vpn_total_gb=max(1, int(os.getenv("VPN_TOTAL_GB", "50"))),
         vpn_default_expiry_days=max(1, int(os.getenv("VPN_DEFAULT_EXPIRY_DAYS", "30"))),
         vpn_healthcheck_interval_seconds=max(10, int(os.getenv("VPN_HEALTHCHECK_INTERVAL_SECONDS", "120"))),
+        vpn_circuit_break_minutes=max(1, int(os.getenv("VPN_CIRCUIT_BREAK_MINUTES", "5"))),
+        vpn_create_rate_limit_seconds=max(1, int(os.getenv("VPN_CREATE_RATE_LIMIT_SECONDS", "30"))),
     )

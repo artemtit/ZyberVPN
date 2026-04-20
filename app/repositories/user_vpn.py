@@ -16,19 +16,35 @@ class UserVpnRepository:
         self.db_path = db.db_path
         self._supabase = get_supabase_client()
 
-    async def upsert(self, user_id: int, server_id: int, uuid: str, protocol: str, config: str) -> None:
+    async def get_by_user(self, user_id: int) -> dict | None:
+        row = await self._get_supabase(user_id)
+        if row:
+            return row
+        return await self._get_sqlite(user_id)
+
+    async def upsert(
+        self,
+        user_id: int,
+        server_id: int,
+        reality_uuid: str,
+        ws_uuid: str | None,
+        reality_config: str,
+        ws_config: str,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload = {
             "user_id": user_id,
             "server_id": server_id,
-            "uuid": uuid,
-            "protocol": protocol,
-            "config": config,
+            "reality_uuid": reality_uuid,
+            "ws_uuid": ws_uuid or "",
+            "reality_config": reality_config,
+            "ws_config": ws_config,
             "created_at": now,
+            "updated_at": now,
         }
         if self._supabase:
             try:
-                self._supabase.table("user_vpn").upsert(payload, on_conflict="user_id,server_id,protocol").execute()
+                self._supabase.table("user_vpn").upsert(payload, on_conflict="user_id").execute()
                 return
             except Exception:
                 logger.exception("Supabase upsert user_vpn failed, fallback to sqlite")
@@ -36,20 +52,22 @@ class UserVpnRepository:
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
-                INSERT INTO user_vpn (user_id, server_id, uuid, protocol, config, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, server_id, protocol)
-                DO UPDATE SET uuid=excluded.uuid, config=excluded.config, created_at=excluded.created_at
+                INSERT INTO user_vpn (
+                    user_id, server_id, reality_uuid, ws_uuid, reality_config, ws_config, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET
+                  server_id=excluded.server_id,
+                  reality_uuid=excluded.reality_uuid,
+                  ws_uuid=excluded.ws_uuid,
+                  reality_config=excluded.reality_config,
+                  ws_config=excluded.ws_config,
+                  updated_at=excluded.updated_at
                 """,
-                (user_id, server_id, uuid, protocol, config, now),
+                (user_id, server_id, reality_uuid, ws_uuid or "", reality_config, ws_config, now, now),
             )
             await conn.commit()
-
-    async def list_by_user(self, user_id: int) -> list[dict]:
-        rows = await self._list_supabase(user_id)
-        if rows:
-            return rows
-        return await self._list_sqlite(user_id)
 
     async def count_users_by_server(self) -> dict[int, int]:
         rows = await self._count_supabase()
@@ -57,57 +75,51 @@ class UserVpnRepository:
             return rows
         return await self._count_sqlite()
 
-    async def _list_supabase(self, user_id: int) -> list[dict]:
+    async def _get_supabase(self, user_id: int) -> dict | None:
         if not self._supabase:
-            return []
+            return None
         try:
             response = (
                 self._supabase.table("user_vpn")
-                .select("user_id,server_id,uuid,protocol,config,created_at")
+                .select("user_id,server_id,reality_uuid,ws_uuid,reality_config,ws_config,created_at,updated_at")
                 .eq("user_id", user_id)
-                .order("created_at", desc=True)
+                .limit(1)
                 .execute()
             )
             rows = response.data or []
-            return [row for row in rows if isinstance(row, dict)]
+            return rows[0] if rows else None
         except Exception:
-            logger.exception("Supabase list user_vpn failed")
-            return []
+            logger.exception("Supabase get user_vpn failed")
+            return None
 
-    async def _list_sqlite(self, user_id: int) -> list[dict]:
+    async def _get_sqlite(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
-                SELECT user_id, server_id, uuid, protocol, config, created_at
+                SELECT user_id, server_id, reality_uuid, ws_uuid, reality_config, ws_config, created_at, updated_at
                 FROM user_vpn
                 WHERE user_id = ?
-                ORDER BY datetime(created_at) DESC
+                LIMIT 1
                 """,
                 (user_id,),
             )
-            rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+            row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def _count_supabase(self) -> dict[int, int]:
         if not self._supabase:
             return {}
         try:
-            response = self._supabase.table("user_vpn").select("server_id,user_id").execute()
+            response = self._supabase.table("user_vpn").select("server_id").execute()
             rows = response.data or []
             counts: dict[int, int] = {}
-            seen_users: set[tuple[int, int]] = set()
             for row in rows:
                 if not isinstance(row, dict):
                     continue
                 server_id = int(row.get("server_id") or 0)
-                user_id = int(row.get("user_id") or 0)
-                if server_id <= 0 or user_id <= 0:
+                if server_id <= 0:
                     continue
-                key = (server_id, user_id)
-                if key in seen_users:
-                    continue
-                seen_users.add(key)
                 counts[server_id] = counts.get(server_id, 0) + 1
             return counts
         except Exception:
@@ -119,7 +131,7 @@ class UserVpnRepository:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
-                SELECT server_id, COUNT(DISTINCT user_id) AS cnt
+                SELECT server_id, COUNT(*) AS cnt
                 FROM user_vpn
                 GROUP BY server_id
                 """

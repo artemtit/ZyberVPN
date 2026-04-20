@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 
@@ -21,8 +22,8 @@ class VpnProfile:
 @dataclass(slots=True)
 class CreateClientResult:
     server_id: int
-    uuid: str
-    email: str
+    reality_uuid: str
+    ws_uuid: str | None
     profiles: list[VpnProfile]
 
 
@@ -43,13 +44,26 @@ class ServerInfo:
     public_port: int = 443
     ws_path: str = "/ws"
     ws_host: str = ""
+    last_health_check: datetime | None = None
+    health_errors: int = 0
 
 
 class VPNProvider(Protocol):
-    async def create_client(self, user_id: int, server: ServerInfo, limits: ClientLimits) -> CreateClientResult: ...
+    async def create_client(
+        self,
+        user_id: int,
+        server: ServerInfo,
+        limits: ClientLimits,
+        reality_uuid: str | None = None,
+        ws_uuid: str | None = None,
+    ) -> CreateClientResult: ...
 
     async def delete_client(self, user_id: int, server: ServerInfo, client_uuid: str) -> None: ...
 
     async def get_client_config(self, user_id: int, server: ServerInfo, client_uuid: str) -> list[VpnProfile]: ...
 
     async def is_healthy(self, server: ServerInfo) -> bool: ...
+
+    async def client_exists(self, server: ServerInfo, client_uuid: str) -> bool: ...
+
+    async def disable_client(self, server: ServerInfo, client_uuid: str) -> None: ...
