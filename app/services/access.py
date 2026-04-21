@@ -13,26 +13,18 @@ from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
+from app.services.distributed_lock import DistributedLockManager
 from app.services.vpn.manager import VPNManager, VPNManagerError
 from app.services.vpn.xui_provider import XUIProvider
 from app.services.idempotency import IdempotencyService
 from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
-_ACCESS_LOCKS: dict[int, asyncio.Lock] = {}
 MAX_SUB_AUTO_CREATE_AGE = timedelta(days=7)
 
 
 class AccessEnsureError(RuntimeError):
     pass
-
-
-def _lock_for_tg(tg_id: int) -> asyncio.Lock:
-    lock = _ACCESS_LOCKS.get(tg_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _ACCESS_LOCKS[tg_id] = lock
-    return lock
 
 
 def _is_vpn_key_valid(vpn_key: str | None) -> bool:
@@ -88,9 +80,10 @@ async def ensure_user_access(
     keys_repo = KeysRepository(db)
     idem_service = IdempotencyService(IdempotencyRepository())
     manager = build_vpn_manager(db, settings)
-    lock = _lock_for_tg(tg_id)
+    lock_manager = DistributedLockManager(settings.redis_url)
 
-    async with lock:
+    async with lock_manager.lock(f"access-ensure:{tg_id}", ttl_seconds=45, wait_timeout=10):
+        logger.info("Access lock acquired tg_id=%s", tg_id)
         await users_repo.get_or_create(tg_id)
         supabase_user = await users_repo.get_by_tg_id(tg_id)
         if users_repo.has_supabase and users_repo.last_supabase_error:
@@ -125,9 +118,9 @@ async def ensure_user_access(
 
         async def _create_vpn() -> dict:
             try:
-                configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
+                configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, idempotency_key=idem_key)
             except VPNManagerError as error:
-                logger.exception("VPNManager failed for tg_id=%s", tg_id)
+                logger.exception("VPNManager failed for tg_id=%s error=%s", tg_id, error)
                 raise AccessEnsureError("Failed to create VPN access") from error
             return {"vpn_configs": configs}
 

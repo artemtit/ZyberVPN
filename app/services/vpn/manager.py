@@ -5,15 +5,17 @@ import logging
 from datetime import timedelta
 
 from app.config import Settings
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
+from app.services.distributed_lock import DistributedLockManager
+from app.services.idempotency import IdempotencyService
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
 from app.utils.datetime import ensure_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
 
 _CREATE_ATTEMPTS: dict[int, float] = {}
-_CREATE_LOCKS: dict[int, asyncio.Lock] = {}
 
 
 class VPNManagerError(RuntimeError):
@@ -64,20 +66,42 @@ class VPNManager:
         self._servers_repo = servers_repo
         self._user_vpn_repo = user_vpn_repo
         self._settings = settings
+        self._lock_manager = DistributedLockManager(settings.redis_url)
+        self._idem_service = IdempotencyService(IdempotencyRepository())
 
-    async def create_user_access(self, user_id: int, expiry_time: int | None = None) -> list[str]:
-        lock = self._create_lock(user_id)
-        async with lock:
-            existing_row = await self._user_vpn_repo.get_by_user(user_id)
-            if existing_row:
-                configs = await self._validate_or_repair_existing_access(user_id, existing_row, expiry_time)
+    async def create_user_access(
+        self,
+        user_id: int,
+        expiry_time: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> list[str]:
+        async with self._lock_manager.lock(f"vpn-create:{user_id}", ttl_seconds=45, wait_timeout=10):
+            logger.info("VPN create lock acquired tg_id=%s idem_key=%s", user_id, idempotency_key or "-")
+
+            async def _run() -> dict:
+                vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+                if not vpn:
+                    logger.info("user_vpn missing, creating access tg_id=%s", user_id)
+                    self._enforce_rate_limit(user_id)
+                    configs = await self._create_on_best_server(user_id, expiry_time)
+                    return {"vpn_configs": configs}
+
+                configs = await self._validate_or_repair_existing_access(user_id, vpn, expiry_time)
                 if configs:
-                    return configs
-            self._enforce_rate_limit(user_id)
-            return await self._create_on_best_server(user_id, expiry_time)
+                    return {"vpn_configs": configs}
+                self._enforce_rate_limit(user_id)
+                configs = await self._create_on_best_server(user_id, expiry_time)
+                return {"vpn_configs": configs}
+
+            if not idempotency_key:
+                result = await _run()
+                return [str(item) for item in (result.get("vpn_configs") or []) if str(item)]
+
+            idem_result = await self._idem_service.execute("vpn_create_manager", idempotency_key, _run)
+            return [str(item) for item in (idem_result.get("vpn_configs") or []) if str(item)]
 
     async def get_existing_subscription(self, user_id: int) -> list[str]:
-        row = await self._user_vpn_repo.get_by_user(user_id)
+        row = await self._user_vpn_repo.get_user_vpn(user_id)
         if not row:
             return []
         reality = str(row.get("reality_config") or "").strip()
@@ -99,7 +123,7 @@ class VPNManager:
         return await self.create_user_access(user_id)
 
     async def disable_user_access(self, user_id: int) -> None:
-        row = await self._user_vpn_repo.get_by_user(user_id)
+        row = await self._user_vpn_repo.get_user_vpn(user_id)
         if not row:
             return
         server_id = int(row.get("server_id") or 0)
@@ -235,7 +259,7 @@ class VPNManager:
                 ws = str(getattr(profile, "config", "")).strip()
         if not reality:
             raise VPNManagerError("Reality config is missing")
-        await self._user_vpn_repo.upsert(
+        await self._user_vpn_repo.create_user_vpn(
             user_id=user_id,
             server_id=server_id,
             reality_uuid=reality_uuid,
@@ -258,13 +282,6 @@ class VPNManager:
         if ws.startswith("vless://") and ws != reality:
             output.append(ws)
         return output
-
-    def _create_lock(self, user_id: int) -> asyncio.Lock:
-        lock = _CREATE_LOCKS.get(user_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _CREATE_LOCKS[user_id] = lock
-        return lock
 
     def _enforce_rate_limit(self, user_id: int) -> None:
         now = utc_now().timestamp()

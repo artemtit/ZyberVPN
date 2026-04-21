@@ -13,7 +13,7 @@ class UserVpnRepository:
     def __init__(self, db: Database) -> None:  # noqa: ARG002
         self._supabase = get_supabase_client()
 
-    async def get_by_user(self, user_id: int) -> dict | None:
+    async def get_user_vpn(self, user_id: int) -> dict | None:
         if not self._supabase:
             return None
         try:
@@ -29,11 +29,14 @@ class UserVpnRepository:
             )
             rows = response.data or []
             return rows[0] if rows else None
-        except Exception:
-            logger.exception("Supabase get user_vpn failed")
+        except Exception as error:
+            logger.exception("Supabase get user_vpn failed tg_id=%s error=%s", user_id, error)
             return None
 
-    async def upsert(
+    async def get_by_user(self, user_id: int) -> dict | None:
+        return await self.get_user_vpn(user_id)
+
+    async def create_user_vpn(
         self,
         user_id: int,
         server_id: int,
@@ -41,9 +44,12 @@ class UserVpnRepository:
         ws_uuid: str | None,
         reality_config: str,
         ws_config: str,
-    ) -> None:
+    ) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
+        existing = await self.get_user_vpn(user_id)
+        if existing:
+            logger.info("user_vpn race detected existing row reused tg_id=%s", user_id)
         now = utc_now().isoformat()
         payload = {
             "user_id": user_id,
@@ -55,9 +61,34 @@ class UserVpnRepository:
             "created_at": now,
             "updated_at": now,
         }
-        await execute_with_retry(
+        response = await execute_with_retry(
             lambda: self._supabase.table("user_vpn").upsert(payload, on_conflict="user_id").execute(),
             operation="user_vpn.upsert",
+        )
+        rows = response.data or []
+        if rows:
+            return rows[0]
+        latest = await self.get_user_vpn(user_id)
+        if latest:
+            return latest
+        raise RuntimeError(f"user_vpn upsert returned no row tg_id={user_id}")
+
+    async def upsert(
+        self,
+        user_id: int,
+        server_id: int,
+        reality_uuid: str,
+        ws_uuid: str | None,
+        reality_config: str,
+        ws_config: str,
+    ) -> None:
+        await self.create_user_vpn(
+            user_id=user_id,
+            server_id=server_id,
+            reality_uuid=reality_uuid,
+            ws_uuid=ws_uuid,
+            reality_config=reality_config,
+            ws_config=ws_config,
         )
 
     async def count_users_by_server(self) -> dict[int, int]:
