@@ -23,9 +23,9 @@ from app.api.subscription import register_subscription_routes
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
+from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
-from app.services.schema_validation import validate_supabase_schema_or_raise
 from app.services.subscription import build_subscription_service
 
 try:
@@ -115,6 +115,8 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
     while True:
         try:
             await manager.refresh_server_health()
+        except RuntimeError as error:
+            logging.error("VPN healthcheck degraded operation=vpn.refresh_server_health error=%s", error)
         except Exception:
             logging.exception("VPN healthcheck failed")
         await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
@@ -139,7 +141,7 @@ async def run() -> None:
     settings = load_settings()
     db = Database(settings.db_path)
     await db.init()
-    await validate_supabase_schema_or_raise()
+    await ServersRepository(db).startup_probe()
 
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = _build_dispatcher(settings)

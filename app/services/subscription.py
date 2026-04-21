@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.utils.datetime import parse_iso_utc, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class SubscriptionService:
@@ -11,12 +15,20 @@ class SubscriptionService:
         self._vpn_manager = vpn_manager
 
     async def get_payload_by_token(self, token: str) -> str:
-        user = await self._users_repo.get_by_sub_token(token)
+        try:
+            user = await self._users_repo.get_by_sub_token(token)
+        except Exception as error:
+            logger.error("Repository call failed operation=users.get_by_sub_token error=%s", error)
+            user = None
         if not user:
             raise PermissionError("forbidden")
         if self._is_expired(user.get("expires_at")):
             raise PermissionError("subscription inactive")
-        configs = await self._vpn_manager.get_subscription(int(user["tg_id"]), create_if_missing=False)
+        try:
+            configs = await self._vpn_manager.get_subscription(int(user["tg_id"]), create_if_missing=False)
+        except Exception as error:
+            logger.error("Service call failed operation=vpn.get_subscription tg_id=%s error=%s", user.get("tg_id"), error)
+            configs = []
         lines = [line.strip() for line in configs if str(line).strip().startswith("vless://")]
         payload = "\n".join(lines)
         if not payload:

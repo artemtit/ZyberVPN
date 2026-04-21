@@ -23,6 +23,18 @@ class ServersRepository:
     async def list_all(self) -> list[ServerInfo]:
         return await self._list_supabase(active_only=False)
 
+    async def startup_probe(self) -> None:
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        try:
+            await execute_with_retry(
+                lambda: self._supabase.table("servers").select("id").limit(1).execute(),
+                operation="servers.startup_probe",
+            )
+        except Exception as error:
+            logger.error("Startup DB check failed operation=servers.startup_probe error=%s", error)
+            raise RuntimeError("Startup DB check failed: servers table unavailable or schema mismatch") from error
+
     async def set_active(self, server_id: int, is_active: bool) -> None:
         await self.update_health(server_id=server_id, is_active=is_active, ok=is_active, error_text=None)
 
