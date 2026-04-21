@@ -25,6 +25,7 @@ from app.config import load_settings
 from app.db.database import Database
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
+from app.services.schema_validation import validate_supabase_schema_or_raise
 from app.services.subscription import build_subscription_service
 
 try:
@@ -138,6 +139,7 @@ async def run() -> None:
     settings = load_settings()
     db = Database(settings.db_path)
     await db.init()
+    await validate_supabase_schema_or_raise()
 
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = _build_dispatcher(settings)
@@ -171,4 +173,3 @@ if __name__ == "__main__":
         asyncio.run(run())
     except KeyboardInterrupt:
         logging.info("Bot stopped")
-

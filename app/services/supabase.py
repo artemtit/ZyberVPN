@@ -106,8 +106,15 @@ async def execute_with_retry(
             return await asyncio.wait_for(asyncio.to_thread(action), timeout=timeout_seconds)
         except Exception as error:
             last_error = error
+            logger.warning(
+                "Supabase operation retry op=%s attempt=%s/%s error=%s",
+                operation,
+                attempt,
+                retries,
+                error,
+            )
             if attempt >= retries:
                 break
             await asyncio.sleep(0.2 * (2 ** (attempt - 1)))
-    logger.exception("Supabase operation failed after retries op=%s", operation)
-    raise RuntimeError(f"Supabase operation failed: {operation}") from last_error
+    logger.exception("Supabase operation failed after retries op=%s error=%s", operation, last_error)
+    raise RuntimeError(f"Supabase operation failed: {operation}: {last_error}") from last_error

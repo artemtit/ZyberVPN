@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 from app.config import Settings
 from app.db.database import Database
+from app.db.schema_contract import SERVER_COLUMNS
 from app.services.supabase import execute_with_retry, get_supabase_client
 from app.services.vpn.base import ServerInfo
 from app.utils.datetime import parse_iso_utc, utc_now
@@ -84,15 +85,23 @@ class ServersRepository:
     async def _list_supabase(self, active_only: bool) -> list[ServerInfo]:
         if not self._supabase:
             return []
-        query = self._supabase.table("servers").select(
-            "id,name,host,api_url,username,password,inbound_id,public_key,short_id,country,is_active,sni,public_port,ws_path,ws_host,last_health_check,health_errors"
-        )
+        select_query = ",".join(SERVER_COLUMNS)
+        query = self._supabase.table("servers").select(select_query)
         if active_only:
             query = query.eq("is_active", True)
-        response = await execute_with_retry(
-            lambda: query.execute(),
-            operation="servers.list",
-        )
+        try:
+            response = await execute_with_retry(
+                lambda: query.execute(),
+                operation="servers.list",
+            )
+        except Exception as error:
+            logger.error(
+                "Supabase servers.list failed query=%s missing_column_likely=%s error=%s",
+                select_query,
+                "column" in str(error).lower(),
+                error,
+            )
+            raise
         rows = response.data or []
         return [self._map_row(item) for item in rows if isinstance(item, dict)]
 
