@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from html import escape
 
 from aiogram import F, Router
@@ -19,6 +19,7 @@ from app.services.idempotency import IdempotencyService
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
+from app.utils.datetime import utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         return
 
     idem_key = f"payment-success:{payment_info.invoice_payload}"
+    logger.info("Payment callback received payload=%s tg_id=%s", payment_info.invoice_payload, payment.get("tg_id"))
 
     async def _process_payment() -> dict:
         if payment.get("status") != "paid":
@@ -65,6 +67,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         await message.answer("Платеж получен, но обработка временно недоступна. Попробуйте позже.")
         return
 
+    logger.info("Payment processed idempotently payload=%s tg_id=%s", payment_info.invoice_payload, processed["tg_id"])
     tg_id = int(processed["tg_id"])
     user = await users_repo.get_by_tg_id(tg_id)
     if not user:
@@ -72,8 +75,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         return
 
     link = ""
-    activated_at = datetime.now(timezone.utc).isoformat()
-    expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    activated_dt = utc_now()
+    expires_dt = activated_dt + timedelta(days=30)
+    activated_at = activated_dt.isoformat()
+    expires_at = expires_dt.isoformat()
     try:
         sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
     except Exception:
@@ -117,4 +122,3 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if bonus > 0:
         await message.answer(f"Реферальный бонус: +{bonus} RUB")
-

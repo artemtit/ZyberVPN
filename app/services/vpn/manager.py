@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from app.config import Settings
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
+from app.utils.datetime import ensure_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,14 @@ class VPNManagerError(RuntimeError):
 def _health_age_seconds(server: ServerInfo) -> int:
     if not server.last_health_check:
         return 10**9
-    dt = server.last_health_check
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int((datetime.now(timezone.utc) - dt).total_seconds())
+    return int(utc_diff(utc_now(), ensure_utc(server.last_health_check)).total_seconds())
 
 
 def pick_server(servers: list[ServerInfo], user_counts: dict[int, int], block_minutes: int) -> list[ServerInfo]:
     active = [item for item in servers if item.is_active]
     if not active:
         return []
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     candidates: list[ServerInfo] = []
     for server in active:
         if server.health_errors < 3:
@@ -40,10 +38,8 @@ def pick_server(servers: list[ServerInfo], user_counts: dict[int, int], block_mi
             continue
         if not server.last_health_check:
             continue
-        last = server.last_health_check
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
-        if now - last >= timedelta(minutes=block_minutes):
+        last = ensure_utc(server.last_health_check)
+        if utc_diff(now, last) >= timedelta(minutes=block_minutes):
             candidates.append(server)
     return sorted(
         candidates,
@@ -142,7 +138,7 @@ class VPNManager:
             )
 
     def _default_expiry_ms(self) -> int:
-        expires = datetime.now(timezone.utc) + timedelta(days=self._settings.vpn_default_expiry_days)
+        expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)
         return int(expires.timestamp() * 1000)
 
     async def _create_on_best_server(self, user_id: int, expiry_time: int | None) -> list[str]:
@@ -271,7 +267,7 @@ class VPNManager:
         return lock
 
     def _enforce_rate_limit(self, user_id: int) -> None:
-        now = datetime.now(timezone.utc).timestamp()
+        now = utc_now().timestamp()
         prev = _CREATE_ATTEMPTS.get(user_id)
         if prev is not None and now - prev < self._settings.vpn_create_rate_limit_seconds:
             raise VPNManagerError("VPN creation rate limited")

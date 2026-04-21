@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from html import escape
 
 from aiogram import F, Router
@@ -19,10 +19,13 @@ from app.bot.states.promo import PromoState
 from app.bot.states.purchase import ProfileState
 from app.config import Settings
 from app.db.database import Database
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.promo import PromoRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
+from app.services.idempotency import IdempotencyService
 from app.services.promo import validate_promo
+from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -40,12 +43,10 @@ def _format_expiry(raw_value: str | None) -> str:
     if not raw_value:
         return "не задан"
     try:
-        dt = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        dt = parse_iso_utc(raw_value)
     except Exception:
         return str(raw_value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    return dt.strftime("%d.%m.%Y %H:%M UTC")
 
 
 def _status_text(is_active: bool) -> str:
@@ -168,19 +169,22 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
 
     promo = validation.promo or {}
     days = int(promo.get("days") or 30)
-    activated_at = datetime.now(timezone.utc).isoformat()
-    new_expiry = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    activated_at = utc_now().isoformat()
+    new_expiry = (utc_now() + timedelta(days=days)).isoformat()
+    idem = IdempotencyService(IdempotencyRepository())
 
-    updated = await users_repo.set_expiry(
-        tg_id=tg_id,
-        expires_at=new_expiry,
-        is_active=True,
-        plan="promo",
-        promo_used=True,
-        last_activated_at=activated_at,
-    )
-    if not updated:
-        local_user = await users_repo.get_or_create(tg_id)
+    async def _activate() -> dict:
+        updated = await users_repo.set_expiry(
+            tg_id=tg_id,
+            expires_at=new_expiry,
+            is_active=True,
+            plan="promo",
+            promo_used=True,
+            last_activated_at=activated_at,
+        )
+        if updated:
+            return {"ok": True}
+        await users_repo.get_or_create(tg_id)
         sub_token = await users_repo.ensure_sub_token(tg_id)
         created = await users_repo.create(
             tg_id=tg_id,
@@ -192,11 +196,17 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
             last_activated_at=activated_at,
         )
         if not created:
-            logger.error("Promo activation failed: cannot create/update supabase user tg_id=%s", tg_id)
-            await state.clear()
-            await message.answer("❌ Не удалось активировать промокод, попробуйте позже")
-            return
+            raise RuntimeError("promo activation failed")
         await users_repo.update_promo_used(tg_id, True)
+        return {"ok": True}
+
+    try:
+        await idem.execute("promo_activation", f"promo-activate:{tg_id}:{code.lower()}", _activate)
+    except Exception:
+        logger.error("Promo activation failed: cannot create/update supabase user tg_id=%s", tg_id)
+        await state.clear()
+        await message.answer("Promo activation failed, please try again later")
+        return
 
     usage = await promo_repo.increment_usage(code)
     if usage:
@@ -251,3 +261,4 @@ async def referral_share(callback: CallbackQuery) -> None:
     link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
     await callback.message.answer(link, disable_web_page_preview=True)
     await callback.answer()
+

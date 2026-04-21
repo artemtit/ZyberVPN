@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import re
 import secrets
-from datetime import datetime, timezone
 from typing import Optional
 
 from app.db.database import Database
-from app.services.supabase import get_supabase_client
+from app.services.supabase import execute_with_retry, get_supabase_client
+from app.utils.datetime import parse_iso_utc, utc_now
 from app.utils.security import sha256_hex
 
 logger = logging.getLogger(__name__)
@@ -32,14 +32,17 @@ class UsersRepository:
             self._last_supabase_error = True
             return None
         try:
-            response = (
-                self._supabase.table("users")
-                .select(
-                    "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
-                )
-                .eq("tg_id", tg_id)
-                .limit(1)
-                .execute()
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select(
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                    )
+                    .eq("tg_id", tg_id)
+                    .limit(1)
+                    .execute()
+                ),
+                operation="users.get_by_tg_id",
             )
             data = response.data or []
             self._last_supabase_error = False
@@ -75,11 +78,14 @@ class UsersRepository:
         if last_activated_at:
             payload["last_activated_at"] = last_activated_at
         try:
-            response = self._supabase.table("users").insert(payload).execute()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").insert(payload).execute(),
+                operation="users.create",
+            )
             data = response.data or []
             return data[0] if data else None
         except Exception:
-            logger.exception("Supabase create user failed")
+            logger.info("Supabase create user conflict/failure tg_id=%s", tg_id)
             return None
 
     async def get_or_create(self, tg_id: int, ref_tg_id: int | None = None) -> dict:
@@ -95,15 +101,21 @@ class UsersRepository:
             plan="none",
             ref_tg_id=ref_tg_id,
         )
-        if not created:
-            raise RuntimeError("Failed to create user")
-        return created
+        if created:
+            return created
+        existing_after_conflict = await self.get_by_tg_id(tg_id)
+        if existing_after_conflict:
+            return existing_after_conflict
+        raise RuntimeError("Failed to create user")
 
     async def update_key(self, tg_id: int, vpn_key: str) -> Optional[dict]:
         if not self._supabase:
             return None
         try:
-            response = self._supabase.table("users").update({"vpn_key": vpn_key}).eq("tg_id", tg_id).execute()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").update({"vpn_key": vpn_key}).eq("tg_id", tg_id).execute(),
+                operation="users.update_key",
+            )
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -114,11 +126,14 @@ class UsersRepository:
         if not self._supabase:
             return None
         try:
-            response = (
-                self._supabase.table("users")
-                .update({"sub_token": self.hash_sub_token(sub_token)})
-                .eq("tg_id", tg_id)
-                .execute()
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"sub_token": self.hash_sub_token(sub_token)})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.update_sub_token",
             )
             data = response.data or []
             return data[0] if data else None
@@ -134,14 +149,17 @@ class UsersRepository:
             return None
         token_hash = self.hash_sub_token(token)
         try:
-            response = (
-                self._supabase.table("users")
-                .select(
-                    "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
-                )
-                .eq("sub_token", token_hash)
-                .limit(1)
-                .execute()
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select(
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                    )
+                    .eq("sub_token", token_hash)
+                    .limit(1)
+                    .execute()
+                ),
+                operation="users.get_by_sub_token",
             )
             data = response.data or []
             self._last_supabase_error = False
@@ -166,7 +184,10 @@ class UsersRepository:
         if not self._supabase:
             return None
         try:
-            response = self._supabase.table("users").update({"is_active": is_active}).eq("tg_id", tg_id).execute()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").update({"is_active": is_active}).eq("tg_id", tg_id).execute(),
+                operation="users.update_status",
+            )
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -177,7 +198,10 @@ class UsersRepository:
         if not self._supabase:
             return None
         try:
-            response = self._supabase.table("users").update({"promo_used": promo_used}).eq("tg_id", tg_id).execute()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").update({"promo_used": promo_used}).eq("tg_id", tg_id).execute(),
+                operation="users.update_promo_used",
+            )
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -205,7 +229,10 @@ class UsersRepository:
         if last_activated_at is not None:
             payload["last_activated_at"] = last_activated_at
         try:
-            response = self._supabase.table("users").update(payload).eq("tg_id", tg_id).execute()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").update(payload).eq("tg_id", tg_id).execute(),
+                operation="users.set_expiry",
+            )
             data = response.data or []
             return data[0] if data else None
         except Exception:
@@ -215,14 +242,17 @@ class UsersRepository:
     async def deactivate_expired_users(self) -> int:
         if not self._supabase:
             return 0
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         try:
-            response = (
-                self._supabase.table("users")
-                .update({"is_active": False})
-                .eq("is_active", True)
-                .lt("expires_at", now_iso)
-                .execute()
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"is_active": False})
+                    .eq("is_active", True)
+                    .lt("expires_at", now_iso)
+                    .execute()
+                ),
+                operation="users.deactivate_expired",
             )
             return len(response.data or [])
         except Exception:
@@ -232,16 +262,19 @@ class UsersRepository:
     async def list_expired_active_tg_ids(self, limit: int = 200) -> list[int]:
         if not self._supabase:
             return []
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         try:
-            response = (
-                self._supabase.table("users")
-                .select("tg_id")
-                .eq("is_active", True)
-                .not_.is_("expires_at", "null")
-                .lt("expires_at", now_iso)
-                .limit(limit)
-                .execute()
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select("tg_id")
+                    .eq("is_active", True)
+                    .not_.is_("expires_at", "null")
+                    .lt("expires_at", now_iso)
+                    .limit(limit)
+                    .execute()
+                ),
+                operation="users.list_expired_active_tg_ids",
             )
             rows = response.data or []
             return [int(row.get("tg_id")) for row in rows if isinstance(row, dict) and row.get("tg_id") is not None]
@@ -252,7 +285,10 @@ class UsersRepository:
     async def count_referrals(self, tg_id: int) -> int:
         if not self._supabase:
             return 0
-        response = self._supabase.table("users").select("tg_id").eq("ref_tg_id", tg_id).execute()
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("tg_id").eq("ref_tg_id", tg_id).execute(),
+            operation="users.count_referrals",
+        )
         return len(response.data or [])
 
     async def add_balance(self, tg_id: int, amount: int) -> None:
@@ -260,7 +296,10 @@ class UsersRepository:
         if not user or not self._supabase:
             return
         current = int(user.get("balance") or 0)
-        self._supabase.table("users").update({"balance": current + amount}).eq("tg_id", tg_id).execute()
+        await execute_with_retry(
+            lambda: self._supabase.table("users").update({"balance": current + amount}).eq("tg_id", tg_id).execute(),
+            operation="users.add_balance",
+        )
 
     async def is_trial_available(self, tg_id: int) -> bool:
         user = await self.get_by_tg_id(tg_id)
@@ -271,7 +310,10 @@ class UsersRepository:
     async def mark_trial_used(self, tg_id: int) -> None:
         if not self._supabase:
             return
-        self._supabase.table("users").update({"trial_used": True}).eq("tg_id", tg_id).execute()
+        await execute_with_retry(
+            lambda: self._supabase.table("users").update({"trial_used": True}).eq("tg_id", tg_id).execute(),
+            operation="users.mark_trial_used",
+        )
 
     @staticmethod
     def is_user_active(user: dict | None) -> bool:
@@ -281,13 +323,10 @@ class UsersRepository:
         if not expires_at:
             return bool(user.get("is_active", False))
         try:
-            expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            expiry_utc = parse_iso_utc(expires_at)
         except Exception:
             return False
-        now = datetime.now(timezone.utc)
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-        return bool(user.get("is_active", False)) and expiry > now
+        return bool(user.get("is_active", False)) and expiry_utc > utc_now()
 
     @staticmethod
     def is_valid_sub_token(token: str) -> bool:
@@ -316,6 +355,8 @@ class UsersRepository:
     async def _supabase_token_exists(self, token_hash: str) -> bool:
         if not self._supabase:
             return False
-        response = self._supabase.table("users").select("id").eq("sub_token", token_hash).limit(1).execute()
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("id").eq("sub_token", token_hash).limit(1).execute(),
+            operation="users.token_exists",
+        )
         return bool(response.data)
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
+import logging
 
 from app.bot.keyboards.inline import email_keyboard, payment_keyboard, tariffs_keyboard
 from app.bot.states.purchase import PurchaseState
@@ -13,6 +14,7 @@ from app.services.payments import generate_payload
 from app.services.tariffs import TARIFFS
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 @router.callback_query(F.data == "buy_open")
@@ -91,18 +93,24 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
-    await users_repo.get_or_create(callback.from_user.id)
-    payload = generate_payload(callback.from_user.id, tariff_code)
-    idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}"
-    await payments_repo.create_pending(
-        tg_id=callback.from_user.id,
-        amount=tariff["price_rub"],
-        tariff_code=tariff_code,
-        email=email,
-        payload=payload,
-        idempotency_key=idempotency_key,
-    )
-    await state.clear()
+    try:
+        await users_repo.get_or_create(callback.from_user.id)
+        payload = generate_payload(callback.from_user.id, tariff_code)
+        idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}"
+        payment = await payments_repo.create_pending(
+            tg_id=callback.from_user.id,
+            amount=tariff["price_rub"],
+            tariff_code=tariff_code,
+            email=email,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+        payload = str(payment.get("payload") or payload)
+        await state.clear()
+    except Exception:
+        logger.exception("Failed to initialize payment tg_id=%s tariff=%s", callback.from_user.id, tariff_code)
+        await callback.answer("Платёж временно недоступен. Попробуйте позже.", show_alert=True)
+        return
 
     await callback.message.answer_invoice(
         title=f"ZyberVPN — {tariff['title']}",

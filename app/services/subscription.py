@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
+from app.utils.datetime import parse_iso_utc, utc_now
 
 
 class SubscriptionService:
@@ -29,16 +28,13 @@ class SubscriptionService:
         if not expires_at:
             return False
         try:
-            parsed = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            parsed_utc = parse_iso_utc(expires_at)
         except Exception:
             return True
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed <= datetime.now(timezone.utc)
+        return parsed_utc <= utc_now()
 
 
 def build_subscription_service(db, settings) -> SubscriptionService:
     users_repo = UsersRepository(db)
     vpn_manager = build_vpn_manager(db, settings)
     return SubscriptionService(users_repo=users_repo, vpn_manager=vpn_manager)
-

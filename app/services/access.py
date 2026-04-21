@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession, ClientTimeout, web
 
 from app.config import Settings, load_settings
 from app.db.database import Database
@@ -16,6 +16,7 @@ from app.repositories.users import UsersRepository
 from app.services.vpn.manager import VPNManager, VPNManagerError
 from app.services.vpn.xui_provider import XUIProvider
 from app.services.idempotency import IdempotencyService
+from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
 _ACCESS_LOCKS: dict[int, asyncio.Lock] = {}
@@ -42,24 +43,20 @@ def _is_recent_activation(raw_value: str | None) -> bool:
     if not raw_value:
         return False
     try:
-        activated_at = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        activated_at = parse_iso_utc(raw_value)
     except Exception:
         return False
-    if activated_at.tzinfo is None:
-        activated_at = activated_at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - activated_at <= MAX_SUB_AUTO_CREATE_AGE
+    return utc_diff(utc_now(), activated_at) <= MAX_SUB_AUTO_CREATE_AGE
 
 
 def _expiry_to_ms(raw_value: str | None) -> int | None:
     if not raw_value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        parsed_utc = parse_iso_utc(raw_value)
     except Exception:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1000)
+    return int(parsed_utc.timestamp() * 1000)
 
 
 def build_vpn_manager(db: Database, settings: Settings) -> VPNManager:
@@ -137,6 +134,7 @@ async def ensure_user_access(
         idem_key = idempotency_key or f"vpn-create:{tg_id}"
         idem_result = await idem_service.execute("vpn_create", idem_key, _create_vpn)
         vpn_configs = [str(item) for item in (idem_result.get("vpn_configs") or []) if str(item)]
+        logger.info("VPN ensure completed tg_id=%s configs=%s idempotency_key=%s", tg_id, len(vpn_configs), idem_key)
 
         primary_key = vpn_configs[0] if vpn_configs else ""
         if primary_key and not _is_vpn_key_valid(primary_key):
@@ -148,8 +146,9 @@ async def ensure_user_access(
             if not updated_key:
                 raise AccessEnsureError("Failed to persist vpn_key")
             supabase_user["vpn_key"] = primary_key
-        if primary_key and not await keys_repo.exists_for_user(tg_id, primary_key):
+        if primary_key:
             await keys_repo.create(tg_id, primary_key)
+            logger.info("VPN key persisted tg_id=%s", tg_id)
 
         refreshed = await users_repo.get_by_tg_id(tg_id)
         final_user = refreshed or supabase_user
@@ -167,7 +166,7 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
     await users_repo.get_or_create(tg_id)
     sub_token = await users_repo.ensure_sub_token(tg_id)
 
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     expires_at = (now + timedelta(days=1)).isoformat()
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if not supabase_user:
@@ -223,7 +222,7 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
     sub_url = f"http://127.0.0.1:{port}/sub/{token}"
 
     try:
-        async with ClientSession() as session:
+        async with ClientSession(timeout=ClientTimeout(total=8)) as session:
             async with session.get(sub_url) as response:
                 body = await response.text()
                 if response.status != 200:

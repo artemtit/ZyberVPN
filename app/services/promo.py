@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from app.repositories.promo import PromoRepository
+from app.utils.datetime import parse_iso_utc, utc_now
 
 
 @dataclass(slots=True)
@@ -29,10 +29,8 @@ async def validate_promo(code: str, promo_repo: PromoRepository) -> PromoValidat
     expires_at = promo.get("expires_at")
     if expires_at:
         try:
-            expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            if expiry <= datetime.now(timezone.utc):
+            expiry = parse_iso_utc(expires_at)
+            if expiry <= utc_now():
                 return PromoValidationResult(ok=False, error="expired")
         except Exception:
             return PromoValidationResult(ok=False, error="expired")

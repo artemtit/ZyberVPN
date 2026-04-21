@@ -44,6 +44,7 @@ create table if not exists public.keys (
   created_at timestamptz not null default now()
 );
 create index if not exists idx_keys_tg_id on public.keys(tg_id);
+create unique index if not exists idx_keys_tg_id_key_unique on public.keys(tg_id, key);
 
 create table if not exists public.subscriptions (
   id bigint generated always as identity primary key,

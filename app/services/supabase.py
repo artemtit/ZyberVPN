@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from functools import lru_cache
+from typing import Callable, TypeVar
 
 from app.config import Settings, load_settings
 
@@ -13,6 +15,7 @@ except Exception:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 # SQL reference (run in Supabase SQL editor):
 #
@@ -88,3 +91,23 @@ def get_supabase_client() -> Client | None:
     except Exception:
         logger.exception("Failed to initialize Supabase client")
         return None
+
+
+async def execute_with_retry(
+    action: Callable[[], T],
+    *,
+    operation: str,
+    retries: int = 3,
+    timeout_seconds: float = 8.0,
+) -> T:
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(action), timeout=timeout_seconds)
+        except Exception as error:
+            last_error = error
+            if attempt >= retries:
+                break
+            await asyncio.sleep(0.2 * (2 ** (attempt - 1)))
+    logger.exception("Supabase operation failed after retries op=%s", operation)
+    raise RuntimeError(f"Supabase operation failed: {operation}") from last_error

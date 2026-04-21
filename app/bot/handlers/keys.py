@@ -12,13 +12,13 @@ from app.repositories.keys import KeysRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
 from app.services.vpn import qr_png_from_text
-from app.utils.datetime import utcnow
+from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
 
 router = Router()
 
 
 def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
-    delta = expires_at - utcnow()
+    delta = utc_diff(expires_at, utc_now())
     total_seconds = int(max(delta.total_seconds(), 0))
     days = total_seconds // 86400
     hours = (total_seconds % 86400) // 3600
@@ -37,7 +37,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
 
     months_left = 0
     if active_sub:
-        expires_at = datetime.fromisoformat(active_sub["expires_at"])
+        expires_at = parse_iso_utc(active_sub["expires_at"])
         days, _, _ = _remaining_parts(expires_at)
         months_left = max(days // 30, 0)
 
@@ -65,10 +65,10 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Ключ не найден", show_alert=True)
         return
 
-    created_at = datetime.fromisoformat(key_data["created_at"])
+    created_at = parse_iso_utc(key_data["created_at"])
     active_sub = await subs_repo.get_active(callback.from_user.id)
     if active_sub:
-        expires_at = datetime.fromisoformat(active_sub["expires_at"])
+        expires_at = parse_iso_utc(active_sub["expires_at"])
         status_text = "Активен"
         status_emoji = "🟢"
     else:

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from app.config import Settings
 from app.db.database import Database
-from app.services.supabase import get_supabase_client
+from app.services.supabase import execute_with_retry, get_supabase_client
 from app.services.vpn.base import ServerInfo
+from app.utils.datetime import parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,11 @@ class ServersRepository:
     async def update_health(self, server_id: int, is_active: bool, ok: bool, error_text: str | None) -> None:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        now = datetime.now(timezone.utc).isoformat()
-        current_response = self._supabase.table("servers").select("health_errors").eq("id", server_id).limit(1).execute()
+        now = utc_now().isoformat()
+        current_response = await execute_with_retry(
+            lambda: self._supabase.table("servers").select("health_errors").eq("id", server_id).limit(1).execute(),
+            operation="servers.update_health.read",
+        )
         current_rows = current_response.data or []
         current_errors = int((current_rows[0] or {}).get("health_errors") or 0) if current_rows else 0
         payload = {
@@ -38,7 +41,10 @@ class ServersRepository:
             "last_error": error_text or "",
             "health_errors": 0 if ok else current_errors + 1,
         }
-        self._supabase.table("servers").update(payload).eq("id", server_id).execute()
+        await execute_with_retry(
+            lambda: self._supabase.table("servers").update(payload).eq("id", server_id).execute(),
+            operation="servers.update_health.write",
+        )
 
     async def bootstrap_from_env_if_empty(self, settings: Settings) -> None:
         existing = await self.list_all()
@@ -64,13 +70,16 @@ class ServersRepository:
             "public_port": settings.xui_public_port,
             "ws_path": settings.xui_ws_path,
             "ws_host": settings.xui_public_host,
-            "last_health_check": datetime.now(timezone.utc).isoformat(),
+            "last_health_check": utc_now().isoformat(),
             "health_errors": 0,
             "last_error": "",
         }
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        self._supabase.table("servers").insert(payload).execute()
+        await execute_with_retry(
+            lambda: self._supabase.table("servers").insert(payload).execute(),
+            operation="servers.bootstrap_from_env_if_empty",
+        )
 
     async def _list_supabase(self, active_only: bool) -> list[ServerInfo]:
         if not self._supabase:
@@ -80,7 +89,10 @@ class ServersRepository:
         )
         if active_only:
             query = query.eq("is_active", True)
-        response = query.execute()
+        response = await execute_with_retry(
+            lambda: query.execute(),
+            operation="servers.list",
+        )
         rows = response.data or []
         return [self._map_row(item) for item in rows if isinstance(item, dict)]
 
@@ -89,7 +101,7 @@ class ServersRepository:
         last_check = None
         if raw_last:
             try:
-                last_check = datetime.fromisoformat(str(raw_last).replace("Z", "+00:00"))
+                last_check = parse_iso_utc(raw_last)
             except Exception:
                 last_check = None
         return ServerInfo(
@@ -111,4 +123,3 @@ class ServersRepository:
             last_health_check=last_check,
             health_errors=int(row.get("health_errors") or 0),
         )
-
