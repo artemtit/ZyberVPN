@@ -292,12 +292,13 @@ class UsersRepository:
         return len(response.data or [])
 
     async def add_balance(self, tg_id: int, amount: int) -> None:
-        user = await self.get_by_tg_id(tg_id)
-        if not user or not self._supabase:
+        if not self._supabase:
             return
-        current = int(user.get("balance") or 0)
+        # Atomic increment via RPC to prevent race condition on concurrent payments.
         await execute_with_retry(
-            lambda: self._supabase.table("users").update({"balance": current + amount}).eq("tg_id", tg_id).execute(),
+            lambda: self._supabase.rpc(
+                "increment_user_balance", {"p_tg_id": tg_id, "p_amount": amount}
+            ).execute(),
             operation="users.add_balance",
         )
 

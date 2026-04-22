@@ -258,7 +258,8 @@ class XUIProvider(VPNProvider):
             return False
         for client in clients:
             if isinstance(client, dict) and str(client.get("id")) == client_uuid:
-                return True
+                # Disabled clients serve dead configs — treat as non-existent.
+                return bool(client.get("enable", True))
         return False
 
     def _extract_inbound_context(self, server: ServerInfo, inbound: dict) -> InboundContext:

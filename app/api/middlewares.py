@@ -99,7 +99,8 @@ def build_rate_limit_middleware(config: RateLimitConfig) -> web.AbstractMiddlewa
         handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
         limiter = request.app["rate_limiter"]
-        ip = request.headers.get("X-Forwarded-For", request.remote or "unknown").split(",")[0].strip()
+        # Use transport-level remote address — X-Forwarded-For is trivially spoofed.
+        ip = request.remote or "unknown"
         key = f"rl:{ip}:{int(time.time() // 60)}"
         try:
             allowed = await limiter.hit(key)

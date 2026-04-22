@@ -8,6 +8,7 @@ from app.db.database import Database
 from app.db.schema_contract import SERVER_COLUMNS
 from app.services.supabase import execute_with_retry, get_supabase_client
 from app.services.vpn.base import ServerInfo
+from app.utils.crypto import decrypt_credential, encrypt_credential
 from app.utils.datetime import parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -72,8 +73,8 @@ class ServersRepository:
             "name": "default",
             "host": settings.xui_public_host,
             "api_url": settings.xui_base_url,
-            "username": settings.xui_username,
-            "password": settings.xui_password,
+            "username": encrypt_credential(settings.xui_username),
+            "password": encrypt_credential(settings.xui_password),
             "inbound_id": settings.xui_inbound_id,
             "public_key": "",
             "short_id": "",
@@ -130,8 +131,8 @@ class ServersRepository:
             name=str(row.get("name") or f"server-{row['id']}"),
             host=str(row.get("host") or ""),
             api_url=str(row.get("api_url") or "").rstrip("/"),
-            username=str(row.get("username") or ""),
-            password=str(row.get("password") or ""),
+            username=decrypt_credential(str(row.get("username") or "")),
+            password=decrypt_credential(str(row.get("password") or "")),
             inbound_id=int(row.get("inbound_id") or 0),
             public_key=str(row.get("public_key") or ""),
             short_id=str(row.get("short_id") or ""),

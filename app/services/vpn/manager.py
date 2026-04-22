@@ -147,6 +147,12 @@ class VPNManager:
             except Exception:
                 logger.exception("VPN disable failed user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
 
+        try:
+            await self._user_vpn_repo.delete(user_id)
+            logger.info("VPN user_vpn row deleted user_id=%s", user_id)
+        except Exception:
+            logger.exception("VPN user_vpn delete failed user_id=%s", user_id)
+
     async def refresh_server_health(self) -> None:
         servers = await self._servers_repo.list_all()
         provider = self._providers.get("xui")

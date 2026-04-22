@@ -115,3 +115,11 @@ create table if not exists public.user_vpn (
 
 create unique index if not exists idx_user_vpn_user_id on public.user_vpn(user_id);
 create index if not exists idx_user_vpn_server_id on public.user_vpn(server_id);
+
+-- Tracks when processing started so stale locks can be detected and recovered.
+alter table public.idempotency_keys
+  add column if not exists started_at timestamptz null;
+
+create index if not exists idx_idempotency_status_started
+  on public.idempotency_keys(status, started_at)
+  where status = 'processing';

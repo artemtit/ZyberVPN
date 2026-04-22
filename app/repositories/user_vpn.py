@@ -91,6 +91,14 @@ class UserVpnRepository:
             ws_config=ws_config,
         )
 
+    async def delete(self, user_id: int) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: self._supabase.table("user_vpn").delete().eq("user_id", user_id).execute(),
+            operation="user_vpn.delete",
+        )
+
     async def count_users_by_server(self) -> dict[int, int]:
         if not self._supabase:
             return {}

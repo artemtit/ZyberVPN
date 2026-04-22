@@ -165,13 +165,13 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
 
     text = (
         "Подключение к ZyberVPN\n\n"
-        f"Устройство: {device_name}\n"
-        f"Приложение: {app_name}\n\n"
+        f"Устройство: {escape(device_name)}\n"
+        f"Приложение: {escape(app_name)}\n\n"
         f"Ваш ключ: <code>{escape(vpn_key)}</code>\n\n"
         f"{sub_block}"
         f"{config_block}"
         "Инструкция:\n"
-        f"{instruction}"
+        f"{escape(instruction)}"
     )
 
     await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
