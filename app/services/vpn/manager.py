@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 
 from app.config import Settings
-from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
-from app.services.distributed_lock import DistributedLockManager
-from app.services.idempotency import IdempotencyService
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
 from app.utils.datetime import ensure_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
-
-_CREATE_ATTEMPTS: dict[int, float] = {}
 
 
 class VPNManagerError(RuntimeError):
@@ -66,42 +60,64 @@ class VPNManager:
         self._servers_repo = servers_repo
         self._user_vpn_repo = user_vpn_repo
         self._settings = settings
-        self._lock_manager = DistributedLockManager(settings.redis_url)
-        self._idem_service = IdempotencyService(IdempotencyRepository())
 
     async def create_user_access(
         self,
         user_id: int,
         expiry_time: int | None = None,
-        idempotency_key: str | None = None,
     ) -> list[str]:
-        async with self._lock_manager.lock(f"vpn-create:{user_id}", ttl_seconds=45, wait_timeout=10):
-            logger.info("VPN create lock acquired tg_id=%s idem_key=%s", user_id, idempotency_key or "-")
+        """Return VPN configs for *user_id*, creating or repairing them as needed.
 
-            async def _run() -> dict:
-                vpn = await self._user_vpn_repo.get_user_vpn(user_id)
-                if not vpn:
-                    logger.info("user_vpn missing, creating access tg_id=%s", user_id)
-                    self._enforce_rate_limit(user_id)
-                    configs = await self._create_on_best_server(user_id, expiry_time)
-                    return {"vpn_configs": configs}
+        State machine
+        -------------
+        ready    → return existing configs immediately (no network call)
+        creating → another request owns the slot; raise VPNManagerError
+        failed / absent → claim the slot, provision, then set ready or failed
+        """
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
 
+        if vpn:
+            # Default to 'ready' for rows that pre-date the status column.
+            status = vpn.get("status") or "ready"
+            if status == "ready":
+                configs = self._row_to_configs(vpn)
+                if configs:
+                    logger.info("VPN ready, returning cached configs user_id=%s", user_id)
+                    return configs
+                # status='ready' but configs empty/invalid — treat as failed.
+            elif status == "creating":
+                logger.info("VPN creation already in progress user_id=%s", user_id)
+                raise VPNManagerError("VPN creation in progress")
+            # status='failed' (or ready-but-empty): fall through to creation.
+
+        # Atomically claim the creation slot via a single DB transaction.
+        claim = await self._user_vpn_repo.claim_creating(user_id)
+
+        if claim == "ready":
+            # Another request finished between our read and the claim call.
+            vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+            configs = self._row_to_configs(vpn) if vpn else []
+            if configs:
+                return configs
+
+        if claim != "claimed":
+            logger.info("VPN claim rejected claim=%s user_id=%s", claim, user_id)
+            raise VPNManagerError("VPN creation in progress")
+
+        logger.info("VPN creation claimed user_id=%s", user_id)
+        try:
+            # If the previous row had a valid server reference, try repair first.
+            if vpn and int(vpn.get("server_id") or 0) > 0:
                 configs = await self._validate_or_repair_existing_access(user_id, vpn, expiry_time)
                 if configs:
-                    return {"vpn_configs": configs}
-                self._enforce_rate_limit(user_id)
-                configs = await self._create_on_best_server(user_id, expiry_time)
-                return {"vpn_configs": configs}
+                    return configs
 
-            if not idempotency_key:
-                result = await _run()
-                return [str(item) for item in (result.get("vpn_configs") or []) if str(item)]
+            return await self._create_on_best_server(user_id, expiry_time)
+        except Exception:
+            await self._user_vpn_repo.set_failed(user_id)
+            raise
 
-            idem_result = await self._idem_service.execute("vpn_create_manager", idempotency_key, _run)
-            return [str(item) for item in (idem_result.get("vpn_configs") or []) if str(item)]
-
-    async def get_existing_subscription(self, user_id: int) -> list[str]:
-        row = await self._user_vpn_repo.get_user_vpn(user_id)
+    def _row_to_configs(self, row: dict | None) -> list[str]:
         if not row:
             return []
         reality = str(row.get("reality_config") or "").strip()
@@ -113,10 +129,18 @@ class VPNManager:
             output.append(ws)
         return output
 
+    async def get_existing_subscription(self, user_id: int) -> list[str]:
+        row = await self._user_vpn_repo.get_user_vpn(user_id)
+        if not row or (row.get("status") or "ready") != "ready":
+            return []
+        configs = self._row_to_configs(row)
+        if configs:
+            logger.info("VPN subscription returned existing configs user_id=%s count=%s", user_id, len(configs))
+        return configs
+
     async def get_subscription(self, user_id: int, create_if_missing: bool = False) -> list[str]:
         existing = await self.get_existing_subscription(user_id)
         if existing:
-            logger.info("VPN subscription returned existing configs user_id=%s count=%s", user_id, len(existing))
             return existing
         if not create_if_missing:
             return []
@@ -228,9 +252,8 @@ class VPNManager:
             if not ws_exists:
                 needs_repair = True
         if not needs_repair:
-            return await self.get_existing_subscription(user_id)
+            return self._row_to_configs(row)
 
-        self._enforce_rate_limit(user_id)
         logger.info("VPN client repair started user_id=%s server_id=%s", user_id, server.id)
         limits = ClientLimits(
             limit_ip=self._settings.vpn_limit_ip,
@@ -265,7 +288,7 @@ class VPNManager:
                 ws = str(getattr(profile, "config", "")).strip()
         if not reality:
             raise VPNManagerError("Reality config is missing")
-        await self._user_vpn_repo.create_user_vpn(
+        await self._user_vpn_repo.set_ready(
             user_id=user_id,
             server_id=server_id,
             reality_uuid=reality_uuid,
@@ -288,10 +311,3 @@ class VPNManager:
         if ws.startswith("vless://") and ws != reality:
             output.append(ws)
         return output
-
-    def _enforce_rate_limit(self, user_id: int) -> None:
-        now = utc_now().timestamp()
-        prev = _CREATE_ATTEMPTS.get(user_id)
-        if prev is not None and now - prev < self._settings.vpn_create_rate_limit_seconds:
-            raise VPNManagerError("VPN creation rate limited")
-        _CREATE_ATTEMPTS[user_id] = now

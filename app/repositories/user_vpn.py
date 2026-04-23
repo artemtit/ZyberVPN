@@ -20,7 +20,7 @@ class UserVpnRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("user_vpn")
-                    .select("user_id,server_id,reality_uuid,ws_uuid,reality_config,ws_config,created_at,updated_at")
+                    .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,created_at,updated_at")
                     .eq("user_id", user_id)
                     .limit(1)
                     .execute()
@@ -36,6 +36,78 @@ class UserVpnRepository:
     async def get_by_user(self, user_id: int) -> dict | None:
         return await self.get_user_vpn(user_id)
 
+    async def claim_creating(self, user_id: int) -> str:
+        """Atomically claim the creation slot for *user_id*.
+
+        Returns
+        -------
+        'claimed'  — caller owns the slot and must call set_ready / set_failed.
+        'creating' — another process already owns the slot.
+        'ready'    — configs are already present; caller should read and return them.
+        """
+        if not self._supabase:
+            # No Supabase — let the caller proceed as owner (single-process safety).
+            return "claimed"
+        try:
+            response = await execute_with_retry(
+                lambda: self._supabase.rpc(
+                    "claim_user_vpn_creating", {"p_user_id": user_id}
+                ).execute(),
+                operation="user_vpn.claim_creating",
+            )
+            return str(response.data or "creating")
+        except Exception:
+            logger.exception("claim_creating RPC failed user_id=%s", user_id)
+            return "creating"
+
+    async def set_ready(
+        self,
+        user_id: int,
+        server_id: int,
+        reality_uuid: str,
+        ws_uuid: str | None,
+        reality_config: str,
+        ws_config: str,
+    ) -> None:
+        """Write the final configs and flip status to 'ready'."""
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        payload = {
+            "server_id": server_id,
+            "reality_uuid": reality_uuid,
+            "ws_uuid": ws_uuid or "",
+            "reality_config": reality_config,
+            "ws_config": ws_config or "",
+            "status": "ready",
+            "updated_at": utc_now().isoformat(),
+        }
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("user_vpn")
+                .update(payload)
+                .eq("user_id", user_id)
+                .execute()
+            ),
+            operation="user_vpn.set_ready",
+        )
+
+    async def set_failed(self, user_id: int) -> None:
+        """Mark the row as failed so the next request can retry."""
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .update({"status": "failed", "updated_at": utc_now().isoformat()})
+                    .eq("user_id", user_id)
+                    .execute()
+                ),
+                operation="user_vpn.set_failed",
+            )
+        except Exception:
+            logger.exception("set_failed failed user_id=%s", user_id)
+
     async def create_user_vpn(
         self,
         user_id: int,
@@ -45,11 +117,9 @@ class UserVpnRepository:
         reality_config: str,
         ws_config: str,
     ) -> dict:
+        """Legacy upsert — kept for backward compatibility; prefer set_ready."""
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        existing = await self.get_user_vpn(user_id)
-        if existing:
-            logger.info("user_vpn race detected existing row reused tg_id=%s", user_id)
         now = utc_now().isoformat()
         payload = {
             "user_id": user_id,
@@ -57,7 +127,8 @@ class UserVpnRepository:
             "reality_uuid": reality_uuid,
             "ws_uuid": ws_uuid or "",
             "reality_config": reality_config,
-            "ws_config": ws_config,
+            "ws_config": ws_config or "",
+            "status": "ready",
             "created_at": now,
             "updated_at": now,
         }

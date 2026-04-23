@@ -8,8 +8,9 @@ from app.repositories.idempotency import IdempotencyRepository
 
 logger = logging.getLogger(__name__)
 
-_POLL_INTERVAL = 0.25  # seconds between completion checks
-_POLL_MAX_WAIT = 3.0   # seconds before giving up on a live peer
+_POLL_INTERVAL = 0.25   # seconds between completion checks
+_POLL_MAX_WAIT = 15.0   # seconds before giving up on a live peer
+                        # 3x-ui: login + get_inbound + add_client, each up to 5 s × 3 retries
 
 
 class IdempotencyService:
