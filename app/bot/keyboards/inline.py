@@ -1,6 +1,15 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
+def payment_success_keyboard(sub_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📲 Подключить", url=sub_url)],
+            [InlineKeyboardButton(text="📱 Показать QR-код", callback_data="payment_show_qr")],
+        ]
+    )
+
+
 def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

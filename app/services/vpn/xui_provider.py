@@ -162,10 +162,6 @@ class XUIProvider(VPNProvider):
     async def _login(self, session: ClientSession, server: ServerInfo) -> None:
         url = f"{server.api_url}/login"
 
-        logger.info("DEBUG api_url=%r", server.api_url)
-        logger.info("DEBUG username=%r", server.username)
-        logger.info("DEBUG password=%r", server.password)
-
         async with session.post(
             url,
             json={
@@ -174,8 +170,6 @@ class XUIProvider(VPNProvider):
             },
         ) as resp:
             payload = await resp.json()
-
-        logger.info("RAW LOGIN RESPONSE: %s", payload)
 
         if isinstance(payload, dict) and payload.get("success") is False:
             raise XUIProviderError(str(payload.get("msg") or "login rejected"))

@@ -5,9 +5,9 @@ from datetime import timedelta
 from html import escape
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, Message, PreCheckoutQuery
+from aiogram.types import BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery
 
-from app.bot.keyboards.inline import main_menu_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
@@ -109,16 +109,49 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
+    expires_str = expires_dt.strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
+    sub_url = f"https://sub.zybervpn.ru/sub/{escape(sub_token)}"
+
     if link:
-        qr_bytes = qr_png_from_text(link)
-        await message.answer(f"Оплата успешна.\nVPN подключен.\nСсылка:\n<code>{escape(link)}</code>")
-        await message.answer_photo(
-            BufferedInputFile(qr_bytes, filename="vpn-qr.png"),
-            caption="QR для подключения",
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            "📊 Статус: <b>Активна</b>\n\n"
+            "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{sub_url}</code>\n\n"
+            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
+            "или «Показать QR» для сканирования."
         )
+        await message.answer(text, reply_markup=payment_success_keyboard(sub_url))
+    else:
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
+            "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+        )
+        await message.answer(text)
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if bonus > 0:
         await message.answer(f"Реферальный бонус: +{bonus} RUB")
+
+
+@router.callback_query(F.data == "payment_show_qr")
+async def show_payment_qr(callback: CallbackQuery, db: Database) -> None:
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    vpn_key = str((user or {}).get("vpn_key") or "")
+    if not vpn_key.startswith("vless://"):
+        await callback.answer("VPN-ключ не найден", show_alert=True)
+        return
+    qr_bytes = qr_png_from_text(vpn_key)
+    await callback.message.answer_photo(
+        BufferedInputFile(qr_bytes, filename="vpn-qr.png"),
+        caption="QR-код для подключения",
+    )
+    await callback.answer()

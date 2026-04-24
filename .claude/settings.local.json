@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Supabase__list_projects",
+      "mcp__claude_ai_Supabase__execute_sql",
+      "Bash(ssh:*)",
+      "Bash(scp -i ~/.ssh/claude \"C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/bot/keyboards/inline.py\" root@2.26.141.181:/root/ZyberVPN/app/bot/keyboards/inline.py)",
+      "Bash(scp -i ~/.ssh/claude \"C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/bot/handlers/payments.py\" root@2.26.141.181:/root/ZyberVPN/app/bot/handlers/payments.py)",
+      "Bash(scp -i ~/.ssh/claude \"C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/services/vpn/xui_provider.py\" root@2.26.141.181:/root/ZyberVPN/app/services/vpn/xui_provider.py)"
+    ]
+  }
+}
