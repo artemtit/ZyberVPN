@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -51,8 +54,10 @@ class XUIProvider(VPNProvider):
 
             existing_reality = self._find_existing_client_uuid(inbound, reality_email)
             final_reality_uuid = reality_uuid or existing_reality or str(uuid4())
+            clients_added = 0
             if not existing_reality:
                 await self._add_client(session, server, final_reality_uuid, reality_email, limits)
+                clients_added += 1
                 logger.info("xui reality client created user_id=%s server_id=%s", user_id, server.id)
 
             final_ws_uuid: str | None = None
@@ -61,7 +66,12 @@ class XUIProvider(VPNProvider):
                 final_ws_uuid = ws_uuid or existing_ws or str(uuid4())
                 if not existing_ws:
                     await self._add_client(session, server, final_ws_uuid, ws_email, limits)
+                    clients_added += 1
                     logger.info("xui ws client created user_id=%s server_id=%s", user_id, server.id)
+
+            if clients_added > 0:
+                await self._reload_xray(session, server)
+                await self._verify_client_visible(session, server, final_reality_uuid)
 
             profiles = self._build_profiles(server, ctx, final_reality_uuid, final_ws_uuid, user_id)
             return CreateClientResult(
@@ -126,10 +136,24 @@ class XUIProvider(VPNProvider):
     async def is_healthy(self, server: ServerInfo) -> bool:
         try:
             self._validate_server_security(server)
+            port = server.public_port or 443
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(server.host, port), timeout=5.0
+                )
+                writer.close()
+                await writer.wait_closed()
+            except Exception as tcp_err:
+                logger.warning(
+                    "xui port unreachable server_id=%s host=%s port=%s error=%s",
+                    server.id, server.host, port, tcp_err,
+                )
+                return False
             async with self._session() as session:
                 await self._login(session, server)
                 inbound = await self._get_inbound(session, server)
                 self._validate_inbound_clients_readable(inbound)
+            logger.info("xui healthcheck ok server_id=%s host=%s port=%s", server.id, server.host, port)
             return True
         except Exception as error:
             logger.warning("xui healthcheck failed server_id=%s error=%s", server.id, error)
@@ -310,6 +334,100 @@ class XUIProvider(VPNProvider):
             ws_path=ws_path,
             ws_supported=ws_supported,
         )
+
+    async def _verify_client_visible(
+        self, session: ClientSession, server: ServerInfo, client_uuid: str
+    ) -> None:
+        """Verify client appears in inbound after reload; retry reload once if missing."""
+        await asyncio.sleep(0.5)
+        try:
+            inbound = await self._get_inbound(session, server)
+        except Exception:
+            return  # Can't verify — don't block provisioning
+        if self._find_client_by_uuid(inbound, client_uuid):
+            logger.info("xui client verified server_id=%s uuid=%s", server.id, client_uuid)
+            return
+        logger.warning("xui client not visible after reload, retrying server_id=%s uuid=%s", server.id, client_uuid)
+        await self._reload_xray(session, server)
+        await asyncio.sleep(1.0)
+        try:
+            inbound = await self._get_inbound(session, server)
+        except Exception:
+            return
+        if not self._find_client_by_uuid(inbound, client_uuid):
+            raise XUIProviderError(f"Client {client_uuid} not visible after reload retry server_id={server.id}")
+        logger.info("xui client verified after retry server_id=%s uuid=%s", server.id, client_uuid)
+
+    async def _reload_xray(self, session: ClientSession, server: ServerInfo) -> None:
+        """Reload xray runtime config after adding clients.
+
+        Tries the 3x-ui panel API first, then SIGUSR1, then service restart as last resort.
+        """
+        if await self._try_api_reload(session, server):
+            await asyncio.sleep(1.5)
+            return
+        reloaded = await asyncio.get_event_loop().run_in_executor(None, self._signal_reload, server.id)
+        if reloaded:
+            await asyncio.sleep(1.5)
+            return
+        restarted = await asyncio.get_event_loop().run_in_executor(None, self._restart_xui_service, server.id)
+        if restarted:
+            await asyncio.sleep(4.0)
+
+    async def _try_api_reload(self, session: ClientSession, server: ServerInfo) -> bool:
+        """POST /server/restartXrayService — succeeds on some 3x-ui versions."""
+        try:
+            url = f"{server.api_url}/server/restartXrayService"
+            async with session.post(url) as resp:
+                if resp.status != 200:
+                    return False
+                data = await resp.json(content_type=None)
+                if isinstance(data, dict) and data.get("success") is True:
+                    logger.info("xui xray reloaded via API server_id=%s", server.id)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _signal_reload(server_id: int) -> bool:
+        """Send SIGUSR1 to the x-ui process to trigger xray config reload."""
+        try:
+            for pid_dir in Path("/proc").iterdir():
+                if not pid_dir.name.isdigit():
+                    continue
+                try:
+                    comm = (pid_dir / "comm").read_text().strip()
+                    if comm == "x-ui":
+                        os.kill(int(pid_dir.name), signal.SIGUSR1)
+                        logger.info("xui xray reloaded via SIGUSR1 pid=%s server_id=%s", pid_dir.name, server_id)
+                        return True
+                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                    continue
+        except Exception as error:
+            logger.warning("xui xray reload failed server_id=%s error=%s", server_id, error)
+        return False
+
+    @staticmethod
+    def _restart_xui_service(server_id: int) -> bool:
+        """Restart x-ui via systemctl as last resort when both API and SIGUSR1 fail."""
+        import subprocess  # noqa: PLC0415
+        try:
+            result = subprocess.run(
+                ["systemctl", "restart", "x-ui"],
+                capture_output=True,
+                timeout=20,
+            )
+            if result.returncode == 0:
+                logger.info("xui service restarted via systemctl server_id=%s", server_id)
+                return True
+            logger.warning(
+                "xui systemctl restart failed server_id=%s returncode=%s stderr=%s",
+                server_id, result.returncode, result.stderr.decode()[:300],
+            )
+        except Exception as error:
+            logger.warning("xui service restart unavailable server_id=%s error=%s", server_id, error)
+        return False
 
     def _build_profiles(
         self,

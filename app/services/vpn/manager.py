@@ -182,6 +182,7 @@ class VPNManager:
         provider = self._providers.get("xui")
         if provider is None:
             return
+        healthy = 0
         for server in servers:
             ok = await provider.is_healthy(server)
             await self._servers_repo.update_health(
@@ -190,6 +191,24 @@ class VPNManager:
                 ok=ok,
                 error_text=None if ok else "health check failed",
             )
+            logger.info(
+                "server health result server_id=%s name=%s ok=%s health_errors=%s",
+                server.id, server.name, ok, 0 if ok else server.health_errors + 1,
+            )
+            if ok:
+                healthy += 1
+        logger.info("health check done healthy=%s unhealthy=%s total=%s", healthy, len(servers) - healthy, len(servers))
+
+    async def get_metrics(self) -> dict:
+        servers = await self._servers_repo.list_all()
+        counts = await self._user_vpn_repo.count_users_by_server()
+        active_servers = sum(1 for s in servers if s.is_active)
+        return {
+            "active_servers": active_servers,
+            "total_servers": len(servers),
+            "unhealthy_servers": sum(1 for s in servers if s.health_errors > 0),
+            "active_vpn_users": sum(counts.values()),
+        }
 
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)

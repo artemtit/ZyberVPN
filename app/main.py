@@ -68,8 +68,15 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
+    async def metrics(request: web.Request) -> web.Response:
+        manager = build_vpn_manager(request.app["db"], request.app["settings"])
+        data = await manager.get_metrics()
+        return web.json_response(data)
+
     app.router.add_get("/", health)
     app.router.add_get("/healthz", health)
+    app.router.add_get("/metrics", metrics)
+    app["db"] = db
     app["settings"] = settings
     app["subscription_service"] = build_subscription_service(db, settings)
     if settings.redis_url and Redis is not None:

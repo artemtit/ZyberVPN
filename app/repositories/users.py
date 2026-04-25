@@ -68,7 +68,7 @@ class UsersRepository:
         payload: dict = {
             "tg_id": tg_id,
             "vpn_key": vpn_key,
-            "sub_token": self.hash_sub_token(sub_token),
+            "sub_token": sub_token,
             "is_active": is_active,
             "plan": plan,
             "ref_tg_id": ref_tg_id,
@@ -129,7 +129,7 @@ class UsersRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("users")
-                    .update({"sub_token": self.hash_sub_token(sub_token)})
+                    .update({"sub_token": sub_token})
                     .eq("tg_id", tg_id)
                     .execute()
                 ),
@@ -147,7 +147,6 @@ class UsersRepository:
             return None
         if not self.is_valid_sub_token(token):
             return None
-        token_hash = self.hash_sub_token(token)
         try:
             response = await execute_with_retry(
                 lambda: (
@@ -155,7 +154,7 @@ class UsersRepository:
                     .select(
                         "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
                     )
-                    .eq("sub_token", token_hash)
+                    .eq("sub_token", token)
                     .limit(1)
                     .execute()
                 ),
@@ -349,15 +348,14 @@ class UsersRepository:
     async def _generate_unique_sub_token(self) -> str:
         while True:
             candidate = secrets.token_urlsafe(32)
-            candidate_hash = self.hash_sub_token(candidate)
-            if not await self._supabase_token_exists(candidate_hash):
+            if not await self._supabase_token_exists(candidate):
                 return candidate
 
-    async def _supabase_token_exists(self, token_hash: str) -> bool:
+    async def _supabase_token_exists(self, token: str) -> bool:
         if not self._supabase:
             return False
         response = await execute_with_retry(
-            lambda: self._supabase.table("users").select("id").eq("sub_token", token_hash).limit(1).execute(),
+            lambda: self._supabase.table("users").select("id").eq("sub_token", token).limit(1).execute(),
             operation="users.token_exists",
         )
         return bool(response.data)

@@ -75,15 +75,12 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         return
 
     link = ""
+    sub_token = ""
     activated_dt = utc_now()
     expires_dt = activated_dt + timedelta(days=30)
     activated_at = activated_dt.isoformat()
     expires_at = expires_dt.isoformat()
-    try:
-        sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
-    except Exception:
-        logger.exception("Failed to issue subscription token for tg_id=%s", tg_id)
-        sub_token = await users_repo.ensure_sub_token(tg_id)
+
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user:
         await users_repo.set_expiry(
@@ -93,8 +90,6 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             plan="monthly",
             last_activated_at=activated_at,
         )
-        if not users_repo.is_valid_sub_token_hash(str(supabase_user.get("sub_token") or "")):
-            await users_repo.update_sub_token(tg_id, sub_token)
 
     try:
         access_user = await ensure_user_access(
@@ -105,15 +100,16 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             idempotency_key=f"vpn-after-payment:{payment_info.invoice_payload}",
         )
         link = str(access_user.get("vpn_key") or "")
+        sub_token = str(access_user.get("sub_token") or "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
     expires_str = expires_dt.strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
-    sub_url = f"https://sub.zybervpn.ru/sub/{escape(sub_token)}"
+    sub_url = f"https://sub.zybervpn.ru:8443/sub/{escape(sub_token)}" if sub_token else ""
 
-    if link:
+    if link and sub_url:
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
             "📦 <b>Подписка активирована</b>\n"

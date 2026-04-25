@@ -118,8 +118,14 @@ async def ensure_user_access(
             raise AccessEnsureError("Failed to create Supabase user")
         supabase_user = created
 
-    sub_token_hash = supabase_user.get("sub_token")
-    if not sub_token_hash or not users_repo.is_valid_sub_token_hash(str(sub_token_hash)):
+    stored_token = str(supabase_user.get("sub_token") or "")
+    # Migrate old SHA256-hashed tokens (64 hex chars) to raw tokens, or generate if missing/invalid.
+    needs_new_token = (
+        not stored_token
+        or users_repo.is_valid_sub_token_hash(stored_token)  # old hashed format → migrate
+        or not users_repo.is_valid_sub_token(stored_token)
+    )
+    if needs_new_token:
         sub_token = await _safe_repo_call(
             "users.ensure_sub_token_for_tg",
             lambda: users_repo.ensure_sub_token_for_tg(tg_id),
@@ -128,7 +134,7 @@ async def ensure_user_access(
         )
         if not sub_token:
             raise AccessEnsureError("Failed to refresh subscription token")
-        supabase_user["sub_token"] = users_repo.hash_sub_token(sub_token)
+        supabase_user["sub_token"] = sub_token  # raw token, not hash
 
     if require_active and not users_repo.is_user_active(supabase_user):
         await _safe_repo_call("users.update_status", lambda: users_repo.update_status(tg_id, False), fallback=None, tg_id=tg_id)
