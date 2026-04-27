@@ -220,6 +220,36 @@ class XUIProvider(VPNProvider):
         if clients is not None and not isinstance(clients, list):
             raise XUIProviderError("inbound clients unreadable")
 
+    async def get_client_traffic(self, server: ServerInfo, email: str) -> dict | None:
+        """Fetch traffic stats for a client email from 3x-ui panel."""
+        self._validate_server_security(server)
+        async with self._session() as session:
+            await self._login(session, server)
+            url = f"{server.api_url}/panel/api/inbounds/getClientTraffics/{email}"
+            try:
+                data = await self._request_json(session, "get", url)
+                if isinstance(data, dict) and data.get("success") is True:
+                    return data.get("obj")
+            except Exception as error:
+                logger.debug("get_client_traffic failed server_id=%s email=%s error=%s", server.id, email, error)
+            return None
+
+    async def get_online_count(self, server: ServerInfo, emails: set[str]) -> int:
+        """Count how many of the given emails are currently online."""
+        self._validate_server_security(server)
+        async with self._session() as session:
+            await self._login(session, server)
+            url = f"{server.api_url}/panel/api/inbounds/onlines"
+            try:
+                data = await self._request_json(session, "post", url)
+                if isinstance(data, dict) and data.get("success") is True:
+                    online_list = data.get("obj") or []
+                    if isinstance(online_list, list):
+                        return sum(1 for e in online_list if e in emails)
+            except Exception as error:
+                logger.debug("get_online_count failed server_id=%s error=%s", server.id, error)
+            return 0
+
     async def _add_client(
         self,
         session: ClientSession,
@@ -239,7 +269,7 @@ class XUIProvider(VPNProvider):
                             "email": email,
                             "flow": "xtls-rprx-vision",
                             "enable": True,
-                            "limitIp": max(1, int(limits.limit_ip)),
+                            "limitIp": 3,
                             "expiryTime": int(limits.expiry_time),
                             "totalGB": int(limits.total_gb) * 1024 * 1024 * 1024,
                         }

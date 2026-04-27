@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery
@@ -11,6 +12,7 @@ from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
+from app.services.access import build_vpn_manager
 from app.services.vpn import qr_png_from_text
 from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
 
@@ -54,19 +56,21 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("key_open:"))
-async def key_open(callback: CallbackQuery, db: Database) -> None:
+async def key_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     key_id = int(callback.data.split(":")[1])
+    tg_id = callback.from_user.id
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
-    await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
+
+    await users_repo.get_or_create(tg_id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
 
     created_at = parse_iso_utc(key_data["created_at"])
-    active_sub = await subs_repo.get_active(callback.from_user.id)
+    active_sub = await subs_repo.get_active(tg_id)
     if active_sub:
         expires_at = parse_iso_utc(active_sub["expires_at"])
         status_text = "Активен"
@@ -76,41 +80,58 @@ async def key_open(callback: CallbackQuery, db: Database) -> None:
         status_text = "Истек"
         status_emoji = "🔴"
 
-    days, hours, minutes = _remaining_parts(expires_at)
-    key_uid = f"trial_ligr{key_data['id']}@bot"
-    key_link = key_data["key"]
+    days, hours, _ = _remaining_parts(expires_at)
+
+    supabase_user = await users_repo.get_by_tg_id(tg_id)
+    sub_token = str((supabase_user or {}).get("sub_token") or "")
+    traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+
+    # Best-effort: query 3x-ui for live traffic and device stats
+    traffic_used_gb = 0.0
+    online_devices = 0
+    try:
+        manager = build_vpn_manager(db, settings)
+        bytes_used, online_devices = await manager.get_client_stats(tg_id)
+        traffic_used_gb = bytes_used / (1024 ** 3)
+    except Exception:
+        pass
+
+    sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""
 
     text = (
-        f"🔑 Информация о ключе #{key_data['id']}\n\n"
-        "📅 Сроки действия:\n"
+        f"🔑 Ключ #{key_data['id']}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
-        f"➕ Куплен: {created_at.strftime('%d.%m.%Y')}\n"
-        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y %H:%M')}\n"
-        f"⌛ Осталось: {days}д. {hours}ч. {minutes}мин\n"
-        f"💊 ID ключа: {key_uid}\n\n"
-        "📉 Использование:\n"
-        "📡 Лимит трафика: 466.20 GiB / ∞\n"
-        "📱 Лимит устройств: 20 / ∞\n\n"
-        "🔗 Ваш ключ:\n"
-        f"{key_link}"
+        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y')} ({days}д. {hours}ч.)\n"
+        f"{sub_line}\n"
+        f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
+        f"📱 Устройств онлайн: {online_devices} / 3"
     )
     await callback.message.edit_text(text, reply_markup=key_card_keyboard(key_id))
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("key_qr:"))
-async def key_qr(callback: CallbackQuery, db: Database) -> None:
+async def key_qr(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     key_id = int(callback.data.split(":")[1])
+    tg_id = callback.from_user.id
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
-    await users_repo.get_or_create(callback.from_user.id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
+    await users_repo.get_or_create(tg_id)
+    key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
-    qr_bytes = qr_png_from_text(key_data["key"])
+    supabase_user = await users_repo.get_by_tg_id(tg_id)
+    sub_token = str((supabase_user or {}).get("sub_token") or "")
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    if not sub_url:
+        await callback.answer("Subscription URL не найден", show_alert=True)
+        return
+    qr_bytes = qr_png_from_text(sub_url)
     await callback.message.answer_photo(
-        BufferedInputFile(qr_bytes, filename=f"vpn-key-{key_id}.png"),
+        BufferedInputFile(qr_bytes, filename=f"subscription-{key_id}.png"),
+        caption=f"QR-код для подключения\n<code>{escape(sub_url)}</code>",
     )
     await callback.answer()
 

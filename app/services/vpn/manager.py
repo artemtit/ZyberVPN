@@ -7,6 +7,7 @@ from app.config import Settings
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
+from app.services.vpn.xui_provider import XUIProvider
 from app.utils.datetime import ensure_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,34 @@ class VPNManager:
             "unhealthy_servers": sum(1 for s in servers if s.health_errors > 0),
             "active_vpn_users": sum(counts.values()),
         }
+
+    async def get_client_stats(self, user_id: int) -> tuple[int, int]:
+        """Return (total_bytes_used, online_device_count). Returns (0, 0) on any failure."""
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        if not vpn:
+            return 0, 0
+        server_id = int(vpn.get("server_id") or 0)
+        if server_id <= 0:
+            return 0, 0
+        servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server:
+            return 0, 0
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return 0, 0
+        try:
+            reality_email = f"{user_id}-reality"
+            ws_email = f"{user_id}-ws"
+            traffic = await provider.get_client_traffic(server, reality_email)
+            bytes_used = 0
+            if isinstance(traffic, dict):
+                bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
+            online = await provider.get_online_count(server, {reality_email, ws_email})
+            return bytes_used, online
+        except Exception:
+            logger.exception("get_client_stats failed user_id=%s", user_id)
+            return 0, 0
 
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)

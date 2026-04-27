@@ -36,7 +36,7 @@ class UsersRepository:
                 lambda: (
                     self._supabase.table("users")
                     .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
                     )
                     .eq("tg_id", tg_id)
                     .limit(1)
@@ -152,7 +152,7 @@ class UsersRepository:
                 lambda: (
                     self._supabase.table("users")
                     .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at"
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
                     )
                     .eq("sub_token", token)
                     .limit(1)
@@ -300,6 +300,22 @@ class UsersRepository:
             ).execute(),
             operation="users.add_balance",
         )
+
+    async def set_traffic_limit(self, tg_id: int, traffic_limit_gb: int) -> None:
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"traffic_limit_gb": traffic_limit_gb})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.set_traffic_limit",
+            )
+        except Exception:
+            logger.exception("Supabase set_traffic_limit failed tg_id=%s", tg_id)
 
     async def is_trial_available(self, tg_id: int) -> bool:
         user = await self.get_by_tg_id(tg_id)

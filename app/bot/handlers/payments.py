@@ -54,6 +54,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             )
             tariff = TARIFFS[str(payment["tariff_code"])]
             await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
+            await users_repo.set_traffic_limit(int(payment["tg_id"]), tariff.get("traffic_gb", 60))
         return {
             "tg_id": int(payment["tg_id"]),
             "tariff_code": str(payment["tariff_code"]),
@@ -138,16 +139,17 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
 
 @router.callback_query(F.data == "payment_show_qr")
-async def show_payment_qr(callback: CallbackQuery, db: Database) -> None:
+async def show_payment_qr(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
-    vpn_key = str((user or {}).get("vpn_key") or "")
-    if not vpn_key.startswith("vless://"):
-        await callback.answer("VPN-ключ не найден", show_alert=True)
+    sub_token = str((user or {}).get("sub_token") or "")
+    if not sub_token or not settings.public_base_url:
+        await callback.answer("Subscription URL не найден", show_alert=True)
         return
-    qr_bytes = qr_png_from_text(vpn_key)
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}"
+    qr_bytes = qr_png_from_text(sub_url)
     await callback.message.answer_photo(
-        BufferedInputFile(qr_bytes, filename="vpn-qr.png"),
-        caption="QR-код для подключения",
+        BufferedInputFile(qr_bytes, filename="subscription-qr.png"),
+        caption=f"QR-код для подключения\n<code>{escape(sub_url)}</code>",
     )
     await callback.answer()
