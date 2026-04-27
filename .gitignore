@@ -209,3 +209,5 @@ __marimo__/
 .env.example
 .claudeignore
 CLAUDE.md
+.claude
+.claude\settings.local.json

@@ -118,6 +118,36 @@ class XUIProvider(VPNProvider):
             }
             await self._request_json(session, "post", update_url, data=payload)
 
+    async def update_client_expiry(self, server: ServerInfo, client_uuid: str, expiry_time_ms: int) -> bool:
+        """Update expiryTime for a specific client. Returns True if client was found and updated."""
+        self._validate_server_security(server)
+        async with self._session() as session:
+            await self._login(session, server)
+            inbound = await self._get_inbound(session, server)
+            settings_raw = inbound.get("settings")
+            settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
+            if not isinstance(settings, dict):
+                return False
+            clients = settings.get("clients")
+            if not isinstance(clients, list):
+                return False
+            changed = False
+            for client in clients:
+                if isinstance(client, dict) and str(client.get("id")) == client_uuid:
+                    client["expiryTime"] = expiry_time_ms
+                    client["enable"] = True
+                    changed = True
+                    break
+            if not changed:
+                return False
+            update_url = f"{server.api_url}/panel/api/inbounds/update/{server.inbound_id}"
+            payload = {
+                "id": server.inbound_id,
+                "settings": json.dumps({"clients": clients}),
+            }
+            await self._request_json(session, "post", update_url, data=payload)
+            return True
+
     async def client_exists(self, server: ServerInfo, client_uuid: str) -> bool:
         self._validate_server_security(server)
         async with self._session() as session:

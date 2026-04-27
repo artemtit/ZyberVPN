@@ -9,7 +9,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards.inline import (
+    payment_success_keyboard,
     profile_keyboard,
+    promo_apply_target_keyboard,
     promo_keyboard,
     referral_keyboard,
     subscription_info_keyboard,
@@ -20,23 +22,29 @@ from app.bot.states.purchase import ProfileState
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
+from app.repositories.keys import KeysRepository
 from app.repositories.promo import PromoRepository
+from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
-from app.services.access import AccessEnsureError, ensure_user_access
+from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
 from app.services.promo import validate_promo
 from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
-PROMO_CONNECT_INSTRUCTION = (
-    "📋 Инструкция подключения:\n"
-    "1. Установите приложение v2rayNG / v2rayN / Shadowrocket\n"
-    "2. Откройте приложение\n"
-    "3. Выберите импорт из буфера обмена\n"
-    "4. Вставьте ключ\n"
-    "5. Подключитесь"
-)
+
+
+def _promo_success_text(expires_dt, *, include_status: bool = True) -> str:
+    expires_str = expires_dt.strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
+    status_line = "📊 Статус: <b>Активна</b>\n\n" if include_status else ""
+    return (
+        "✅ <b>Промокод успешно активирован!</b>\n\n"
+        "📦 <b>Подписка активирована</b>\n"
+        f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+        f"{status_line}"
+    )
 
 
 def _format_expiry(raw_value: str | None) -> str:
@@ -169,28 +177,125 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
 
     promo = validation.promo or {}
     days = int(promo.get("days") or 30)
-    activated_at = utc_now().isoformat()
-    new_expiry = (utc_now() + timedelta(days=days)).isoformat()
+    keys_repo = KeysRepository(db)
+    subs_repo = SubscriptionsRepository(db)
+    active_sub = await subs_repo.get_active(tg_id)
+    has_existing_key = bool(await keys_repo.list_by_user(tg_id))
+
+    if active_sub and has_existing_key:
+        await state.set_state(PromoState.waiting_apply_target)
+        await state.update_data(promo_code=code, promo_days=days)
+        await message.answer(
+            "🎁 Промокод найден.\n\n"
+            f"Куда зачислить +{days} дней?\n"
+            "Если продлить активную подписку, ключ не будет отправлен повторно.",
+            reply_markup=promo_apply_target_keyboard(),
+        )
+        return
+
+    await _apply_promo(
+        tg_id=tg_id,
+        code=code,
+        days=days,
+        apply_mode="new",
+        db=db,
+        settings=settings,
+        users_repo=users_repo,
+        promo_repo=promo_repo,
+        state=state,
+        reply=message.answer,
+    )
+
+
+@router.callback_query(PromoState.waiting_apply_target, F.data.startswith("promo_apply:"))
+async def promo_apply_choice(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    apply_mode = callback.data.split(":", 1)[1]
+    if apply_mode not in {"active", "new"}:
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+
+    data = await state.get_data()
+    code = str(data.get("promo_code") or "").strip()
+    days = int(data.get("promo_days") or 0)
+    if not code or days <= 0:
+        await state.clear()
+        await callback.message.answer("Сессия промокода истекла. Введите промокод снова.")
+        await callback.answer()
+        return
+
+    users_repo = UsersRepository(db)
+    promo_repo = PromoRepository()
+    await _apply_promo(
+        tg_id=callback.from_user.id,
+        code=code,
+        days=days,
+        apply_mode=apply_mode,
+        db=db,
+        settings=settings,
+        users_repo=users_repo,
+        promo_repo=promo_repo,
+        state=state,
+        reply=callback.message.answer,
+    )
+    await callback.answer()
+
+
+async def _apply_promo(
+    *,
+    tg_id: int,
+    code: str,
+    days: int,
+    apply_mode: str,
+    db: Database,
+    settings: Settings,
+    users_repo: UsersRepository,
+    promo_repo: PromoRepository,
+    state: FSMContext,
+    reply,
+) -> None:
+    validation = await validate_promo(code, promo_repo)
+    if not validation.ok:
+        await state.clear()
+        if validation.error == "expired":
+            await reply("❌ Срок действия промокода истёк")
+            return
+        if validation.error in {"max_uses_reached"}:
+            await reply("❌ Промокод уже использован")
+            return
+        await reply("❌ Промокод не найден")
+        return
+
+    subs_repo = SubscriptionsRepository(db)
     idem = IdempotencyService(IdempotencyRepository())
+    activated_at = utc_now().isoformat()
 
     async def _activate() -> dict:
+        subscription = await subs_repo.create_or_extend_days(tg_id=tg_id, days=days)
+        expires_at = str(subscription.get("expires_at") or "")
+        if not expires_at:
+            raise RuntimeError("promo activation failed: expires_at is empty")
+
         updated = await users_repo.set_expiry(
             tg_id=tg_id,
-            expires_at=new_expiry,
+            expires_at=expires_at,
             is_active=True,
             plan="promo",
             promo_used=True,
             last_activated_at=activated_at,
         )
         if updated:
-            return {"ok": True}
+            return {"expires_at": expires_at}
+
         await users_repo.get_or_create(tg_id)
         sub_token = await users_repo.ensure_sub_token(tg_id)
         created = await users_repo.create(
             tg_id=tg_id,
             vpn_key="",
             sub_token=sub_token,
-            expires_at=new_expiry,
+            expires_at=expires_at,
             is_active=True,
             plan="promo",
             last_activated_at=activated_at,
@@ -198,14 +303,14 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
         if not created:
             raise RuntimeError("promo activation failed")
         await users_repo.update_promo_used(tg_id, True)
-        return {"ok": True}
+        return {"expires_at": expires_at}
 
     try:
-        await idem.execute("promo_activation", f"promo-activate:{tg_id}:{code.lower()}", _activate)
+        result = await idem.execute("promo_activation", f"promo-activate:{tg_id}:{code.lower()}:{apply_mode}", _activate)
     except Exception:
         logger.error("Promo activation failed: cannot create/update supabase user tg_id=%s", tg_id)
         await state.clear()
-        await message.answer("Promo activation failed, please try again later")
+        await reply("Promo activation failed, please try again later")
         return
 
     usage = await promo_repo.increment_usage(code)
@@ -216,19 +321,49 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
             await promo_repo.deactivate(code)
 
     await state.clear()
+    expires_raw = str((result or {}).get("expires_at") or "")
+    expires_dt = parse_iso_utc(expires_raw) if expires_raw else utc_now() + timedelta(days=days)
+
     try:
         access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
     except AccessEnsureError:
         logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
-        await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
-        await message.answer("⚠️ Подписка активна, но создать VPN-ключ сейчас не удалось. Попробуйте позже в разделе «Мои ключи».")
+        if apply_mode == "active":
+            await reply(_promo_success_text(expires_dt, include_status=False) + "Подписка продлена.")
+        else:
+            await reply(
+                _promo_success_text(expires_dt)
+                + "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+            )
         return
 
-    await message.answer(f"🎉 Промокод активирован! Подписка на {days} дней")
-    vpn_key = (access_user or {}).get("vpn_key")
-    if vpn_key:
-        await message.answer(f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>")
-        await message.answer(PROMO_CONNECT_INSTRUCTION)
+    expiry_ms = int(expires_dt.timestamp() * 1000)
+    try:
+        manager = build_vpn_manager(db, settings)
+        await manager.update_user_expiry(tg_id, expiry_ms)
+    except Exception:
+        logger.exception("Failed to update XUI expiry after promo tg_id=%s", tg_id)
+
+    if apply_mode == "active":
+        await reply(_promo_success_text(expires_dt, include_status=False) + "Подписка продлена.")
+        return
+
+    sub_token = str((access_user or {}).get("sub_token") or "")
+    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
+    if sub_url:
+        await reply(
+            _promo_success_text(expires_dt)
+            + "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{sub_url}</code>\n\n"
+            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
+            "или «Показать QR» для сканирования.",
+            reply_markup=payment_success_keyboard(sub_url),
+        )
+    else:
+        await reply(
+            _promo_success_text(expires_dt)
+            + "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+        )
 
 
 @router.callback_query(F.data == "profile_ref")

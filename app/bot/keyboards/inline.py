@@ -16,6 +16,17 @@ def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
             [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
             [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
+            [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
+        ]
+    )
+
+
+def legal_keyboard(privacy_policy_url: str, terms_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=privacy_policy_url)],
+            [InlineKeyboardButton(text="📋 Пользовательское соглашение", url=terms_url)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")],
         ]
     )
 
@@ -35,7 +46,6 @@ def key_card_keyboard(key_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
             [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data="buy_open")],
             [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
-            [InlineKeyboardButton(text="🔗 Подписка", callback_data=f"key_sub:{key_id}")],
             [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
             [InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys")],
         ]
@@ -104,6 +114,16 @@ def promo_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+        ]
+    )
+
+
+def promo_apply_target_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Продлить активную подписку", callback_data="promo_apply:active")],
+            [InlineKeyboardButton(text="🆕 Активировать и показать подключение", callback_data="promo_apply:new")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="menu_profile")],
         ]
     )
 

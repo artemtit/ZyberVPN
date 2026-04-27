@@ -14,12 +14,12 @@ from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
-from app.services.access import AccessEnsureError, ensure_user_access
+from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
-from app.utils.datetime import utc_now
+from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -77,16 +77,21 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     link = ""
     sub_token = ""
+
+    # Read actual expiry from subscriptions table (create_or_extend already extended it)
+    active_sub = await subs_repo.get_active(tg_id)
     activated_dt = utc_now()
-    expires_dt = activated_dt + timedelta(days=30)
+    if active_sub:
+        expires_dt = parse_iso_utc(active_sub["expires_at"])
+    else:
+        expires_dt = activated_dt + timedelta(days=30)
     activated_at = activated_dt.isoformat()
-    expires_at = expires_dt.isoformat()
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user:
         await users_repo.set_expiry(
             tg_id,
-            expires_at=expires_at,
+            expires_at=expires_dt.isoformat(),
             is_active=True,
             plan="monthly",
             last_activated_at=activated_at,
@@ -106,9 +111,17 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
+    # Update XUI client expiry to match the extended subscription
+    expiry_ms = int(expires_dt.timestamp() * 1000)
+    try:
+        manager = build_vpn_manager(db, settings)
+        await manager.update_user_expiry(tg_id, expiry_ms)
+    except Exception:
+        logger.exception("Failed to update XUI expiry after payment tg_id=%s", tg_id)
+
     expires_str = expires_dt.strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
-    sub_url = f"https://sub.zybervpn.ru:8443/sub/{escape(sub_token)}" if sub_token else ""
+    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
 
     if link and sub_url:
         text = (

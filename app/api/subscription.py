@@ -33,7 +33,11 @@ async def get_subscription(request: web.Request) -> web.Response:
     return web.Response(
         text=json.dumps(payload, ensure_ascii=False),
         content_type="application/json",
-        headers={"Subscription-Userinfo": userinfo},
+        headers={
+            "Subscription-Userinfo": userinfo,
+            "profile-title": "ZyberVPN",
+            "profile-update-interval": "12",
+        },
     )
 
 

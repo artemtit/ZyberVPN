@@ -11,16 +11,16 @@ logger = logging.getLogger(__name__)
 
 # ISO-2 country code → (flag emoji, display name)
 _COUNTRY_DISPLAY: dict[str, tuple[str, str]] = {
-    "NL": ("🇳🇱", "Netherlands"),
-    "DE": ("🇩🇪", "Germany"),
-    "US": ("🇺🇸", "United States"),
-    "GB": ("🇬🇧", "United Kingdom"),
-    "FR": ("🇫🇷", "France"),
-    "FI": ("🇫🇮", "Finland"),
-    "SE": ("🇸🇪", "Sweden"),
-    "CH": ("🇨🇭", "Switzerland"),
-    "AT": ("🇦🇹", "Austria"),
-    "RU": ("🇷🇺", "Russia"),
+    "NL": ("🇳🇱", "Нидерланды"),
+    "DE": ("🇩🇪", "Германия"),
+    "US": ("🇺🇸", "США"),
+    "GB": ("🇬🇧", "Великобритания"),
+    "FR": ("🇫🇷", "Франция"),
+    "FI": ("🇫🇮", "Финляндия"),
+    "SE": ("🇸🇪", "Швеция"),
+    "CH": ("🇨🇭", "Швейцария"),
+    "AT": ("🇦🇹", "Австрия"),
+    "RU": ("🇷🇺", "Россия"),
 }
 
 

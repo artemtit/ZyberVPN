@@ -350,6 +350,34 @@ class VPNManager:
                 logger.exception("enforce_traffic_limit unexpected error user_id=%s", user_id)
         return disabled
 
+    async def update_user_expiry(self, user_id: int, expiry_time_ms: int) -> bool:
+        """Update XUI client expiryTime after subscription renewal. Returns True on success."""
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        if not vpn:
+            return False
+        server_id = int(vpn.get("server_id") or 0)
+        if server_id <= 0:
+            return False
+        servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server:
+            return False
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return False
+        reality_uuid = str(vpn.get("reality_uuid") or "").strip()
+        ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+        updated = False
+        for uuid in filter(None, [reality_uuid, ws_uuid]):
+            try:
+                ok = await provider.update_client_expiry(server, uuid, expiry_time_ms)
+                if ok:
+                    updated = True
+                    logger.info("XUI expiry updated user_id=%s uuid=%s expiry_ms=%s", user_id, uuid, expiry_time_ms)
+            except Exception:
+                logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
+        return updated
+
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)
         return int(expires.timestamp() * 1000)

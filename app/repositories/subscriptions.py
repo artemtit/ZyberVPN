@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from typing import Optional
 
 from app.db.database import Database
@@ -75,4 +76,28 @@ class SubscriptionsRepository:
             if not rows:
                 raise RuntimeError("Failed to create subscription")
             logger.info("Subscription extended tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
+            return rows[0]
+
+    async def create_or_extend_days(self, tg_id: int, days: int) -> dict:
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        lock = _SUB_LOCKS.setdefault(tg_id, asyncio.Lock())
+        async with lock:
+            latest = await self.get_active(tg_id)
+            start_from = utc_now()
+            if latest:
+                start_from = parse_iso_utc(latest["expires_at"])
+                await execute_with_retry(
+                    lambda: self._supabase.table("subscriptions").update({"status": "expired"}).eq("id", latest["id"]).execute(),
+                    operation="subscriptions.expire_previous",
+                )
+            expires_at = (start_from + timedelta(days=days)).isoformat()
+            response = await execute_with_retry(
+                lambda: self._supabase.table("subscriptions").insert({"tg_id": tg_id, "expires_at": expires_at, "status": "active"}).execute(),
+                operation="subscriptions.create_or_extend_days",
+            )
+            rows = response.data or []
+            if not rows:
+                raise RuntimeError("Failed to create subscription")
+            logger.info("Subscription extended tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
             return rows[0]

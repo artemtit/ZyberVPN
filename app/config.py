@@ -33,6 +33,8 @@ class Settings:
     vpn_create_rate_limit_seconds: int
     redis_url: str
     api_rate_limit_per_minute: int
+    privacy_policy_url: str
+    terms_url: str
 
 
 def load_settings() -> Settings:
@@ -58,7 +60,7 @@ def load_settings() -> Settings:
     return Settings(
         bot_token=bot_token,
         db_path=os.getenv("DB_PATH", "./data/vpn_bot.sqlite3"),
-        support_url=os.getenv("SUPPORT_URL", "https://t.me/"),
+        support_url=os.getenv("SUPPORT_URL", "https://t.me/ZyberVPN_Support_bot"),
         referral_bonus_percent=int(os.getenv("REFERRAL_BONUS_PERCENT", "10")),
         public_base_url=public_base_url,
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),
@@ -81,4 +83,6 @@ def load_settings() -> Settings:
         vpn_create_rate_limit_seconds=max(1, int(os.getenv("VPN_CREATE_RATE_LIMIT_SECONDS", "30"))),
         redis_url=os.getenv("REDIS_URL", "").strip(),
         api_rate_limit_per_minute=max(1, int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))),
+        privacy_policy_url=os.getenv("PRIVACY_POLICY_URL", "https://telegra.ph/Politika-konfidencialnosti-04-01-26"),
+        terms_url=os.getenv("TERMS_URL", "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"),
     )
