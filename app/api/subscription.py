@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from aiohttp import web
 from pydantic import ValidationError
 
@@ -21,9 +23,19 @@ async def get_subscription(request: web.Request) -> web.Response:
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error))
 
-    return web.Response(text=payload, content_type="text/plain")
+    # Standard header for v2rayNG / v2rayN traffic display
+    userinfo = (
+        f"upload={payload['upload']}; "
+        f"download={payload['download']}; "
+        f"total={payload['total']}; "
+        f"expire={payload['expire']}"
+    )
+    return web.Response(
+        text=json.dumps(payload, ensure_ascii=False),
+        content_type="application/json",
+        headers={"Subscription-Userinfo": userinfo},
+    )
 
 
 def register_subscription_routes(app: web.Application) -> None:
     app.router.add_get("/sub/{user_token}", get_subscription)
-
