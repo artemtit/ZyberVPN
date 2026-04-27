@@ -32,7 +32,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,created_at")
+                .select("id,tg_id,key,comment,created_at")
                 .eq("tg_id", tg_id)
                 .order("created_at", desc=True)
                 .execute()
@@ -47,7 +47,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,created_at")
+                .select("id,tg_id,key,comment,created_at")
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .limit(1)
@@ -57,6 +57,20 @@ class KeysRepository:
         )
         rows = response.data or []
         return rows[0] if rows else None
+
+    async def update_comment(self, key_id: int, tg_id: int, comment: str) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"comment": comment[:500]})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.update_comment",
+        )
 
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:

@@ -4,9 +4,11 @@ from datetime import datetime
 from html import escape
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
+from app.bot.states.keys import KeyCommentState
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -97,7 +99,9 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
     except Exception:
         pass
 
+    comment = str(key_data.get("comment") or "").strip()
     sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""
+    comment_line = f"\n📝 Комментарий: {escape(comment)}" if comment else ""
 
     text = (
         f"🔑 Ключ #{key_data['id']}\n\n"
@@ -106,6 +110,7 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
         f"📱 Устройств онлайн: {online_devices} / 3"
+        f"{comment_line}"
     )
     await callback.message.edit_text(text, reply_markup=key_card_keyboard(key_id))
     await callback.answer()
@@ -172,6 +177,56 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
 
 
 @router.callback_query(F.data.startswith("key_comment:"))
-async def key_comment(callback: CallbackQuery) -> None:
-    await callback.message.answer("Комментарии к ключу отсутствуют.")
+async def key_comment_open(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
+    key_id = int(callback.data.split(":")[1])
+    keys_repo = KeysRepository(db)
+    key_data = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
+    if not key_data:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    current = str(key_data.get("comment") or "").strip()
+    current_text = f"Текущий: <i>{escape(current)}</i>\n\n" if current else ""
+
+    await state.set_state(KeyCommentState.waiting_for_comment)
+    await state.update_data(key_id=key_id)
+
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data=f"key_comment_cancel:{key_id}")]]
+    )
+    await callback.message.answer(
+        f"📝 Комментарий к ключу #{key_id}\n\n{current_text}Введите новый комментарий (до 500 символов):",
+        reply_markup=cancel_kb,
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("key_comment_cancel:"))
+async def key_comment_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    key_id = int(callback.data.split(":")[1])
+    await callback.message.delete()
+    await callback.answer("Отменено")
+    # Re-open key card via synthetic callback is not possible; just confirm cancel.
+    await callback.message.answer(
+        f"Редактирование комментария отменено. Откройте ключ #{key_id} снова.",
+    )
+
+
+@router.message(KeyCommentState.waiting_for_comment)
+async def key_comment_save(message: Message, db: Database, state: FSMContext) -> None:
+    data = await state.get_data()
+    key_id = int(data.get("key_id") or 0)
+    if not key_id:
+        await state.clear()
+        return
+
+    comment = (message.text or "").strip()[:500]
+    keys_repo = KeysRepository(db)
+    await keys_repo.update_comment(key_id, message.from_user.id, comment)
+    await state.clear()
+
+    action = "удалён" if not comment else "сохранён"
+    await message.answer(
+        f"✅ Комментарий {action}.\n\nОткройте ключ #{key_id} чтобы увидеть изменения.",
+    )
