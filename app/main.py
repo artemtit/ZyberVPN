@@ -129,11 +129,20 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
         await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
 
 
-async def _enforce_traffic_loop(db: Database, settings, interval_seconds: int = 600) -> None:
+async def _enforce_traffic_loop(db: Database, settings, bot, interval_seconds: int = 120) -> None:
     manager = build_vpn_manager(db, settings)
     while True:
         try:
-            await manager.enforce_all_users()
+            disabled_ids = await manager.enforce_all_users()
+            for tg_id in disabled_ids:
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        "⚠️ Лимит трафика исчерпан. Доступ заблокирован.\n\n"
+                        "Для восстановления доступа обновите подписку.",
+                    )
+                except Exception as notify_err:
+                    logging.warning("notify failed tg_id=%s error=%s", tg_id, notify_err)
         except Exception:
             logging.exception("Traffic enforcement loop failed")
         await asyncio.sleep(interval_seconds)
@@ -170,7 +179,7 @@ async def run() -> None:
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
-    enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings))
+    enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:

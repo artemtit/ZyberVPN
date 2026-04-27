@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from html import escape
 
@@ -92,12 +93,26 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
     # Best-effort: query 3x-ui for live traffic and device stats
     traffic_used_gb = 0.0
     online_devices = 0
+    limit_exceeded = False
     try:
         manager = build_vpn_manager(db, settings)
         bytes_used, online_devices = await manager.get_client_stats(tg_id)
         traffic_used_gb = bytes_used / (1024 ** 3)
+        if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
+            limit_exceeded = True
+            # Fire enforcement without blocking the UI response
+            async def _enforce() -> None:
+                try:
+                    await build_vpn_manager(db, settings).enforce_traffic_limit(tg_id)
+                except Exception:
+                    pass
+            asyncio.create_task(_enforce())
     except Exception:
         pass
+
+    if limit_exceeded:
+        status_text = "Заблокирован (лимит трафика)"
+        status_emoji = "🔴"
 
     comment = str(key_data.get("comment") or "").strip()
     sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""

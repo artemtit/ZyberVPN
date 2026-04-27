@@ -170,6 +170,22 @@ class UserVpnRepository:
             operation="user_vpn.delete",
         )
 
+    async def set_status(self, user_id: int, status: str) -> None:
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .update({"status": status, "updated_at": utc_now().isoformat()})
+                    .eq("user_id", user_id)
+                    .execute()
+                ),
+                operation="user_vpn.set_status",
+            )
+        except Exception:
+            logger.exception("set_status failed user_id=%s status=%s", user_id, status)
+
     async def list_ready_user_ids(self) -> list[int]:
         if not self._supabase:
             return []
