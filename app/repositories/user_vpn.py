@@ -170,6 +170,25 @@ class UserVpnRepository:
             operation="user_vpn.delete",
         )
 
+    async def list_ready_user_ids(self) -> list[int]:
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .select("user_id")
+                    .eq("status", "ready")
+                    .execute()
+                ),
+                operation="user_vpn.list_ready_user_ids",
+            )
+            rows = response.data or []
+            return [int(row["user_id"]) for row in rows if isinstance(row, dict) and row.get("user_id")]
+        except Exception:
+            logger.exception("list_ready_user_ids failed")
+            return []
+
     async def count_users_by_server(self) -> dict[int, int]:
         if not self._supabase:
             return {}

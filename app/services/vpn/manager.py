@@ -6,6 +6,7 @@ from datetime import timedelta
 from app.config import Settings
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
+from app.repositories.users import UsersRepository
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
 from app.services.vpn.xui_provider import XUIProvider
 from app.utils.datetime import ensure_utc, utc_diff, utc_now
@@ -56,11 +57,13 @@ class VPNManager:
         servers_repo: ServersRepository,
         user_vpn_repo: UserVpnRepository,
         settings: Settings,
+        users_repo: UsersRepository | None = None,
     ) -> None:
         self._providers = providers
         self._servers_repo = servers_repo
         self._user_vpn_repo = user_vpn_repo
         self._settings = settings
+        self._users_repo = users_repo
 
     async def create_user_access(
         self,
@@ -238,6 +241,92 @@ class VPNManager:
         except Exception:
             logger.exception("get_client_stats failed user_id=%s", user_id)
             return 0, 0
+
+    async def enforce_traffic_limit(self, user_id: int) -> None:
+        """Disable VPN client if user has exceeded their traffic_limit_gb."""
+        if self._users_repo is None:
+            return
+
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        if not vpn or vpn.get("status") != "ready":
+            return
+
+        server_id = int(vpn.get("server_id") or 0)
+        if server_id <= 0:
+            return
+
+        servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server:
+            return
+
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return
+
+        # Fetch live traffic — skip user if API is unavailable
+        try:
+            reality_email = f"{user_id}-reality"
+            traffic = await provider.get_client_traffic(server, reality_email)
+            if not isinstance(traffic, dict):
+                return
+            if not traffic.get("enable", True):
+                return  # Already disabled
+            bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
+        except Exception as error:
+            logger.warning("traffic fetch failed, skipping user_id=%s error=%s", user_id, error)
+            return
+
+        user = await self._users_repo.get_by_tg_id(user_id)
+        if not user:
+            return
+        traffic_limit_gb = int(user.get("traffic_limit_gb") or 60)
+        limit_bytes = traffic_limit_gb * 1024 ** 3
+
+        if bytes_used < limit_bytes:
+            return
+
+        logger.info(
+            "traffic limit exceeded, disabling client user_id=%s used_gb=%.2f limit_gb=%s",
+            user_id, bytes_used / 1024 ** 3, traffic_limit_gb,
+        )
+
+        reality_uuid = str(vpn.get("reality_uuid") or "").strip()
+        ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+
+        for uuid in filter(None, [reality_uuid, ws_uuid]):
+            for attempt in range(2):
+                try:
+                    await provider.disable_client(server, uuid)
+                    logger.info("client disabled user_id=%s uuid=%s", user_id, uuid)
+                    break
+                except Exception as error:
+                    if attempt == 0:
+                        logger.warning(
+                            "disable_client failed, retrying user_id=%s uuid=%s error=%s",
+                            user_id, uuid, error,
+                        )
+                        await asyncio.sleep(1.0)
+                    else:
+                        logger.error(
+                            "disable_client failed after retry user_id=%s uuid=%s error=%s",
+                            user_id, uuid, error,
+                        )
+
+    async def enforce_all_users(self) -> None:
+        """Check traffic limits for all provisioned users; disable exceeded ones."""
+        try:
+            user_ids = await self._user_vpn_repo.list_ready_user_ids()
+        except Exception:
+            logger.exception("enforce_all_users: failed to list ready users")
+            return
+
+        logger.info("enforce_all_users: checking %s users", len(user_ids))
+        for user_id in user_ids:
+            try:
+                await self.enforce_traffic_limit(user_id)
+            except Exception:
+                logger.exception("enforce_traffic_limit unexpected error user_id=%s", user_id)
 
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)

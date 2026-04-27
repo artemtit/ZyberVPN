@@ -129,6 +129,16 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
         await asyncio.sleep(settings.vpn_healthcheck_interval_seconds)
 
 
+async def _enforce_traffic_loop(db: Database, settings, interval_seconds: int = 600) -> None:
+    manager = build_vpn_manager(db, settings)
+    while True:
+        try:
+            await manager.enforce_all_users()
+        except Exception:
+            logging.exception("Traffic enforcement loop failed")
+        await asyncio.sleep(interval_seconds)
+
+
 async def _disable_expired_access_loop(db: Database, settings, interval_seconds: int = 120) -> None:
     users_repo = UsersRepository(db)
     manager = build_vpn_manager(db, settings)
@@ -160,6 +170,7 @@ async def run() -> None:
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
+    enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -167,7 +178,7 @@ async def run() -> None:
     except asyncio.CancelledError:
         logging.info("Polling cancelled")
     finally:
-        for task in (subscription_watchdog_task, healthcheck_task, disable_expired_task):
+        for task in (subscription_watchdog_task, healthcheck_task, disable_expired_task, enforce_traffic_task):
             task.cancel()
             try:
                 await task

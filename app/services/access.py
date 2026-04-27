@@ -50,12 +50,14 @@ def _expiry_to_ms(raw_value: str | None) -> int | None:
 def build_vpn_manager(db: Database, settings: Settings) -> VPNManager:
     servers_repo = ServersRepository(db)
     user_vpn_repo = UserVpnRepository(db)
+    users_repo = UsersRepository(db)
     providers = {"xui": XUIProvider()}
     return VPNManager(
         providers=providers,
         servers_repo=servers_repo,
         user_vpn_repo=user_vpn_repo,
         settings=settings,
+        users_repo=users_repo,
     )
 
 
