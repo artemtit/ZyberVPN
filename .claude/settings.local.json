@@ -8,7 +8,23 @@
       "Bash(scp -i ~/.ssh/claude \"C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/bot/handlers/payments.py\" root@2.26.141.181:/root/ZyberVPN/app/bot/handlers/payments.py)",
       "Bash(scp -i ~/.ssh/claude \"C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/services/vpn/xui_provider.py\" root@2.26.141.181:/root/ZyberVPN/app/services/vpn/xui_provider.py)",
       "Bash(scp -i '~/.ssh/claude' C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/repositories/users.py C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/services/access.py C:/Users/titiv/OneDrive/Desktop/ZyberVPN/ZyberVPN/app/bot/handlers/payments.py root@2.26.141.181:/tmp/)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "mcp__claude_ai_Supabase__apply_migration",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git push:*)",
+      "Bash(sshpass -V)",
+      "Bash(plink -V)",
+      "Bash(python3 -c \"import paramiko; print\\('paramiko ok'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)",
+      "Bash(/c/Users/titiv/AppData/Local/Python/pythoncore-3.14-64/python.exe -m pip install paramiko -q)",
+      "Bash(/c/Users/titiv/AppData/Local/Python/pythoncore-3.14-64/python.exe -c \"import paramiko; print\\('paramiko', paramiko.__version__\\)\")",
+      "Bash(git commit *)",
+      "Bash(/c/Users/titiv/AppData/Local/Python/pythoncore-3.14-64/python.exe *)",
+      "Bash(cat C:\\\\\\\\Users\\\\\\\\titiv\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-titiv-OneDrive-Desktop-ZyberVPN-ZyberVPN\\\\\\\\4b952035-c93c-4a2b-a6a4-4c1eee28fb16\\\\\\\\tasks\\\\\\\\b91h7wc9r.output)",
+      "Bash(cat *)"
     ]
   }
 }

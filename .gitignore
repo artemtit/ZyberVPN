@@ -211,3 +211,4 @@ __marimo__/
 CLAUDE.md
 .claude
 .claude\settings.local.json
+deploy.py
