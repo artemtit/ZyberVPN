@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from aiohttp import web
 from pydantic import ValidationError
 
@@ -23,16 +21,26 @@ async def get_subscription(request: web.Request) -> web.Response:
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error))
 
-    # Standard header for v2rayNG / v2rayN traffic display
+    # ВАЖНО: берем список серверов
+    servers = payload.get("servers", [])
+
+    if not servers:
+        raise web.HTTPNotFound(text="no servers")
+
+    # Формируем plain text (каждая ссылка с новой строки)
+    body = "\n".join(servers)
+
+    # Заголовок для клиентов (трафик + лимиты)
     userinfo = (
         f"upload={payload['upload']}; "
         f"download={payload['download']}; "
         f"total={payload['total']}; "
         f"expire={payload['expire']}"
     )
+
     return web.Response(
-        text=json.dumps(payload, ensure_ascii=False),
-        content_type="application/json",
+        text=body,
+        content_type="text/plain",
         headers={
             "Subscription-Userinfo": userinfo,
             "profile-title": "ZyberVPN",
