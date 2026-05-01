@@ -15,7 +15,7 @@ def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
             [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
-            [InlineKeyboardButton(text="🤖 Написать боту", url=support_url)],
+            [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
             [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
         ]
     )
