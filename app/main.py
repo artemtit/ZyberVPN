@@ -8,7 +8,9 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 
 from app.api.middlewares import (
@@ -27,6 +29,7 @@ from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.services.subscription import build_subscription_service
+from app.utils.datetime import parse_iso_utc
 
 try:
     from aiogram.fsm.storage.redis import RedisStorage
@@ -130,19 +133,10 @@ async def _vpn_healthcheck_loop(db: Database, settings) -> None:
 
 
 async def _enforce_traffic_loop(db: Database, settings, bot, interval_seconds: int = 120) -> None:
-    manager = build_vpn_manager(db, settings)
+    manager = build_vpn_manager(db, settings, bot=bot)
     while True:
         try:
-            disabled_ids = await manager.enforce_all_users()
-            for tg_id in disabled_ids:
-                try:
-                    await bot.send_message(
-                        tg_id,
-                        "⚠️ Лимит трафика исчерпан. Доступ заблокирован.\n\n"
-                        "Для восстановления доступа обновите подписку.",
-                    )
-                except Exception as notify_err:
-                    logging.warning("notify failed tg_id=%s error=%s", tg_id, notify_err)
+            await manager.enforce_all_users()
         except Exception:
             logging.exception("Traffic enforcement loop failed")
         await asyncio.sleep(interval_seconds)
@@ -160,6 +154,58 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
         except Exception:
             logging.exception("Disable expired access loop failed")
         await asyncio.sleep(interval_seconds)
+
+
+async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
+    users_repo = UsersRepository(db)
+    while True:
+        try:
+            expiring_3d = await users_repo.get_users_expiring_soon(72)
+            for user in expiring_3d:
+                if user.get("notified_3d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                expires_str = parse_iso_utc(user["expires_at"]).strftime("%d.%m.%Y")
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"⚠️ Ваша подписка ZyberVPN истекает {expires_str}.\n\n"
+                        "Продлите её, чтобы не потерять доступ.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                        ),
+                    )
+                    await users_repo.set_notified(tg_id, "3d")
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send 3d expiry notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+
+            expiring_1d = await users_repo.get_users_expiring_soon(24)
+            for user in expiring_1d:
+                if user.get("notified_1d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                expires_str = parse_iso_utc(user["expires_at"]).strftime("%d.%m.%Y")
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"🔴 Подписка ZyberVPN истекает сегодня ({expires_str}).\n\n"
+                        "Продлите прямо сейчас, чтобы не прерывать работу.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="⚡ Продлить сейчас", callback_data="buy_open")]]
+                        ),
+                    )
+                    await users_repo.set_notified(tg_id, "1d")
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send 1d expiry notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+        except Exception:
+            logging.exception("Expiry notification loop error")
+        await asyncio.sleep(3600)
 
 
 async def run() -> None:
@@ -180,6 +226,7 @@ async def run() -> None:
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
+    expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:
@@ -187,7 +234,13 @@ async def run() -> None:
     except asyncio.CancelledError:
         logging.info("Polling cancelled")
     finally:
-        for task in (subscription_watchdog_task, healthcheck_task, disable_expired_task, enforce_traffic_task):
+        for task in (
+            subscription_watchdog_task,
+            healthcheck_task,
+            disable_expired_task,
+            enforce_traffic_task,
+            expiry_notification_task,
+        ):
             task.cancel()
             try:
                 await task

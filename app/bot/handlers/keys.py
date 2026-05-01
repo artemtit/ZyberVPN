@@ -126,14 +126,14 @@ async def _show_key_card_edit(
     online_devices = 0
     limit_exceeded = False
     try:
-        manager = build_vpn_manager(db, settings)
+        manager = build_vpn_manager(db, settings, bot=callback.bot)
         bytes_used, online_devices = await manager.get_client_stats(tg_id)
         traffic_used_gb = bytes_used / (1024 ** 3)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
             async def _enforce() -> None:
                 try:
-                    await build_vpn_manager(db, settings).enforce_traffic_limit(tg_id)
+                    await build_vpn_manager(db, settings, bot=callback.bot).enforce_traffic_limit(tg_id)
                 except Exception:
                     pass
             asyncio.create_task(_enforce())

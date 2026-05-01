@@ -4,6 +4,8 @@ import logging
 from datetime import timedelta
 from typing import Awaitable, Callable, TypeVar
 
+from aiogram import Bot
+
 from app.config import Settings, load_settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -47,7 +49,7 @@ def _expiry_to_ms(raw_value: str | None) -> int | None:
     return int(parsed_utc.timestamp() * 1000)
 
 
-def build_vpn_manager(db: Database, settings: Settings) -> VPNManager:
+def build_vpn_manager(db: Database, settings: Settings, bot: Bot | None = None) -> VPNManager:
     servers_repo = ServersRepository(db)
     user_vpn_repo = UserVpnRepository(db)
     users_repo = UsersRepository(db)
@@ -58,6 +60,7 @@ def build_vpn_manager(db: Database, settings: Settings) -> VPNManager:
         user_vpn_repo=user_vpn_repo,
         settings=settings,
         users_repo=users_repo,
+        bot=bot,
     )
 
 

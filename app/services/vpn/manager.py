@@ -4,6 +4,10 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from app.config import Settings
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
@@ -59,12 +63,14 @@ class VPNManager:
         user_vpn_repo: UserVpnRepository,
         settings: Settings,
         users_repo: UsersRepository | None = None,
+        bot: Bot | None = None,
     ) -> None:
         self._providers = providers
         self._servers_repo = servers_repo
         self._user_vpn_repo = user_vpn_repo
         self._settings = settings
         self._users_repo = users_repo
+        self._bot = bot
 
     async def create_user_access(
         self,
@@ -328,6 +334,20 @@ class VPNManager:
 
         if all_disabled:
             await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=None)
+            if self._bot is not None:
+                try:
+                    await self._bot.send_message(
+                        user_id,
+                        "🚫 Ваш VPN-ключ заблокирован: исчерпан лимит трафика.\n\n"
+                        "Для разблокировки продлите подписку.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить", callback_data="buy_open")]]
+                        ),
+                    )
+                except TelegramForbiddenError:
+                    pass
+                except Exception as error:
+                    logger.warning("traffic block notification failed user_id=%s error=%s", user_id, error)
 
         return all_disabled
 

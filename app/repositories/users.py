@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+from datetime import timedelta
 from typing import Optional
 
 from app.db.database import Database
@@ -280,6 +281,54 @@ class UsersRepository:
         except Exception:
             logger.exception("Supabase list_expired_active_tg_ids failed")
             return []
+
+    async def get_users_expiring_soon(self, hours_until_expiry: int) -> list[dict]:
+        if not self._supabase:
+            return []
+        now = utc_now()
+        deadline = now + timedelta(hours=hours_until_expiry)
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select(
+                        "id,tg_id,expires_at,is_active,notified_3d_at,notified_1d_at"
+                    )
+                    .eq("is_active", True)
+                    .not_.is_("expires_at", "null")
+                    .lte("expires_at", deadline.isoformat())
+                    .gt("expires_at", now.isoformat())
+                    .execute()
+                ),
+                operation="users.get_users_expiring_soon",
+            )
+            return list(response.data or [])
+        except Exception:
+            logger.exception("Supabase get_users_expiring_soon failed hours=%s", hours_until_expiry)
+            return []
+
+    async def set_notified(self, tg_id: int, notification_type: str) -> None:
+        if not self._supabase:
+            return
+        field = ""
+        if notification_type == "3d":
+            field = "notified_3d_at"
+        elif notification_type == "1d":
+            field = "notified_1d_at"
+        if not field:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({field: utc_now().isoformat()})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation=f"users.set_notified.{notification_type}",
+            )
+        except Exception:
+            logger.exception("Supabase set_notified failed tg_id=%s type=%s", tg_id, notification_type)
 
     async def count_referrals(self, tg_id: int) -> int:
         if not self._supabase:

@@ -109,7 +109,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     if purchase_type == "renewal":
         # Renewal: extend subscription only, update XUI expiry for the specific key.
         try:
-            manager = build_vpn_manager(db, settings)
+            manager = build_vpn_manager(db, settings, bot=message.bot)
             key_id_int = int(renew_key_id) if renew_key_id is not None else None
             await manager.update_user_expiry(tg_id, expiry_ms, key_id=key_id_int)
         except Exception:
@@ -152,7 +152,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     # Update XUI client expiry to match the extended subscription
     try:
-        manager = build_vpn_manager(db, settings)
+        manager = build_vpn_manager(db, settings, bot=message.bot)
         await manager.update_user_expiry(tg_id, expiry_ms)
     except Exception:
         logger.exception("Failed to update XUI expiry after payment tg_id=%s", tg_id)
