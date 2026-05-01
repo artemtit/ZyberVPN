@@ -10,6 +10,7 @@ from app.bot.states.purchase import PurchaseState
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
+from app.repositories.keys import KeysRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
@@ -116,6 +117,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     renew_key_id = data.get("renew_key_id")
 
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
     payments_repo = PaymentsRepository(db)
     subs_repo = SubscriptionsRepository(db)
     idem = IdempotencyService(IdempotencyRepository())
@@ -145,6 +147,15 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     async def _process_payment() -> dict:
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="test-sbp")
+            if purchase_type == "renewal" and renew_key_id is not None:
+                current_sub = await subs_repo.get_active(int(payment["tg_id"]))
+                if current_sub:
+                    all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
+                    for k in all_keys:
+                        if k["id"] != renew_key_id and not k.get("expires_at"):
+                            await keys_repo.update_expires_at(
+                                int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
+                            )
             await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
             await users_repo.set_traffic_limit(int(payment["tg_id"]), tariff.get("traffic_gb", 60))
         return {
@@ -180,12 +191,17 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":
+        key_id_int = int(renew_key_id) if renew_key_id is not None else None
         try:
             manager = build_vpn_manager(db, settings, bot=callback.bot)
-            key_id_int = int(renew_key_id) if renew_key_id is not None else None
             await manager.update_user_expiry(tg_id, expiry_ms, key_id=key_id_int)
         except Exception:
             logger.exception("Failed to update XUI expiry after test SBP renewal tg_id=%s", tg_id)
+        if key_id_int is not None:
+            try:
+                await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
         await callback.message.answer("✅ Тестовая СБП-оплата проведена. Подписка продлена.")
         await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
         return

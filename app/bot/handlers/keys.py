@@ -105,15 +105,22 @@ async def _show_key_card_edit(
         return False
 
     created_at = parse_iso_utc(key_data["created_at"])
-    active_sub = await subs_repo.get_active(tg_id)
-    if active_sub:
-        expires_at = parse_iso_utc(active_sub["expires_at"])
-        status_text = "Активен"
-        status_emoji = "🟢"
+    key_expires_raw = key_data.get("expires_at")
+    if key_expires_raw:
+        expires_at = parse_iso_utc(key_expires_raw)
+        key_is_active = expires_at > utc_now()
+        status_text = "Активен" if key_is_active else "Истек"
+        status_emoji = "🟢" if key_is_active else "🔴"
     else:
-        expires_at = created_at
-        status_text = "Истек"
-        status_emoji = "🔴"
+        active_sub = await subs_repo.get_active(tg_id)
+        if active_sub:
+            expires_at = parse_iso_utc(active_sub["expires_at"])
+            status_text = "Активен"
+            status_emoji = "🟢"
+        else:
+            expires_at = created_at
+            status_text = "Истек"
+            status_emoji = "🔴"
 
     days, hours, _ = _remaining_parts(expires_at)
 

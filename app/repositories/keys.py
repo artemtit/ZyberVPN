@@ -110,6 +110,20 @@ class KeysRepository:
             operation="keys.update_key_text",
         )
 
+    async def update_expires_at(self, key_id: int, tg_id: int, expires_at: str) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"expires_at": expires_at})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.update_expires_at",
+        )
+
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:
             return False
