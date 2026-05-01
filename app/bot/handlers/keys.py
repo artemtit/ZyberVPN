@@ -152,7 +152,7 @@ async def _show_key_card_edit(
     text = (
         f"🔑 Ключ #{key_data['id']}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
-        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y')} ({days}д. {hours}ч.)\n"
+        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y %H:%M UTC')} ({days}д. {hours}ч.)\n"
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
         f"📱 Устройств онлайн: {online_devices} / 3"
