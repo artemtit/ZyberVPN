@@ -152,48 +152,58 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     instruction = INSTRUCTIONS.get(app_callback, "Инструкция скоро появится.")
-    sub_block = ""
-    if sub_url:
-        sub_block = f"Subscription: <code>{escape(str(sub_url))}</code>\n\n"
-    config_block = ""
-    if vpn_configs:
-        rendered = "\n".join(f"<code>{escape(item)}</code>" for item in vpn_configs[:6])
-        config_block = f"Конфиги:\n{rendered}\n\n"
 
     await state.set_state(ConnectFlowState.done)
     await state.update_data(app_callback=app_callback, app_name=app_name)
 
-    text = (
-        "Подключение к ZyberVPN\n\n"
-        f"Устройство: {escape(device_name)}\n"
-        f"Приложение: {escape(app_name)}\n\n"
-        f"Ваш ключ: <code>{escape(vpn_key)}</code>\n\n"
-        f"{sub_block}"
-        f"{config_block}"
-        "Инструкция:\n"
-        f"{escape(instruction)}"
-    )
+    if app_callback == "app_cli":
+        text = (
+            "📲 Подключение к ZyberVPN\n\n"
+            f"Устройство: {escape(device_name)}\n"
+            f"Приложение: {escape(app_name)}\n\n"
+            f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>\n\n"
+            "📋 Инструкция:\n"
+            f"{escape(instruction)}"
+        )
+    else:
+        connection_value = sub_url or vpn_key
+        text = (
+            "📲 Подключение к ZyberVPN\n\n"
+            f"Устройство: {escape(device_name)}\n"
+            f"Приложение: {escape(app_name)}\n\n"
+            f"🔗 Ссылка для подключения:\n<code>{escape(connection_value)}</code>\n\n"
+            "📋 Инструкция:\n"
+            f"{escape(instruction)}"
+        )
 
     await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
     await callback.answer()
+
+
+@router.callback_query(F.data == "connect_copy_sub")
+async def connect_copy_sub(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    sub_url = data.get("sub_url")
+    if not sub_url:
+        await callback.answer("Subscription URL недоступен. Откройте ключ заново.", show_alert=True)
+        return
+    await callback.message.answer(f"🔗 Subscription URL:\n<code>{escape(str(sub_url))}</code>")
+    await callback.answer("Ссылка отправлена")
 
 
 @router.callback_query(F.data == "connect_copy_key")
 async def connect_copy_key(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     vpn_key = data.get("vpn_key")
-    sub_url = data.get("sub_url")
     vpn_configs = [str(item) for item in (data.get("vpn_configs") or []) if str(item).startswith("vless://")]
     if not vpn_key:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
-    text = f"Ваш ключ:\n<code>{escape(vpn_key)}</code>"
-    if sub_url:
-        text += f"\n\nSubscription:\n<code>{escape(str(sub_url))}</code>"
-    if vpn_configs:
+    text = f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>"
+    if vpn_configs and len(vpn_configs) > 1:
         rendered = "\n".join(f"<code>{escape(item)}</code>" for item in vpn_configs[:6])
-        text += f"\n\nКонфиги:\n{rendered}"
+        text += f"\n\nВсе конфиги:\n{rendered}"
     await callback.message.answer(text)
     await callback.answer("Ключ отправлен")
 

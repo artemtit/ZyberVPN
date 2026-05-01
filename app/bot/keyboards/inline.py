@@ -128,10 +128,10 @@ def promo_apply_target_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def referral_keyboard() -> InlineKeyboardMarkup:
+def referral_keyboard(ref_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📤 Поделиться", callback_data="ref_share")],
+            [InlineKeyboardButton(text="📤 Поделиться в Telegram", url=ref_url)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
         ]
     )
@@ -161,6 +161,7 @@ def connect_apps_keyboard(apps: list[tuple[str, str]]) -> InlineKeyboardMarkup:
 def connect_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Скопировать sub-ссылку", callback_data="connect_copy_sub")],
             [InlineKeyboardButton(text="📋 Скопировать ключ", callback_data="connect_copy_key")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="connect_back_devices")],
         ]

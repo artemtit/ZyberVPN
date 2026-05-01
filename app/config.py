@@ -35,6 +35,7 @@ class Settings:
     api_rate_limit_per_minute: int
     privacy_policy_url: str
     terms_url: str
+    bot_username: str
 
 
 def load_settings() -> Settings:
@@ -85,4 +86,5 @@ def load_settings() -> Settings:
         api_rate_limit_per_minute=max(1, int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))),
         privacy_policy_url=os.getenv("PRIVACY_POLICY_URL", "https://telegra.ph/Politika-konfidencialnosti-04-01-26"),
         terms_url=os.getenv("TERMS_URL", "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"),
+        bot_username=os.getenv("BOT_USERNAME", "ZyberVPNBot").strip(),
     )

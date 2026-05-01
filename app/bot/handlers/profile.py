@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from html import escape
+from urllib.parse import quote
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -366,13 +367,20 @@ async def _apply_promo(
         )
 
 
+def _build_share_url(bot_username: str, tg_id: int) -> str:
+    ref_link = f"https://t.me/{bot_username}?start=ref_{tg_id}"
+    share_text = "Попробуй ZyberVPN — быстрый и надёжный VPN-сервис 🚀"
+    return f"https://t.me/share/url?url={quote(ref_link)}&text={quote(share_text)}"
+
+
 @router.callback_query(F.data == "profile_ref")
 async def referral_open(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     local_user = await users_repo.get_or_create(callback.from_user.id)
     invited = await users_repo.count_referrals(callback.from_user.id)
     me = await callback.bot.get_me()
-    link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
+    ref_link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
+    share_url = _build_share_url(me.username, callback.from_user.id)
     await callback.message.edit_text(
         "🌟 Реферальная программа\n\n"
         "Приглашайте друзей и получайте бонусы! 💰\n\n"
@@ -384,16 +392,20 @@ async def referral_open(callback: CallbackQuery, db: Database) -> None:
         f"👤 Приглашено: {invited}\n"
         "💰 Заработано: 0.00 RUB\n\n"
         "🔗 Реферальная ссылка:\n"
-        f"{link}",
-        reply_markup=referral_keyboard(),
+        f"{ref_link}",
+        reply_markup=referral_keyboard(share_url),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "ref_share")
 async def referral_share(callback: CallbackQuery) -> None:
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     me = await callback.bot.get_me()
-    link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
-    await callback.message.answer(link, disable_web_page_preview=True)
+    share_url = _build_share_url(me.username, callback.from_user.id)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="📤 Поделиться в Telegram", url=share_url)]]
+    )
+    await callback.message.answer("Поделитесь ссылкой с друзьями:", reply_markup=keyboard)
     await callback.answer()
 
