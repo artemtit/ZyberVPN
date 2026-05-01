@@ -96,6 +96,20 @@ class KeysRepository:
             operation="keys.set_primary.set",
         )
 
+    async def update_key_text(self, key_id: int, tg_id: int, key: str) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"key": key})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.update_key_text",
+        )
+
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:
             return False

@@ -3,10 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import signal
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -55,38 +52,42 @@ class XUIProvider(VPNProvider):
             existing_reality = self._find_existing_client_uuid(inbound, reality_email)
             if existing_reality and reality_uuid and existing_reality != reality_uuid:
                 logger.warning(
-                    "UUID mismatch for email=%s: xui_has=%s expected=%s - forcing re-add with expected UUID",
-                    reality_email,
-                    existing_reality,
-                    reality_uuid,
+                    "UUID mismatch for email=%s: xui_has=%s expected=%s - updating in-place",
+                    reality_email, existing_reality, reality_uuid,
                 )
-                existing_reality = None
-
-            final_reality_uuid = reality_uuid or existing_reality or str(uuid4())
-            if not existing_reality:
+                await self._update_client_uuid(session, server, inbound, reality_email, reality_uuid)
+                final_reality_uuid = reality_uuid
+                logger.info(
+                    "xui reality client UUID updated user_id=%s server_id=%s uuid=%s",
+                    user_id, server.id, final_reality_uuid,
+                )
+            elif not existing_reality:
+                final_reality_uuid = reality_uuid or str(uuid4())
                 await self._add_client(session, server, final_reality_uuid, reality_email, limits)
                 logger.info(
                     "xui reality client added user_id=%s server_id=%s uuid=%s",
-                    user_id,
-                    server.id,
-                    final_reality_uuid,
+                    user_id, server.id, final_reality_uuid,
                 )
+            else:
+                final_reality_uuid = existing_reality
 
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
                 existing_ws = self._find_existing_client_uuid(inbound, ws_email)
                 if existing_ws and ws_uuid and existing_ws != ws_uuid:
                     logger.warning(
-                        "WS UUID mismatch for email=%s: xui_has=%s expected=%s - forcing re-add",
-                        ws_email,
-                        existing_ws,
-                        ws_uuid,
+                        "WS UUID mismatch for email=%s: xui_has=%s expected=%s - updating in-place",
+                        ws_email, existing_ws, ws_uuid,
                     )
-                    existing_ws = None
-                final_ws_uuid = ws_uuid or existing_ws or str(uuid4())
-                if not existing_ws:
+                    await self._update_client_uuid(session, server, inbound, ws_email, ws_uuid)
+                    final_ws_uuid = ws_uuid
+                    logger.info("xui ws client UUID updated user_id=%s server_id=%s", user_id, server.id)
+                elif not existing_ws:
+                    final_ws_uuid = ws_uuid or str(uuid4())
                     await self._add_client(session, server, final_ws_uuid, ws_email, limits)
                     logger.info("xui ws client added user_id=%s server_id=%s", user_id, server.id)
+                else:
+                    final_ws_uuid = existing_ws
 
             await self._reload_xray(session, server)
             await self._verify_client_visible(session, server, final_reality_uuid)
@@ -135,6 +136,7 @@ class XUIProvider(VPNProvider):
                 "settings": json.dumps({"clients": clients}),
             }
             await self._request_json(session, "post", update_url, data=payload)
+            await self._reload_xray(session, server)
 
     async def update_client_expiry(self, server: ServerInfo, client_uuid: str, expiry_time_ms: int) -> bool:
         """Update expiryTime for a specific client. Returns True if client was found and updated."""
@@ -163,7 +165,14 @@ class XUIProvider(VPNProvider):
                 "id": server.inbound_id,
                 "settings": json.dumps({"clients": clients}),
             }
-            await self._request_json(session, "post", update_url, data=payload)
+            data = await self._request_json(session, "post", update_url, data=payload)
+            if not isinstance(data, dict) or data.get("success") is not True:
+                logger.error(
+                    "update_client_expiry failed server_id=%s uuid=%s response=%s",
+                    server.id, client_uuid, data,
+                )
+                return False
+            await self._reload_xray(session, server)
             return True
 
     async def client_exists(self, server: ServerInfo, client_uuid: str) -> bool:
@@ -203,24 +212,11 @@ class XUIProvider(VPNProvider):
     async def is_healthy(self, server: ServerInfo) -> bool:
         try:
             self._validate_server_security(server)
-            port = server.public_port or 443
-            try:
-                _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(server.host, port), timeout=5.0
-                )
-                writer.close()
-                await writer.wait_closed()
-            except Exception as tcp_err:
-                logger.warning(
-                    "xui port unreachable server_id=%s host=%s port=%s error=%s",
-                    server.id, server.host, port, tcp_err,
-                )
-                return False
             async with self._session() as session:
                 await self._login(session, server)
                 inbound = await self._get_inbound(session, server)
                 self._validate_inbound_clients_readable(inbound)
-            logger.info("xui healthcheck ok server_id=%s host=%s port=%s", server.id, server.host, port)
+            logger.info("xui healthcheck ok server_id=%s host=%s port=%s", server.id, server.host, server.public_port or 443)
             return True
         except Exception as error:
             logger.warning("xui healthcheck failed server_id=%s error=%s", server.id, error)
@@ -336,7 +332,7 @@ class XUIProvider(VPNProvider):
                             "email": email,
                             "flow": "xtls-rprx-vision",
                             "enable": True,
-                            "limitIp": 3,
+                            "limitIp": int(limits.limit_ip),
                             "expiryTime": int(limits.expiry_time),
                             "totalGB": int(limits.total_gb) * 1024 * 1024 * 1024,
                         }
@@ -347,6 +343,44 @@ class XUIProvider(VPNProvider):
         data = await self._request_json(session, "post", url, data=payload)
         if not isinstance(data, dict) or data.get("success") is not True:
             raise XUIProviderError(f"addClient returned error: {data}")
+
+    async def _update_client_uuid(
+        self,
+        session: ClientSession,
+        server: ServerInfo,
+        inbound: dict,  # ignored; fresh data is fetched below
+        email: str,
+        new_uuid: str,
+    ) -> None:
+        inbound = await self._get_inbound(session, server)
+        settings_raw = inbound.get("settings")
+        settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
+        if not isinstance(settings, dict):
+            raise XUIProviderError("inbound settings invalid for UUID update")
+        clients = settings.get("clients")
+        if not isinstance(clients, list):
+            raise XUIProviderError("inbound clients invalid for UUID update")
+        old_uuid: str | None = None
+        updated_client: dict | None = None
+        for client in clients:
+            if isinstance(client, dict) and str(client.get("email")) == email:
+                old_uuid = str(client.get("id") or "").strip()
+                updated_client = {**client, "id": new_uuid}
+                break
+        if not old_uuid or updated_client is None:
+            raise XUIProviderError(f"Client email={email} not found for UUID update server_id={server.id}")
+        url = f"{server.api_url}/panel/api/inbounds/updateClient/{old_uuid}"
+        payload = {
+            "id": server.inbound_id,
+            "settings": json.dumps({"clients": [updated_client]}),
+        }
+        data = await self._request_json(session, "post", url, data=payload)
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise XUIProviderError(f"updateClient returned error: {data}")
+        logger.info(
+            "xui client UUID updated email=%s old=%s new=%s server_id=%s",
+            email, old_uuid, new_uuid, server.id,
+        )
 
     def _find_existing_client_uuid(self, inbound: dict, email: str) -> str | None:
         raw = inbound.get("settings")
@@ -383,7 +417,24 @@ class XUIProvider(VPNProvider):
             return False
         for client in clients:
             if isinstance(client, dict) and str(client.get("id")) == client_uuid:
-                # Disabled clients serve dead configs — treat as non-existent.
+                return True
+        return False
+
+    def _is_client_enabled(self, inbound: dict, client_uuid: str) -> bool:
+        raw = inbound.get("settings")
+        if not raw:
+            return False
+        try:
+            settings = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return False
+        if not isinstance(settings, dict):
+            return False
+        clients = settings.get("clients")
+        if not isinstance(clients, list):
+            return False
+        for client in clients:
+            if isinstance(client, dict) and str(client.get("id")) == client_uuid:
                 return bool(client.get("enable", True))
         return False
 
@@ -439,13 +490,10 @@ class XUIProvider(VPNProvider):
         await asyncio.sleep(0.5)
         try:
             inbound = await self._get_inbound(session, server)
-        except Exception:
-            logger.warning(
-                "xui verify skipped (inbound unreachable) server_id=%s uuid=%s",
-                server.id,
-                client_uuid,
-            )
-            return
+        except Exception as err:
+            raise XUIProviderError(
+                f"Cannot verify client {client_uuid}: inbound unreachable server_id={server.id}"
+            ) from err
         if self._find_client_by_uuid(inbound, client_uuid):
             logger.info("xui client verified server_id=%s uuid=%s", server.id, client_uuid)
             return
@@ -469,26 +517,11 @@ class XUIProvider(VPNProvider):
         logger.info("xui client verified after retry server_id=%s uuid=%s", server.id, client_uuid)
 
     async def _reload_xray(self, session: ClientSession, server: ServerInfo) -> None:
-        """Reload xray runtime config after adding clients.
-
-        Tries the 3x-ui panel API first, then SIGUSR1, then service restart as last resort.
-        """
+        """Reload xray runtime config via the 3x-ui panel API."""
         if await self._try_api_reload(session, server):
             await asyncio.sleep(1.5)
             return
-        reloaded = await asyncio.get_event_loop().run_in_executor(None, self._signal_reload, server.id)
-        if reloaded:
-            await asyncio.sleep(1.5)
-            return
-        restarted = await asyncio.get_event_loop().run_in_executor(None, self._restart_xui_service, server.id)
-        if restarted:
-            await asyncio.sleep(4.0)
-            return
-        logger.error(
-            "xui ALL reload methods failed server_id=%s - API/SIGUSR1/systemctl all returned False. "
-            "Client may not be served until Xray reloads on its own.",
-            server.id,
-        )
+        raise XUIProviderError(f"xray reload failed: API reload rejected server_id={server.id}")
 
     async def _try_api_reload(self, session: ClientSession, server: ServerInfo) -> bool:
         """POST /server/restartXrayService — succeeds on some 3x-ui versions."""
@@ -503,46 +536,6 @@ class XUIProvider(VPNProvider):
                     return True
         except Exception:
             pass
-        return False
-
-    @staticmethod
-    def _signal_reload(server_id: int) -> bool:
-        """Send SIGUSR1 to the x-ui process to trigger xray config reload."""
-        try:
-            for pid_dir in Path("/proc").iterdir():
-                if not pid_dir.name.isdigit():
-                    continue
-                try:
-                    comm = (pid_dir / "comm").read_text().strip()
-                    if comm == "x-ui":
-                        os.kill(int(pid_dir.name), signal.SIGUSR1)
-                        logger.info("xui xray reloaded via SIGUSR1 pid=%s server_id=%s", pid_dir.name, server_id)
-                        return True
-                except (FileNotFoundError, ProcessLookupError, PermissionError):
-                    continue
-        except Exception as error:
-            logger.warning("xui xray reload failed server_id=%s error=%s", server_id, error)
-        return False
-
-    @staticmethod
-    def _restart_xui_service(server_id: int) -> bool:
-        """Restart x-ui via systemctl as last resort when both API and SIGUSR1 fail."""
-        import subprocess  # noqa: PLC0415
-        try:
-            result = subprocess.run(
-                ["systemctl", "restart", "x-ui"],
-                capture_output=True,
-                timeout=20,
-            )
-            if result.returncode == 0:
-                logger.info("xui service restarted via systemctl server_id=%s", server_id)
-                return True
-            logger.warning(
-                "xui systemctl restart failed server_id=%s returncode=%s stderr=%s",
-                server_id, result.returncode, result.stderr.decode()[:300],
-            )
-        except Exception as error:
-            logger.warning("xui service restart unavailable server_id=%s error=%s", server_id, error)
         return False
 
     def _build_profiles(

@@ -149,11 +149,16 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
     while True:
         try:
             expired_tg_ids = await users_repo.list_expired_active_tg_ids(limit=300)
-            for tg_id in expired_tg_ids:
+        except Exception:
+            logging.exception("Disable expired access loop: failed to fetch expired users")
+            await asyncio.sleep(interval_seconds)
+            continue
+        for tg_id in expired_tg_ids:
+            try:
                 await manager.disable_user_access(tg_id)
                 await users_repo.update_status(tg_id, False)
-        except Exception:
-            logging.exception("Disable expired access loop failed")
+            except Exception:
+                logging.exception("Disable expired access loop: failed to disable user tg_id=%s", tg_id)
         await asyncio.sleep(interval_seconds)
 
 

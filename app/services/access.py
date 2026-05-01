@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from typing import Awaitable, Callable, TypeVar
+from uuid import uuid4
 
 from aiogram import Bot
 
@@ -151,19 +152,41 @@ async def ensure_user_access(
     expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
 
     if force_new_key:
-        # Provision a brand-new VPN key via the null-slot state machine.
+        # Pre-allocate a real key_id before VPN creation.
+        # Passing key_id=None would target the null-slot which may already hold a 'ready' row,
+        # causing the state machine to return stale configs instead of provisioning a new client.
+        placeholder = f"creating:{uuid4()}"
+        pre_key = await _safe_repo_call(
+            "keys.create_placeholder",
+            lambda: keys_repo.create(tg_id, placeholder),
+            fallback=None,
+            tg_id=tg_id,
+        )
+        if not pre_key:
+            raise AccessEnsureError("Failed to allocate key slot")
+        new_key_id = int(pre_key["id"])
+        logger.info("VPN key slot pre-allocated tg_id=%s key_id=%s", tg_id, new_key_id)
+
         try:
-            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, key_id=None)
+            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, key_id=new_key_id)
         except VPNManagerError as error:
-            logger.error("VPN creation failed tg_id=%s error=%s", tg_id, error)
+            logger.error("VPN creation failed tg_id=%s key_id=%s error=%s", tg_id, new_key_id, error)
             raise AccessEnsureError(str(error)) from error
 
         vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
-        logger.info("VPN ensure (new key) completed tg_id=%s configs=%s", tg_id, len(vpn_configs))
+        logger.info("VPN ensure (new key) completed tg_id=%s key_id=%s configs=%s", tg_id, new_key_id, len(vpn_configs))
 
         primary_key = vpn_configs[0] if vpn_configs else ""
         if primary_key and not _is_vpn_key_valid(primary_key):
             raise AccessEnsureError("Invalid vpn_key after ensure")
+
+        if primary_key:
+            await _safe_repo_call(
+                "keys.update_key_text",
+                lambda: keys_repo.update_key_text(new_key_id, tg_id, primary_key),
+                fallback=None,
+                tg_id=tg_id,
+            )
 
         current_key = str((supabase_user or {}).get("vpn_key") or "")
         if primary_key and current_key != primary_key:
@@ -175,25 +198,13 @@ async def ensure_user_access(
             supabase_user["vpn_key"] = primary_key
 
         if primary_key:
-            new_key = await _safe_repo_call(
-                "keys.create", lambda: keys_repo.create(tg_id, primary_key), fallback=None, tg_id=tg_id
+            await _safe_repo_call(
+                "keys.set_primary",
+                lambda: keys_repo.set_primary(tg_id, new_key_id),
+                fallback=None,
+                tg_id=tg_id,
             )
-            if new_key:
-                new_key_id = new_key["id"]
-                user_vpn_repo = UserVpnRepository(db)
-                await _safe_repo_call(
-                    "user_vpn.link_key_id",
-                    lambda: user_vpn_repo.link_key_id(tg_id, new_key_id),
-                    fallback=None,
-                    tg_id=tg_id,
-                )
-                await _safe_repo_call(
-                    "keys.set_primary",
-                    lambda: keys_repo.set_primary(tg_id, new_key_id),
-                    fallback=None,
-                    tg_id=tg_id,
-                )
-                logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
+            logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
     else:
         # Return existing configs without provisioning anything new.
         vpn_configs = await manager.get_subscription(tg_id, create_if_missing=False)

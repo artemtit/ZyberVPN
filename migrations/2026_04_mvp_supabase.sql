@@ -103,18 +103,58 @@ create table if not exists public.servers (
 create table if not exists public.user_vpn (
   id bigint generated always as identity primary key,
   user_id bigint not null,
-  server_id bigint not null references public.servers(id),
-  reality_uuid text not null,
+  server_id bigint references public.servers(id),
+  reality_uuid text,
   ws_uuid text,
-  reality_config text not null,
-  ws_config text not null,
+  reality_config text,
+  ws_config text,
+  key_id bigint,
+  status text not null default 'ready',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id)
+  unique (user_id, key_id)
 );
 
-create unique index if not exists idx_user_vpn_user_id on public.user_vpn(user_id);
-create index if not exists idx_user_vpn_server_id on public.user_vpn(server_id);
+-- Relax NOT NULL on provisioning fields to allow 'creating' placeholder rows.
+alter table public.user_vpn alter column server_id    drop not null;
+alter table public.user_vpn alter column reality_uuid drop not null;
+alter table public.user_vpn alter column reality_config drop not null;
+alter table public.user_vpn alter column ws_config    drop not null;
+
+-- Add new columns (no-op if table was just created above).
+alter table public.user_vpn add column if not exists key_id  bigint;
+alter table public.user_vpn add column if not exists status  text not null default 'ready';
+
+-- Backfill status for rows that pre-date this column.
+update public.user_vpn set status = 'ready' where status is null;
+
+-- Replace unique(user_id) with unique(user_id, key_id).
+alter table public.user_vpn drop constraint if exists user_vpn_user_id_key;
+drop index if exists idx_user_vpn_user_id;
+
+-- NULLS NOT DISTINCT ensures (user_id, NULL) is treated as a single unique slot.
+create unique index if not exists idx_user_vpn_user_id_key_id
+  on public.user_vpn (user_id, key_id) nulls not distinct;
+
+create index if not exists idx_user_vpn_server_id on public.user_vpn (server_id);
+
+-- RPC: atomically claim a 'creating' slot for (user_id, key_id).
+-- Returns true if the row was inserted, false if it already existed.
+create or replace function public.claim_user_vpn_creating(
+  p_user_id bigint,
+  p_key_id  bigint
+)
+returns boolean
+language plpgsql
+as $$
+begin
+  insert into public.user_vpn (user_id, key_id, status)
+  values (p_user_id, p_key_id, 'creating')
+  on conflict (user_id, key_id) do nothing;
+
+  return found;
+end;
+$$;
 
 -- Tracks when processing started so stale locks can be detected and recovered.
 alter table public.idempotency_keys

@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from aiohttp import ClientError
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -158,35 +159,30 @@ class VPNManager:
         return await self.create_user_access(user_id)
 
     async def disable_user_access(self, user_id: int) -> None:
-        row = await self._user_vpn_repo.get_user_vpn(user_id)
-        if not row:
-            return
-        server_id = int(row.get("server_id") or 0)
-        if server_id <= 0:
+        rows = await self._user_vpn_repo.list_user_vpns(user_id)
+        rows = [r for r in rows if int(r.get("server_id") or 0) > 0]
+        if not rows:
             return
         servers = await self._servers_repo.list_all()
-        server = next((item for item in servers if item.id == server_id), None)
-        if not server:
-            return
         provider = self._providers.get("xui")
         if provider is None:
             return
-        reality_uuid = str(row.get("reality_uuid") or "").strip()
-        ws_uuid = str(row.get("ws_uuid") or "").strip()
-        for uuid in [reality_uuid, ws_uuid]:
-            if not uuid:
+        for row in rows:
+            server_id = int(row.get("server_id") or 0)
+            server = next((item for item in servers if item.id == server_id), None)
+            if not server:
+                logger.warning("VPN server not found user_id=%s server_id=%s — skipping disable", user_id, server_id)
                 continue
-            try:
+            reality_uuid = str(row.get("reality_uuid") or "").strip()
+            ws_uuid = str(row.get("ws_uuid") or "").strip()
+            for uuid in [reality_uuid, ws_uuid]:
+                if not uuid:
+                    continue
                 await provider.disable_client(server, uuid)
                 logger.info("VPN client disabled user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
-            except Exception:
-                logger.exception("VPN disable failed user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
-
-        try:
-            await self._user_vpn_repo.delete(user_id)
-            logger.info("VPN user_vpn row deleted user_id=%s", user_id)
-        except Exception:
-            logger.exception("VPN user_vpn delete failed user_id=%s", user_id)
+            key_id = row.get("key_id")
+            await self._user_vpn_repo.delete(user_id, key_id)
+            logger.info("VPN user_vpn row deleted user_id=%s key_id=%s", user_id, key_id)
 
     async def refresh_server_health(self) -> None:
         servers = await self._servers_repo.list_all()
@@ -452,6 +448,12 @@ class VPNManager:
                 if all_configs:
                     return all_configs
                 return self._profiles_to_subscription(result.profiles)
+            except (asyncio.TimeoutError, ClientError) as error:
+                last_error = error
+                logger.warning(
+                    "VPN create transient error user_id=%s server_id=%s error=%s",
+                    user_id, server.id, error,
+                )
             except Exception as error:
                 last_error = error
                 logger.exception("VPN create failed user_id=%s server_id=%s", user_id, server.id)
