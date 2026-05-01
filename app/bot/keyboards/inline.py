@@ -15,7 +15,7 @@ def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
             [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
-            [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
+            [InlineKeyboardButton(text="🤖 Написать боту", url=support_url)],
             [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
         ]
     )
@@ -40,16 +40,25 @@ def keys_list_keyboard(key_rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def key_card_keyboard(key_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
-            [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")],
-            [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
-            [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys")],
-        ]
-    )
+def key_card_keyboard(
+    key_id: int,
+    is_primary: bool = False,
+    has_comment: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
+        [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")],
+        [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
+        [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
+    ]
+    if has_comment:
+        rows.append([InlineKeyboardButton(text="🗑 Удалить комментарий", callback_data=f"key_comment_delete:{key_id}")])
+    if is_primary:
+        rows.append([InlineKeyboardButton(text="⭐ (Основной ключ)", callback_data="noop")])
+    else:
+        rows.append([InlineKeyboardButton(text="⭐ Сделать основным", callback_data=f"key_set_primary:{key_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def tariffs_keyboard() -> InlineKeyboardMarkup:

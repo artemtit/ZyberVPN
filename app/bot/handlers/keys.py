@@ -31,6 +31,21 @@ def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
     return days, hours, minutes
 
 
+def _key_protocol(key_str: str) -> str:
+    if "security=reality" in key_str:
+        return "REALITY"
+    if "type=ws" in key_str or "path=" in key_str:
+        return "WS+TLS"
+    return "VPN"
+
+
+def _key_label(key_str: str, is_primary: bool, months_left: int, is_active: bool) -> str:
+    icon = "⭐" if is_primary else "🔑"
+    protocol = _key_protocol(key_str)
+    status = f"{months_left} мес." if is_active else "истёк"
+    return f"{icon} {protocol} — {status}"
+
+
 @router.callback_query(F.data == "menu_keys")
 async def keys_list(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
@@ -40,20 +55,32 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     keys = await keys_repo.list_by_user(callback.from_user.id)
     active_sub = await subs_repo.get_active(callback.from_user.id)
 
-    months_left = 0
+    sub_months_left = 0
     if active_sub:
-        expires_at = parse_iso_utc(active_sub["expires_at"])
-        days, _, _ = _remaining_parts(expires_at)
-        months_left = max(days // 30, 0)
+        sub_expires_at = parse_iso_utc(active_sub["expires_at"])
+        sub_days, _, _ = _remaining_parts(sub_expires_at)
+        sub_months_left = max(sub_days // 30, 0)
 
     key_rows: list[tuple[str, str]] = []
-    for index, key_data in enumerate(keys, start=1):
-        is_primary = key_data.get("is_primary", False)
-        if is_primary:
-            status = "✅" if active_sub else "⚪"
-            label = f"⭐ {status} #{index} (Основной) ({months_left} мес)"
+    for key_data in keys:
+        key_str = str(key_data.get("key") or "")
+        is_primary = bool(key_data.get("is_primary", False))
+
+        # Per-key expiry takes priority; fall back to user subscription expiry.
+        key_expires_raw = key_data.get("expires_at")
+        if key_expires_raw:
+            key_expires_at = parse_iso_utc(key_expires_raw)
+            key_days, _, _ = _remaining_parts(key_expires_at)
+            key_months = max(key_days // 30, 0)
+            key_is_active = key_days > 0
+        elif active_sub:
+            key_months = sub_months_left
+            key_is_active = True
         else:
-            label = f"#{index} (Дополнительный)"
+            key_months = 0
+            key_is_active = False
+
+        label = _key_label(key_str, is_primary, key_months, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
     await callback.message.edit_text(
@@ -63,9 +90,10 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("key_open:"))
-async def key_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
-    key_id = int(callback.data.split(":")[1])
+async def _show_key_card_edit(
+    callback: CallbackQuery, db: Database, settings: Settings, key_id: int
+) -> bool:
+    """Render and edit the key card message. Returns False if the key was not found."""
     tg_id = callback.from_user.id
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
@@ -74,8 +102,7 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
     await users_repo.get_or_create(tg_id)
     key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
     if not key_data:
-        await callback.answer("Ключ не найден", show_alert=True)
-        return
+        return False
 
     created_at = parse_iso_utc(key_data["created_at"])
     active_sub = await subs_repo.get_active(tg_id)
@@ -95,7 +122,6 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
     traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
 
-    # Best-effort: query 3x-ui for live traffic and device stats
     traffic_used_gb = 0.0
     online_devices = 0
     limit_exceeded = False
@@ -105,7 +131,6 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
         traffic_used_gb = bytes_used / (1024 ** 3)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
-            # Fire enforcement without blocking the UI response
             async def _enforce() -> None:
                 try:
                     await build_vpn_manager(db, settings).enforce_traffic_limit(tg_id)
@@ -119,6 +144,7 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
         status_text = "Заблокирован (лимит трафика)"
         status_emoji = "🔴"
 
+    is_primary = bool(key_data.get("is_primary", False))
     comment = str(key_data.get("comment") or "").strip()
     sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""
     comment_line = f"\n📝 Комментарий: {escape(comment)}" if comment else ""
@@ -132,7 +158,46 @@ async def key_open(callback: CallbackQuery, db: Database, settings: Settings) ->
         f"📱 Устройств онлайн: {online_devices} / 3"
         f"{comment_line}"
     )
-    await callback.message.edit_text(text, reply_markup=key_card_keyboard(key_id))
+    await callback.message.edit_text(
+        text,
+        reply_markup=key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment)),
+    )
+    return True
+
+
+@router.callback_query(F.data.startswith("key_open:"))
+async def key_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    key_id = int(callback.data.split(":")[1])
+    ok = await _show_key_card_edit(callback, db, settings, key_id)
+    if not ok:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("key_set_primary:"))
+async def key_set_primary(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    key_id = int(callback.data.split(":")[1])
+    tg_id = callback.from_user.id
+    keys_repo = KeysRepository(db)
+    users_repo = UsersRepository(db)
+
+    key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    if not key_data:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    await keys_repo.set_primary(tg_id, key_id)
+    key_vless = str(key_data.get("key") or "")
+    if key_vless:
+        await users_repo.update_key(tg_id, key_vless)
+
+    await _show_key_card_edit(callback, db, settings, key_id)
+    await callback.answer(f"⭐ Ключ #{key_id} теперь основной", show_alert=True)
+
+
+@router.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
@@ -221,13 +286,28 @@ async def key_comment_open(callback: CallbackQuery, db: Database, state: FSMCont
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("key_comment_delete:"))
+async def key_comment_delete(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    key_id = int(callback.data.split(":")[1])
+    tg_id = callback.from_user.id
+    keys_repo = KeysRepository(db)
+
+    key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    if not key_data:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    await keys_repo.update_comment(key_id, tg_id, "")
+    await _show_key_card_edit(callback, db, settings, key_id)
+    await callback.answer("🗑 Комментарий удалён", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("key_comment_cancel:"))
 async def key_comment_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     key_id = int(callback.data.split(":")[1])
     await callback.message.delete()
     await callback.answer("Отменено")
-    # Re-open key card via synthetic callback is not possible; just confirm cancel.
     await callback.message.answer(
         f"Редактирование комментария отменено. Откройте ключ #{key_id} снова.",
     )

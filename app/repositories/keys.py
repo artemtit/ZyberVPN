@@ -32,7 +32,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,created_at")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at")
                 .eq("tg_id", tg_id)
                 .order("created_at", desc=True)
                 .execute()
@@ -47,7 +47,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,created_at")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at")
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .limit(1)
