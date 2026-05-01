@@ -524,18 +524,22 @@ class XUIProvider(VPNProvider):
         raise XUIProviderError(f"xray reload failed: API reload rejected server_id={server.id}")
 
     async def _try_api_reload(self, session: ClientSession, server: ServerInfo) -> bool:
-        """POST /server/restartXrayService — succeeds on some 3x-ui versions."""
-        try:
-            url = f"{server.api_url}/server/restartXrayService"
-            async with session.post(url) as resp:
-                if resp.status != 200:
-                    return False
-                data = await resp.json(content_type=None)
-                if isinstance(data, dict) and data.get("success") is True:
-                    logger.info("xui xray reloaded via API server_id=%s", server.id)
-                    return True
-        except Exception:
-            pass
+        """Reload xray via panel API. Tries two endpoint paths for 3x-ui version compatibility."""
+        candidates = [
+            f"{server.api_url}/panel/api/server/restartXrayService",
+            f"{server.api_url}/server/restartXrayService",
+        ]
+        for url in candidates:
+            try:
+                async with session.post(url, timeout=ClientTimeout(total=8)) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict) and data.get("success") is True:
+                        logger.info("xui xray reloaded via API url=%s server_id=%s", url, server.id)
+                        return True
+            except Exception:
+                continue
         return False
 
     def _build_profiles(

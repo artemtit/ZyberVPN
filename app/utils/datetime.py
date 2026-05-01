@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import calendar
+import re
+from datetime import datetime, timedelta, timezone
 
 """
 RULES:
@@ -31,7 +32,11 @@ def parse_iso_utc(value: str | datetime) -> datetime:
     if not raw:
         raise ValueError("Invalid datetime value: empty string")
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        normalized = raw.replace("Z", "+00:00")
+        # Python 3.10 fromisoformat only accepts 0, 3, or 6 fractional-second digits.
+        # Supabase sometimes returns 5 digits (e.g. ".97176"). Pad/truncate to exactly 6.
+        normalized = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], normalized)
+        parsed = datetime.fromisoformat(normalized)
     except Exception as exc:
         raise ValueError(f"Invalid ISO datetime value: {raw!r}") from exc
     return ensure_utc(parsed)
