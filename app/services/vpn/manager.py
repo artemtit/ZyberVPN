@@ -419,14 +419,64 @@ class VPNManager:
                 await self._save_access(
                     user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id
                 )
+                await self._provision_on_other_servers(
+                    user_id=user_id,
+                    primary_server_id=result.server_id,
+                    reality_uuid=result.reality_uuid,
+                    expiry_time=limits.expiry_time,
+                    key_id=key_id,
+                )
                 await self._servers_repo.update_health(server.id, is_active=True, ok=True, error_text=None)
                 logger.info("VPN client created user_id=%s server_id=%s key_id=%s", user_id, server.id, key_id)
+                all_configs = await self.get_subscription(user_id, create_if_missing=False)
+                if all_configs:
+                    return all_configs
                 return self._profiles_to_subscription(result.profiles)
             except Exception as error:
                 last_error = error
                 logger.exception("VPN create failed user_id=%s server_id=%s", user_id, server.id)
                 await self._servers_repo.update_health(server.id, is_active=False, ok=False, error_text=str(error)[:500])
         raise VPNManagerError("All VPN servers failed") from last_error
+
+    async def _provision_on_other_servers(
+        self,
+        user_id: int,
+        primary_server_id: int,
+        reality_uuid: str,
+        expiry_time: int,
+        key_id: int | None,
+    ) -> None:
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return
+        try:
+            servers = await self._servers_repo.list_all()
+            for server in servers:
+                if not server.is_active or server.id == primary_server_id:
+                    continue
+                try:
+                    existing_uuid = await provider.get_client(server, user_id)
+                    if existing_uuid:
+                        continue
+                    result = await provider.add_client(server, user_id, reality_uuid, expiry_time)
+                    await self._save_additional_server_access(
+                        user_id=user_id,
+                        key_id=self._secondary_key_id(key_id, server.id),
+                        server_id=server.id,
+                        reality_uuid=result.reality_uuid,
+                        ws_uuid=result.ws_uuid,
+                        profiles=result.profiles,
+                    )
+                    logger.info("secondary VPN client created user_id=%s server_id=%s", user_id, server.id)
+                except Exception as error:
+                    logger.warning(
+                        "secondary provisioning failed user_id=%s server_id=%s error=%s",
+                        user_id,
+                        server.id,
+                        error,
+                    )
+        except Exception as error:
+            logger.warning("secondary provisioning skipped user_id=%s error=%s", user_id, error)
 
     async def _validate_or_repair_existing_access(
         self, user_id: int, row: dict, expiry_time: int | None, key_id: int | None = None
@@ -504,6 +554,42 @@ class VPNManager:
             ws_config=ws,
             key_id=key_id,
         )
+
+    async def _save_additional_server_access(
+        self,
+        user_id: int,
+        server_id: int,
+        reality_uuid: str,
+        ws_uuid: str | None,
+        profiles: list,
+        key_id: int | None = None,
+    ) -> None:
+        reality = ""
+        ws = ""
+        for profile in profiles:
+            if getattr(profile, "protocol", "") == "vless-reality":
+                reality = str(getattr(profile, "config", "")).strip()
+            if getattr(profile, "protocol", "") == "vless-ws-tls":
+                ws = str(getattr(profile, "config", "")).strip()
+        if not reality:
+            return
+        await self._user_vpn_repo.upsert_server_access(
+            user_id=user_id,
+            server_id=server_id,
+            reality_uuid=reality_uuid,
+            ws_uuid=ws_uuid,
+            reality_config=reality,
+            ws_config=ws,
+            key_id=key_id,
+        )
+
+    @staticmethod
+    def _secondary_key_id(key_id: int | None, server_id: int) -> int:
+        """Store secondary server configs in dedicated key slots to avoid (user_id, key_id) collisions."""
+        base = 9_000_000_000
+        if key_id is None:
+            return base + server_id
+        return base + (key_id * 10_000) + server_id
 
     def _profiles_to_subscription(self, profiles: list) -> list[str]:
         reality = ""

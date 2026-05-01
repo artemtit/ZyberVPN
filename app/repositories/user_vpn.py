@@ -118,6 +118,55 @@ class UserVpnRepository:
             operation="user_vpn.set_ready",
         )
 
+    async def upsert_server_access(
+        self,
+        user_id: int,
+        server_id: int,
+        reality_uuid: str,
+        ws_uuid: str | None,
+        reality_config: str,
+        ws_config: str,
+        key_id: int | None = None,
+    ) -> None:
+        """Insert/update an additional VPN row for a specific server."""
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        now = utc_now().isoformat()
+        payload = {
+            "user_id": user_id,
+            "key_id": key_id,
+            "server_id": server_id,
+            "reality_uuid": reality_uuid,
+            "ws_uuid": ws_uuid or "",
+            "reality_config": reality_config,
+            "ws_config": ws_config or "",
+            "status": "ready",
+            "updated_at": now,
+        }
+        existing_query = self._supabase.table("user_vpn").select("id").eq("user_id", user_id).eq("server_id", server_id)
+        if key_id is None:
+            existing_query = existing_query.is_("key_id", "null")
+        else:
+            existing_query = existing_query.eq("key_id", key_id)
+        existing_query = existing_query.limit(1)
+        existing_response = await execute_with_retry(
+            lambda: existing_query.execute(),
+            operation="user_vpn.upsert_server_access.read",
+        )
+        rows = existing_response.data or []
+        if rows:
+            update_query = self._supabase.table("user_vpn").update(payload).eq("id", rows[0]["id"])
+            await execute_with_retry(
+                lambda: update_query.execute(),
+                operation="user_vpn.upsert_server_access.update",
+            )
+            return
+        payload["created_at"] = now
+        await execute_with_retry(
+            lambda: self._supabase.table("user_vpn").insert(payload).execute(),
+            operation="user_vpn.upsert_server_access.insert",
+        )
+
     async def set_failed(self, user_id: int, key_id: int | None = None) -> None:
         """Mark the row as failed so the next request can retry."""
         if not self._supabase:

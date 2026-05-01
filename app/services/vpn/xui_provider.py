@@ -173,6 +173,25 @@ class XUIProvider(VPNProvider):
             inbound = await self._get_inbound(session, server)
             return self._find_client_by_uuid(inbound, client_uuid)
 
+    async def get_client(self, server: ServerInfo, user_id: int) -> str | None:
+        self._validate_server_security(server)
+        reality_email = f"{user_id}-reality"
+        async with self._session() as session:
+            await self._login(session, server)
+            inbound = await self._get_inbound(session, server)
+            return self._find_existing_client_uuid(inbound, reality_email)
+
+    async def add_client(
+        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int
+    ) -> CreateClientResult:
+        limits = ClientLimits(expiry_time=expiry_time)
+        return await self.create_client(
+            user_id=user_id,
+            server=server,
+            limits=limits,
+            reality_uuid=reality_uuid,
+        )
+
     async def get_client_config(self, user_id: int, server: ServerInfo, client_uuid: str) -> list[VpnProfile]:
         self._validate_server_security(server)
         async with self._session() as session:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from aiohttp import web
 from pydantic import ValidationError
 
@@ -27,8 +29,8 @@ async def get_subscription(request: web.Request) -> web.Response:
     if not servers:
         raise web.HTTPNotFound(text="no servers")
 
-    # Формируем plain text (каждая ссылка с новой строки)
     body = "\n".join(servers)
+    encoded_body = base64.b64encode(body.encode("utf-8")).decode("ascii")
 
     # Заголовок для клиентов (трафик + лимиты)
     userinfo = (
@@ -39,12 +41,15 @@ async def get_subscription(request: web.Request) -> web.Response:
     )
 
     return web.Response(
-        text=body,
+        text=encoded_body,
         content_type="text/plain",
+        charset="utf-8",
         headers={
             "Subscription-Userinfo": userinfo,
             "profile-title": "ZyberVPN",
             "profile-update-interval": "12",
+            "support-url": "https://t.me/ZyberVPN_Support_bot",
+            "profile-web-page-url": "https://t.me/ZyberVPN_Support_bot",
         },
     )
 
