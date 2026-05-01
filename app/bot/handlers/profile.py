@@ -92,11 +92,16 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
     username = callback.from_user.username or callback.from_user.full_name
     invited = await users_repo.count_referrals(callback.from_user.id)
 
+    keys_repo = KeysRepository(db)
+    user_keys = await keys_repo.list_by_user(callback.from_user.id)  # sorted: primary first
+    primary_expiry_raw = user_keys[0].get("expires_at") if user_keys else None
+    expiry_display = _format_expiry(primary_expiry_raw or (supabase_user or {}).get("expires_at"))
+
     await callback.message.edit_text(
         f"👤 ПРОФИЛЬ: {username} / ID: {callback.from_user.id}\n\n"
         "💎 ПОДПИСКА\n"
         f"🏅 Статус: {_status_text(is_active)}\n"
-        f"📅 Действует до: {_format_expiry((supabase_user or {}).get('expires_at'))}\n"
+        f"📅 Действует до: {expiry_display}\n"
         f"📦 План: {(supabase_user or {}).get('plan') or 'не задан'}\n\n"
         "💼 ФИНАНСЫ\n"
         f"💳 Основной баланс: {local_user['balance']} RUB\n"

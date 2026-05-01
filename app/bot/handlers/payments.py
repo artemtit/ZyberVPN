@@ -116,8 +116,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             last_activated_at=activated_at,
         )
 
-    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
-    days_remaining = max(0, (expires_dt - utc_now()).days)
+    # Use primary key's per-key expiry for display if available.
+    display_dt = expires_dt
+    try:
+        user_keys = await keys_repo.list_by_user(tg_id)  # sorted: primary first
+        if user_keys:
+            raw = user_keys[0].get("expires_at")
+            if raw:
+                display_dt = parse_iso_utc(raw)
+    except Exception:
+        pass
+    expires_str = to_moscow(display_dt).strftime("%d.%m.%Y")
+    days_remaining = max(0, (display_dt - utc_now()).days)
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":

@@ -39,11 +39,11 @@ def _key_protocol(key_str: str) -> str:
     return "VPN"
 
 
-def _key_label(key_str: str, is_primary: bool, months_left: int, is_active: bool) -> str:
+def _key_label(key_str: str, is_primary: bool, num: int, months_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
     protocol = _key_protocol(key_str)
     status = f"{months_left} мес." if is_active else "истёк"
-    return f"{icon} {protocol} — {status}"
+    return f"{icon} Ключ #{num} {protocol} — {status}"
 
 
 @router.callback_query(F.data == "menu_keys")
@@ -62,7 +62,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
         sub_months_left = max(sub_days // 30, 0)
 
     key_rows: list[tuple[str, str]] = []
-    for key_data in keys:
+    for num, key_data in enumerate(keys, start=1):
         key_str = str(key_data.get("key") or "")
         is_primary = bool(key_data.get("is_primary", False))
 
@@ -80,7 +80,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
             key_months = 0
             key_is_active = False
 
-        label = _key_label(key_str, is_primary, key_months, key_is_active)
+        label = _key_label(key_str, is_primary, num, key_months, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
     await callback.message.edit_text(
@@ -100,9 +100,13 @@ async def _show_key_card_edit(
     subs_repo = SubscriptionsRepository(db)
 
     await users_repo.get_or_create(tg_id)
-    key_data = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    all_keys = await keys_repo.list_by_user(tg_id)  # sorted: primary first
+    key_data = next((k for k in all_keys if k["id"] == key_id), None)
     if not key_data:
         return False
+    display_num = next(
+        (i for i, k in enumerate(all_keys, start=1) if k["id"] == key_id), 1
+    )
 
     created_at = parse_iso_utc(key_data["created_at"])
     key_expires_raw = key_data.get("expires_at")
@@ -157,7 +161,7 @@ async def _show_key_card_edit(
     comment_line = f"\n📝 Комментарий: {escape(comment)}" if comment else ""
 
     text = (
-        f"🔑 Ключ #{key_data['id']}\n\n"
+        f"🔑 Ключ #{display_num}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
         f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК ({days}д. {hours}ч.)\n"
         f"{sub_line}\n"

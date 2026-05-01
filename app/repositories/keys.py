@@ -34,12 +34,15 @@ class KeysRepository:
                 self._supabase.table("keys")
                 .select("id,tg_id,key,comment,is_primary,expires_at,created_at")
                 .eq("tg_id", tg_id)
-                .order("created_at", desc=True)
+                .order("created_at", desc=False)
                 .execute()
             ),
             operation="keys.list_by_user",
         )
-        return list(response.data or [])
+        rows = list(response.data or [])
+        # Primary key first; within each group keep creation order (stable).
+        rows.sort(key=lambda k: (not bool(k.get("is_primary")), k.get("created_at") or ""))
+        return rows
 
     async def get_by_id_for_user(self, key_id: int, tg_id: int) -> Optional[dict]:
         if not self._supabase:
