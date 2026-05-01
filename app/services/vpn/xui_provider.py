@@ -53,25 +53,43 @@ class XUIProvider(VPNProvider):
             ctx = self._extract_inbound_context(server, inbound)
 
             existing_reality = self._find_existing_client_uuid(inbound, reality_email)
+            if existing_reality and reality_uuid and existing_reality != reality_uuid:
+                logger.warning(
+                    "UUID mismatch for email=%s: xui_has=%s expected=%s - forcing re-add with expected UUID",
+                    reality_email,
+                    existing_reality,
+                    reality_uuid,
+                )
+                existing_reality = None
+
             final_reality_uuid = reality_uuid or existing_reality or str(uuid4())
-            clients_added = 0
             if not existing_reality:
                 await self._add_client(session, server, final_reality_uuid, reality_email, limits)
-                clients_added += 1
-                logger.info("xui reality client created user_id=%s server_id=%s", user_id, server.id)
+                logger.info(
+                    "xui reality client added user_id=%s server_id=%s uuid=%s",
+                    user_id,
+                    server.id,
+                    final_reality_uuid,
+                )
 
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
                 existing_ws = self._find_existing_client_uuid(inbound, ws_email)
+                if existing_ws and ws_uuid and existing_ws != ws_uuid:
+                    logger.warning(
+                        "WS UUID mismatch for email=%s: xui_has=%s expected=%s - forcing re-add",
+                        ws_email,
+                        existing_ws,
+                        ws_uuid,
+                    )
+                    existing_ws = None
                 final_ws_uuid = ws_uuid or existing_ws or str(uuid4())
                 if not existing_ws:
                     await self._add_client(session, server, final_ws_uuid, ws_email, limits)
-                    clients_added += 1
-                    logger.info("xui ws client created user_id=%s server_id=%s", user_id, server.id)
+                    logger.info("xui ws client added user_id=%s server_id=%s", user_id, server.id)
 
-            if clients_added > 0:
-                await self._reload_xray(session, server)
-                await self._verify_client_visible(session, server, final_reality_uuid)
+            await self._reload_xray(session, server)
+            await self._verify_client_visible(session, server, final_reality_uuid)
 
             profiles = self._build_profiles(server, ctx, final_reality_uuid, final_ws_uuid, user_id)
             return CreateClientResult(
@@ -403,19 +421,32 @@ class XUIProvider(VPNProvider):
         try:
             inbound = await self._get_inbound(session, server)
         except Exception:
-            return  # Can't verify — don't block provisioning
+            logger.warning(
+                "xui verify skipped (inbound unreachable) server_id=%s uuid=%s",
+                server.id,
+                client_uuid,
+            )
+            return
         if self._find_client_by_uuid(inbound, client_uuid):
             logger.info("xui client verified server_id=%s uuid=%s", server.id, client_uuid)
             return
-        logger.warning("xui client not visible after reload, retrying server_id=%s uuid=%s", server.id, client_uuid)
+        logger.warning(
+            "xui client NOT visible after first check, re-reloading server_id=%s uuid=%s",
+            server.id,
+            client_uuid,
+        )
         await self._reload_xray(session, server)
         await asyncio.sleep(1.0)
         try:
             inbound = await self._get_inbound(session, server)
-        except Exception:
-            return
+        except Exception as err:
+            raise XUIProviderError(
+                f"Cannot verify client {client_uuid}: inbound unreachable after reload retry server_id={server.id}"
+            ) from err
         if not self._find_client_by_uuid(inbound, client_uuid):
-            raise XUIProviderError(f"Client {client_uuid} not visible after reload retry server_id={server.id}")
+            raise XUIProviderError(
+                f"Client {client_uuid} NOT in inbound after 2 reloads - provisioning aborted server_id={server.id}"
+            )
         logger.info("xui client verified after retry server_id=%s uuid=%s", server.id, client_uuid)
 
     async def _reload_xray(self, session: ClientSession, server: ServerInfo) -> None:
@@ -433,6 +464,12 @@ class XUIProvider(VPNProvider):
         restarted = await asyncio.get_event_loop().run_in_executor(None, self._restart_xui_service, server.id)
         if restarted:
             await asyncio.sleep(4.0)
+            return
+        logger.error(
+            "xui ALL reload methods failed server_id=%s - API/SIGUSR1/systemctl all returned False. "
+            "Client may not be served until Xray reloads on its own.",
+            server.id,
+        )
 
     async def _try_api_reload(self, session: ClientSession, server: ServerInfo) -> bool:
         """POST /server/restartXrayService — succeeds on some 3x-ui versions."""
