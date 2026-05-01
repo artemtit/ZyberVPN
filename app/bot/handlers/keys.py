@@ -90,20 +90,19 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
-async def _show_key_card_edit(
-    callback: CallbackQuery, db: Database, settings: Settings, key_id: int
-) -> bool:
-    """Render and edit the key card message. Returns False if the key was not found."""
-    tg_id = callback.from_user.id
+async def _build_key_card(
+    tg_id: int, key_id: int, db: Database, settings: Settings, bot=None
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Build key card text + keyboard. Returns None if key not found."""
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
 
     await users_repo.get_or_create(tg_id)
-    all_keys = await keys_repo.list_by_user(tg_id)  # sorted: primary first
+    all_keys = await keys_repo.list_by_user(tg_id)
     key_data = next((k for k in all_keys if k["id"] == key_id), None)
     if not key_data:
-        return False
+        return None
     display_num = next(
         (i for i, k in enumerate(all_keys, start=1) if k["id"] == key_id), 1
     )
@@ -137,14 +136,14 @@ async def _show_key_card_edit(
     online_devices = 0
     limit_exceeded = False
     try:
-        manager = build_vpn_manager(db, settings, bot=callback.bot)
+        manager = build_vpn_manager(db, settings, bot=bot)
         bytes_used, online_devices = await manager.get_client_stats(tg_id)
         traffic_used_gb = bytes_used / (1024 ** 3)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
             async def _enforce() -> None:
                 try:
-                    await build_vpn_manager(db, settings, bot=callback.bot).enforce_traffic_limit(tg_id)
+                    await build_vpn_manager(db, settings, bot=bot).enforce_traffic_limit(tg_id)
                 except Exception:
                     pass
             asyncio.create_task(_enforce())
@@ -169,10 +168,18 @@ async def _show_key_card_edit(
         f"📱 Устройств онлайн: {online_devices} / 3"
         f"{comment_line}"
     )
-    await callback.message.edit_text(
-        text,
-        reply_markup=key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment)),
-    )
+    return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment))
+
+
+async def _show_key_card_edit(
+    callback: CallbackQuery, db: Database, settings: Settings, key_id: int
+) -> bool:
+    """Edit the current message with the key card. Returns False if key not found."""
+    result = await _build_key_card(callback.from_user.id, key_id, db, settings, bot=callback.bot)
+    if not result:
+        return False
+    text, keyboard = result
+    await callback.message.edit_text(text, reply_markup=keyboard)
     return True
 
 
@@ -325,7 +332,7 @@ async def key_comment_cancel(callback: CallbackQuery, state: FSMContext) -> None
 
 
 @router.message(KeyCommentState.waiting_for_comment)
-async def key_comment_save(message: Message, db: Database, state: FSMContext) -> None:
+async def key_comment_save(message: Message, db: Database, state: FSMContext, settings: Settings) -> None:
     data = await state.get_data()
     key_id = int(data.get("key_id") or 0)
     if not key_id:
@@ -334,10 +341,12 @@ async def key_comment_save(message: Message, db: Database, state: FSMContext) ->
 
     comment = (message.text or "").strip()[:500]
     keys_repo = KeysRepository(db)
-    await keys_repo.update_comment(key_id, message.from_user.id, comment)
+    tg_id = message.from_user.id
+    await keys_repo.update_comment(key_id, tg_id, comment)
     await state.clear()
-
-    action = "удалён" if not comment else "сохранён"
-    await message.answer(
-        f"✅ Комментарий {action}.\n\nОткройте ключ #{key_id} чтобы увидеть изменения.",
-    )
+    result = await _build_key_card(tg_id, key_id, db, settings, bot=message.bot)
+    if not result:
+        await message.answer("✅ Комментарий сохранён.")
+        return
+    text, keyboard = result
+    await message.answer(text, reply_markup=keyboard)

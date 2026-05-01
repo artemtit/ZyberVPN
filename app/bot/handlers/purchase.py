@@ -71,6 +71,7 @@ async def input_email(message: Message, state: FSMContext) -> None:
         await message.answer("Введите корректный email или нажмите кнопку «Продолжить без почты».")
         return
     await state.update_data(email=email)
+    await message.answer(f"✅ Email сохранен: {email}")
     await state.set_state(PurchaseState.waiting_payment)
     data = await state.get_data()
     tariff = TARIFFS[data["tariff_code"]]
@@ -176,6 +177,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         return
 
     tg_id = int(processed["tg_id"])
+    purchase_type = str(processed.get("purchase_type") or "new")
+    renew_key_id = processed.get("renew_key_id")
     user = await users_repo.get_by_tg_id(tg_id)
     if not user:
         await callback.answer("Пользователь не найден.", show_alert=True)
