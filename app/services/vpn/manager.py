@@ -366,10 +366,11 @@ class VPNManager:
         return disabled
 
     async def update_user_expiry(self, user_id: int, expiry_time_ms: int, key_id: int | None = None) -> bool:
-        """Update XUI client expiryTime after subscription renewal. Returns True on success.
+        """Update XUI client expiryTime (and totalGB) after subscription renewal.
 
         If key_id is given, only update that specific key's XUI clients.
         If key_id is None, update all user's XUI clients.
+        Returns True on success.
         """
         if key_id is not None:
             rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
@@ -385,6 +386,15 @@ class VPNManager:
         if not isinstance(provider, XUIProvider):
             return False
 
+        # Read accumulated traffic limit from DB; 0 means "leave XUI unchanged".
+        traffic_limit_gb: int = 0
+        if self._users_repo:
+            try:
+                user = await self._users_repo.get_by_tg_id(user_id)
+                traffic_limit_gb = int((user or {}).get("traffic_limit_gb") or 0)
+            except Exception:
+                logger.warning("Could not read traffic_limit_gb for user_id=%s", user_id)
+
         updated = False
         for vpn in rows:
             server_id = int(vpn.get("server_id") or 0)
@@ -398,11 +408,17 @@ class VPNManager:
             row_updated = False
             for uuid in filter(None, [reality_uuid, ws_uuid]):
                 try:
-                    ok = await provider.update_client_expiry(server, uuid, expiry_time_ms)
+                    ok = await provider.update_client_expiry(
+                        server, uuid, expiry_time_ms,
+                        total_gb=traffic_limit_gb if traffic_limit_gb > 0 else None,
+                    )
                     if ok:
                         updated = True
                         row_updated = True
-                        logger.info("XUI expiry updated user_id=%s uuid=%s expiry_ms=%s", user_id, uuid, expiry_time_ms)
+                        logger.info(
+                            "XUI expiry updated user_id=%s uuid=%s expiry_ms=%s total_gb=%s",
+                            user_id, uuid, expiry_time_ms, traffic_limit_gb or "unchanged",
+                        )
                 except Exception:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
             if row_updated:

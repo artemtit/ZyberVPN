@@ -68,7 +68,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                                 int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
                             )
             await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
-            await users_repo.set_traffic_limit(int(payment["tg_id"]), tariff.get("traffic_gb", 60))
+            current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
+            current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
+            new_limit = current_limit + int(tariff.get("traffic_gb", 60))
+            await users_repo.set_traffic_limit(int(payment["tg_id"]), new_limit)
         return {
             "tg_id": int(payment["tg_id"]),
             "tariff_code": str(payment["tariff_code"]),

@@ -138,8 +138,19 @@ class XUIProvider(VPNProvider):
             await self._request_json(session, "post", update_url, data=payload)
             await self._reload_xray(session, server)
 
-    async def update_client_expiry(self, server: ServerInfo, client_uuid: str, expiry_time_ms: int) -> bool:
-        """Update expiryTime for a specific client. Returns True if client was found and updated."""
+    async def update_client_expiry(
+        self,
+        server: ServerInfo,
+        client_uuid: str,
+        expiry_time_ms: int,
+        total_gb: int | None = None,
+    ) -> bool:
+        """Update expiryTime (and optionally totalGB) for a specific client.
+
+        total_gb: accumulated traffic allowance in GB. Pass None or 0 to leave
+        the existing totalGB in XUI unchanged (unlimited / not managed).
+        Returns True if client was found and updated.
+        """
         self._validate_server_security(server)
         async with self._session() as session:
             await self._login(session, server)
@@ -156,6 +167,8 @@ class XUIProvider(VPNProvider):
                 if isinstance(client, dict) and str(client.get("id")) == client_uuid:
                     client["expiryTime"] = expiry_time_ms
                     client["enable"] = True
+                    if total_gb and total_gb > 0:
+                        client["totalGB"] = total_gb * 1024 * 1024 * 1024
                     changed = True
                     break
             if not changed:
