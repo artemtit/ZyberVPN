@@ -17,7 +17,7 @@ from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.services.vpn import qr_png_from_text
-from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
+from app.utils.datetime import parse_iso_utc, to_moscow, utc_diff, utc_now
 
 router = Router()
 
@@ -159,7 +159,7 @@ async def _show_key_card_edit(
     text = (
         f"🔑 Ключ #{key_data['id']}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
-        f"⏳ Истекает: {expires_at.strftime('%d.%m.%Y %H:%M UTC')} ({days}д. {hours}ч.)\n"
+        f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК ({days}д. {hours}ч.)\n"
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
         f"📱 Устройств онлайн: {online_devices} / 3"

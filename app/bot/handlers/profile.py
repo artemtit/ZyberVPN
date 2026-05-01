@@ -31,7 +31,7 @@ from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
 from app.services.promo import validate_promo
-from app.utils.datetime import parse_iso_utc, utc_now
+from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def _check_promo_rate_limit(tg_id: int) -> bool:
 
 
 def _promo_success_text(expires_dt, *, include_status: bool = True) -> str:
-    expires_str = expires_dt.strftime("%d.%m.%Y")
+    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
     status_line = "📊 Статус: <b>Активна</b>\n\n" if include_status else ""
     return (
@@ -71,7 +71,7 @@ def _format_expiry(raw_value: str | None) -> str:
         dt = parse_iso_utc(raw_value)
     except Exception:
         return str(raw_value)
-    return dt.strftime("%d.%m.%Y %H:%M UTC")
+    return to_moscow(dt).strftime("%d.%m.%Y %H:%M") + " МСК"
 
 
 def _status_text(is_active: bool) -> str:

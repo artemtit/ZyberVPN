@@ -20,7 +20,7 @@ from app.services.idempotency import IdempotencyService
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
-from app.utils.datetime import parse_iso_utc, utc_now
+from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             last_activated_at=activated_at,
         )
 
-    expires_str = expires_dt.strftime("%d.%m.%Y")
+    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
     expiry_ms = int(expires_dt.timestamp() * 1000)
 

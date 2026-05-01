@@ -30,7 +30,7 @@ from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.services.subscription import build_subscription_service
-from app.utils.datetime import parse_iso_utc
+from app.utils.datetime import parse_iso_utc, to_moscow
 
 try:
     from aiogram.fsm.storage.redis import RedisStorage
@@ -171,7 +171,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_3d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = parse_iso_utc(user["expires_at"]).strftime("%d.%m.%Y")
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
                 try:
                     await bot.send_message(
                         tg_id,
@@ -193,7 +193,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_1d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = parse_iso_utc(user["expires_at"]).strftime("%d.%m.%Y")
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
                 try:
                     await bot.send_message(
                         tg_id,

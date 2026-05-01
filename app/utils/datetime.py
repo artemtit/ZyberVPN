@@ -3,6 +3,9 @@ from __future__ import annotations
 import calendar
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+_MOSCOW = ZoneInfo("Europe/Moscow")
 
 """
 RULES:
@@ -44,6 +47,11 @@ def parse_iso_utc(value: str | datetime) -> datetime:
 
 def utc_diff(a: datetime, b: datetime) -> timedelta:
     return ensure_utc(a) - ensure_utc(b)
+
+
+def to_moscow(dt: datetime) -> datetime:
+    """Convert a UTC-aware datetime to Moscow time (Europe/Moscow) for display."""
+    return ensure_utc(dt).astimezone(_MOSCOW)
 
 
 def add_months(source: datetime, months: int) -> datetime:
