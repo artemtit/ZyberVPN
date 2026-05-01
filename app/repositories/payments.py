@@ -18,13 +18,15 @@ class PaymentsRepository:
         email: str | None,
         payload: str,
         idempotency_key: str,
+        purchase_type: str = "new",
+        renew_key_id: int | None = None,
     ) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
         existing = await self.get_by_idempotency_key(idempotency_key)
         if existing:
             return existing
-        body = {
+        body: dict = {
             "tg_id": tg_id,
             "amount": amount,
             "status": "pending",
@@ -32,7 +34,10 @@ class PaymentsRepository:
             "email": email,
             "payload": payload,
             "idempotency_key": idempotency_key,
+            "purchase_type": purchase_type,
         }
+        if renew_key_id is not None:
+            body["renew_key_id"] = renew_key_id
         response = await execute_with_retry(
             lambda: self._supabase.table("payments").upsert(body, on_conflict="idempotency_key").execute(),
             operation="payments.create_pending",

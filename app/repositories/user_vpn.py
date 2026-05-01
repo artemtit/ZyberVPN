@@ -13,18 +13,22 @@ class UserVpnRepository:
     def __init__(self, db: Database) -> None:  # noqa: ARG002
         self._supabase = get_supabase_client()
 
-    async def get_user_vpn(self, user_id: int) -> dict | None:
+    async def get_user_vpn(self, user_id: int, key_id: int | None = None) -> dict | None:
         if not self._supabase:
             return None
         try:
+            query = (
+                self._supabase.table("user_vpn")
+                .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,key_id,created_at,updated_at")
+                .eq("user_id", user_id)
+            )
+            if key_id is None:
+                query = query.is_("key_id", "null")
+            else:
+                query = query.eq("key_id", key_id)
+            query = query.limit(1)
             response = await execute_with_retry(
-                lambda: (
-                    self._supabase.table("user_vpn")
-                    .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,created_at,updated_at")
-                    .eq("user_id", user_id)
-                    .limit(1)
-                    .execute()
-                ),
+                lambda: query.execute(),
                 operation="user_vpn.get_by_user",
             )
             rows = response.data or []
@@ -36,8 +40,28 @@ class UserVpnRepository:
     async def get_by_user(self, user_id: int) -> dict | None:
         return await self.get_user_vpn(user_id)
 
-    async def claim_creating(self, user_id: int) -> str:
-        """Atomically claim the creation slot for *user_id*.
+    async def list_user_vpns(self, user_id: int) -> list[dict]:
+        """Return all user_vpn rows for *user_id* ordered by created_at."""
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,key_id,created_at,updated_at")
+                    .eq("user_id", user_id)
+                    .order("created_at")
+                    .execute()
+                ),
+                operation="user_vpn.list_user_vpns",
+            )
+            return list(response.data or [])
+        except Exception:
+            logger.exception("list_user_vpns failed user_id=%s", user_id)
+            return []
+
+    async def claim_creating(self, user_id: int, key_id: int | None = None) -> str:
+        """Atomically claim the creation slot for (user_id, key_id).
 
         Returns
         -------
@@ -46,12 +70,14 @@ class UserVpnRepository:
         'ready'    — configs are already present; caller should read and return them.
         """
         if not self._supabase:
-            # No Supabase — let the caller proceed as owner (single-process safety).
             return "claimed"
         try:
+            rpc_params: dict = {"p_user_id": user_id}
+            if key_id is not None:
+                rpc_params["p_key_id"] = key_id
             response = await execute_with_retry(
                 lambda: self._supabase.rpc(
-                    "claim_user_vpn_creating", {"p_user_id": user_id}
+                    "claim_user_vpn_creating", rpc_params
                 ).execute(),
                 operation="user_vpn.claim_creating",
             )
@@ -68,6 +94,7 @@ class UserVpnRepository:
         ws_uuid: str | None,
         reality_config: str,
         ws_config: str,
+        key_id: int | None = None,
     ) -> None:
         """Write the final configs and flip status to 'ready'."""
         if not self._supabase:
@@ -81,32 +108,84 @@ class UserVpnRepository:
             "status": "ready",
             "updated_at": utc_now().isoformat(),
         }
+        query = self._supabase.table("user_vpn").update(payload).eq("user_id", user_id)
+        if key_id is None:
+            query = query.is_("key_id", "null")
+        else:
+            query = query.eq("key_id", key_id)
         await execute_with_retry(
-            lambda: (
-                self._supabase.table("user_vpn")
-                .update(payload)
-                .eq("user_id", user_id)
-                .execute()
-            ),
+            lambda: query.execute(),
             operation="user_vpn.set_ready",
         )
 
-    async def set_failed(self, user_id: int) -> None:
+    async def set_failed(self, user_id: int, key_id: int | None = None) -> None:
         """Mark the row as failed so the next request can retry."""
         if not self._supabase:
             return
         try:
+            query = (
+                self._supabase.table("user_vpn")
+                .update({"status": "failed", "updated_at": utc_now().isoformat()})
+                .eq("user_id", user_id)
+            )
+            if key_id is None:
+                query = query.is_("key_id", "null")
+            else:
+                query = query.eq("key_id", key_id)
             await execute_with_retry(
-                lambda: (
-                    self._supabase.table("user_vpn")
-                    .update({"status": "failed", "updated_at": utc_now().isoformat()})
-                    .eq("user_id", user_id)
-                    .execute()
-                ),
+                lambda: query.execute(),
                 operation="user_vpn.set_failed",
             )
         except Exception:
             logger.exception("set_failed failed user_id=%s", user_id)
+
+    async def set_status(self, user_id: int, status: str, key_id: int | None = None) -> None:
+        if not self._supabase:
+            return
+        try:
+            query = (
+                self._supabase.table("user_vpn")
+                .update({"status": status, "updated_at": utc_now().isoformat()})
+                .eq("user_id", user_id)
+            )
+            if key_id is None:
+                query = query.is_("key_id", "null")
+            else:
+                query = query.eq("key_id", key_id)
+            await execute_with_retry(
+                lambda: query.execute(),
+                operation="user_vpn.set_status",
+            )
+        except Exception:
+            logger.exception("set_status failed user_id=%s status=%s", user_id, status)
+
+    async def delete(self, user_id: int, key_id: int | None = None) -> None:
+        if not self._supabase:
+            return
+        query = self._supabase.table("user_vpn").delete().eq("user_id", user_id)
+        if key_id is None:
+            query = query.is_("key_id", "null")
+        else:
+            query = query.eq("key_id", key_id)
+        await execute_with_retry(
+            lambda: query.execute(),
+            operation="user_vpn.delete",
+        )
+
+    async def link_key_id(self, user_id: int, key_id: int) -> None:
+        """Link the null-slot user_vpn row to a key record after provisioning."""
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("user_vpn")
+                .update({"key_id": key_id, "updated_at": utc_now().isoformat()})
+                .eq("user_id", user_id)
+                .is_("key_id", "null")
+                .execute()
+            ),
+            operation="user_vpn.link_key_id",
+        )
 
     async def create_user_vpn(
         self,
@@ -133,7 +212,7 @@ class UserVpnRepository:
             "updated_at": now,
         }
         response = await execute_with_retry(
-            lambda: self._supabase.table("user_vpn").upsert(payload, on_conflict="user_id").execute(),
+            lambda: self._supabase.table("user_vpn").upsert(payload, on_conflict="user_id,key_id").execute(),
             operation="user_vpn.upsert",
         )
         rows = response.data or []
@@ -161,30 +240,6 @@ class UserVpnRepository:
             reality_config=reality_config,
             ws_config=ws_config,
         )
-
-    async def delete(self, user_id: int) -> None:
-        if not self._supabase:
-            return
-        await execute_with_retry(
-            lambda: self._supabase.table("user_vpn").delete().eq("user_id", user_id).execute(),
-            operation="user_vpn.delete",
-        )
-
-    async def set_status(self, user_id: int, status: str) -> None:
-        if not self._supabase:
-            return
-        try:
-            await execute_with_retry(
-                lambda: (
-                    self._supabase.table("user_vpn")
-                    .update({"status": status, "updated_at": utc_now().isoformat()})
-                    .eq("user_id", user_id)
-                    .execute()
-                ),
-                operation="user_vpn.set_status",
-            )
-        except Exception:
-            logger.exception("set_status failed user_id=%s status=%s", user_id, status)
 
     async def list_ready_user_ids(self) -> list[int]:
         if not self._supabase:

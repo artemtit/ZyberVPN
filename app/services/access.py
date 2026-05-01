@@ -82,6 +82,7 @@ async def ensure_user_access(
     require_active: bool = True,
     require_recent_activation_for_key_creation: bool = False,
     idempotency_key: str | None = None,  # kept for API compatibility; no longer used
+    force_new_key: bool = False,
 ) -> dict:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
@@ -92,7 +93,7 @@ async def ensure_user_access(
     keys_repo = KeysRepository(db)
     manager = build_vpn_manager(db, settings)
 
-    logger.info("Ensuring access tg_id=%s", tg_id)
+    logger.info("Ensuring access tg_id=%s force_new_key=%s", tg_id, force_new_key)
     ensured = await _safe_repo_call("users.get_or_create", lambda: users_repo.get_or_create(tg_id), fallback=None, tg_id=tg_id)
     if not ensured:
         raise AccessEnsureError("Failed to initialize user")
@@ -121,10 +122,9 @@ async def ensure_user_access(
         supabase_user = created
 
     stored_token = str(supabase_user.get("sub_token") or "")
-    # Migrate old SHA256-hashed tokens (64 hex chars) to raw tokens, or generate if missing/invalid.
     needs_new_token = (
         not stored_token
-        or users_repo.is_valid_sub_token_hash(stored_token)  # old hashed format → migrate
+        or users_repo.is_valid_sub_token_hash(stored_token)
         or not users_repo.is_valid_sub_token(stored_token)
     )
     if needs_new_token:
@@ -136,7 +136,7 @@ async def ensure_user_access(
         )
         if not sub_token:
             raise AccessEnsureError("Failed to refresh subscription token")
-        supabase_user["sub_token"] = sub_token  # raw token, not hash
+        supabase_user["sub_token"] = sub_token
 
     if require_active and not users_repo.is_user_active(supabase_user):
         await _safe_repo_call("users.update_status", lambda: users_repo.update_status(tg_id, False), fallback=None, tg_id=tg_id)
@@ -147,28 +147,59 @@ async def ensure_user_access(
 
     expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
 
-    try:
-        vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms)
-    except VPNManagerError as error:
-        logger.error("VPN creation failed tg_id=%s error=%s", tg_id, error)
-        raise AccessEnsureError(str(error)) from error
+    if force_new_key:
+        # Provision a brand-new VPN key via the null-slot state machine.
+        try:
+            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, key_id=None)
+        except VPNManagerError as error:
+            logger.error("VPN creation failed tg_id=%s error=%s", tg_id, error)
+            raise AccessEnsureError(str(error)) from error
 
-    vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
-    logger.info("VPN ensure completed tg_id=%s configs=%s", tg_id, len(vpn_configs))
+        vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
+        logger.info("VPN ensure (new key) completed tg_id=%s configs=%s", tg_id, len(vpn_configs))
 
-    primary_key = vpn_configs[0] if vpn_configs else ""
-    if primary_key and not _is_vpn_key_valid(primary_key):
-        raise AccessEnsureError("Invalid vpn_key after ensure")
+        primary_key = vpn_configs[0] if vpn_configs else ""
+        if primary_key and not _is_vpn_key_valid(primary_key):
+            raise AccessEnsureError("Invalid vpn_key after ensure")
 
-    current_key = str((supabase_user or {}).get("vpn_key") or "")
-    if primary_key and current_key != primary_key:
-        updated_key = await _safe_repo_call("users.update_key", lambda: users_repo.update_key(tg_id, primary_key), fallback=None, tg_id=tg_id)
-        if not updated_key:
-            raise AccessEnsureError("Failed to persist vpn_key")
-        supabase_user["vpn_key"] = primary_key
-    if primary_key:
-        await _safe_repo_call("keys.create", lambda: keys_repo.create(tg_id, primary_key), fallback=None, tg_id=tg_id)
-        logger.info("VPN key persisted tg_id=%s", tg_id)
+        current_key = str((supabase_user or {}).get("vpn_key") or "")
+        if primary_key and current_key != primary_key:
+            updated_key = await _safe_repo_call(
+                "users.update_key", lambda: users_repo.update_key(tg_id, primary_key), fallback=None, tg_id=tg_id
+            )
+            if not updated_key:
+                raise AccessEnsureError("Failed to persist vpn_key")
+            supabase_user["vpn_key"] = primary_key
+
+        if primary_key:
+            new_key = await _safe_repo_call(
+                "keys.create", lambda: keys_repo.create(tg_id, primary_key), fallback=None, tg_id=tg_id
+            )
+            if new_key:
+                new_key_id = new_key["id"]
+                user_vpn_repo = UserVpnRepository(db)
+                await _safe_repo_call(
+                    "user_vpn.link_key_id",
+                    lambda: user_vpn_repo.link_key_id(tg_id, new_key_id),
+                    fallback=None,
+                    tg_id=tg_id,
+                )
+                await _safe_repo_call(
+                    "keys.set_primary",
+                    lambda: keys_repo.set_primary(tg_id, new_key_id),
+                    fallback=None,
+                    tg_id=tg_id,
+                )
+                logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
+    else:
+        # Return existing configs without provisioning anything new.
+        vpn_configs = await manager.get_subscription(tg_id, create_if_missing=False)
+        vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
+        logger.info("VPN ensure (existing) completed tg_id=%s configs=%s", tg_id, len(vpn_configs))
+
+        primary_key = vpn_configs[0] if vpn_configs else ""
+        if primary_key and not _is_vpn_key_valid(primary_key):
+            raise AccessEnsureError("Invalid vpn_key after ensure")
 
     refreshed = await _safe_repo_call("users.get_by_tg_id.refresh", lambda: users_repo.get_by_tg_id(tg_id), fallback=None, tg_id=tg_id)
     final_user = refreshed or supabase_user

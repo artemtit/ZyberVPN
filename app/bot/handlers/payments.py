@@ -47,6 +47,9 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     logger.info("Payment callback received payload=%s tg_id=%s", payment_info.invoice_payload, payment.get("tg_id"))
 
     async def _process_payment() -> dict:
+        purchase_type = payment.get("purchase_type") or "new"
+        renew_key_id = payment.get("renew_key_id")
+
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(
                 payload=payment_info.invoice_payload,
@@ -59,6 +62,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             "tg_id": int(payment["tg_id"]),
             "tariff_code": str(payment["tariff_code"]),
             "amount": int(payment["amount"]),
+            "purchase_type": purchase_type,
+            "renew_key_id": renew_key_id,
         }
 
     try:
@@ -70,15 +75,15 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     logger.info("Payment processed idempotently payload=%s tg_id=%s", payment_info.invoice_payload, processed["tg_id"])
     tg_id = int(processed["tg_id"])
+    purchase_type = str(processed.get("purchase_type") or "new")
+    renew_key_id = processed.get("renew_key_id")
+
     user = await users_repo.get_by_tg_id(tg_id)
     if not user:
         await message.answer("Пользователь не найден.")
         return
 
-    link = ""
-    sub_token = ""
-
-    # Read actual expiry from subscriptions table (create_or_extend already extended it)
+    # Read actual expiry from subscriptions table
     active_sub = await subs_repo.get_active(tg_id)
     activated_dt = utc_now()
     if active_sub:
@@ -97,6 +102,39 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             last_activated_at=activated_at,
         )
 
+    expires_str = expires_dt.strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
+    expiry_ms = int(expires_dt.timestamp() * 1000)
+
+    if purchase_type == "renewal":
+        # Renewal: extend subscription only, update XUI expiry for the specific key.
+        try:
+            manager = build_vpn_manager(db, settings)
+            key_id_int = int(renew_key_id) if renew_key_id is not None else None
+            await manager.update_user_expiry(tg_id, expiry_ms, key_id=key_id_int)
+        except Exception:
+            logger.exception("Failed to update XUI expiry after renewal tg_id=%s key_id=%s", tg_id, renew_key_id)
+
+        key_label = f" ключа #{renew_key_id}" if renew_key_id else ""
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            f"🔄 <b>Продление{key_label}</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            "📊 Статус: <b>Активна</b>"
+        )
+        await message.answer(text)
+        await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+
+        referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
+        bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
+        if bonus > 0:
+            await message.answer(f"Реферальный бонус: +{bonus} RUB")
+        return
+
+    # New key: provision a fresh VPN key.
+    link = ""
+    sub_token = ""
+
     try:
         access_user = await ensure_user_access(
             tg_id=tg_id,
@@ -104,6 +142,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             settings=settings,
             require_active=True,
             idempotency_key=f"vpn-after-payment:{payment_info.invoice_payload}",
+            force_new_key=True,
         )
         link = str(access_user.get("vpn_key") or "")
         sub_token = str(access_user.get("sub_token") or "")
@@ -112,15 +151,12 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
     # Update XUI client expiry to match the extended subscription
-    expiry_ms = int(expires_dt.timestamp() * 1000)
     try:
         manager = build_vpn_manager(db, settings)
         await manager.update_user_expiry(tg_id, expiry_ms)
     except Exception:
         logger.exception("Failed to update XUI expiry after payment tg_id=%s", tg_id)
 
-    expires_str = expires_dt.strftime("%d.%m.%Y")
-    days_remaining = max(0, (expires_dt - utc_now()).days)
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
 
     if link and sub_url:

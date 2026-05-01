@@ -32,7 +32,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,created_at")
+                .select("id,tg_id,key,comment,is_primary,created_at")
                 .eq("tg_id", tg_id)
                 .order("created_at", desc=True)
                 .execute()
@@ -47,7 +47,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,created_at")
+                .select("id,tg_id,key,comment,is_primary,created_at")
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .limit(1)
@@ -70,6 +70,30 @@ class KeysRepository:
                 .execute()
             ),
             operation="keys.update_comment",
+        )
+
+    async def set_primary(self, tg_id: int, key_id: int) -> None:
+        """Mark key_id as primary and clear is_primary on all other keys for tg_id."""
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"is_primary": False})
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.set_primary.clear",
+        )
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"is_primary": True})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.set_primary.set",
         )
 
     async def exists_for_user(self, tg_id: int, key: str) -> bool:

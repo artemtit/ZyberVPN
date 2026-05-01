@@ -44,7 +44,7 @@ def key_card_keyboard(key_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
-            [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data="buy_open")],
+            [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")],
             [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
             [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
             [InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys")],

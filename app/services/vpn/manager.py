@@ -70,8 +70,9 @@ class VPNManager:
         self,
         user_id: int,
         expiry_time: int | None = None,
+        key_id: int | None = None,
     ) -> list[str]:
-        """Return VPN configs for *user_id*, creating or repairing them as needed.
+        """Return VPN configs for (user_id, key_id), creating or repairing as needed.
 
         State machine
         -------------
@@ -79,47 +80,41 @@ class VPNManager:
         creating → another request owns the slot; raise VPNManagerError
         failed / absent → claim the slot, provision, then set ready or failed
         """
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
 
         if vpn:
-            # Default to 'ready' for rows that pre-date the status column.
             status = vpn.get("status") or "ready"
             if status == "ready":
                 configs = self._row_to_configs(vpn)
                 if configs:
-                    logger.info("VPN ready, returning cached configs user_id=%s", user_id)
+                    logger.info("VPN ready, returning cached configs user_id=%s key_id=%s", user_id, key_id)
                     return configs
-                # status='ready' but configs empty/invalid — treat as failed.
             elif status == "creating":
-                logger.info("VPN creation already in progress user_id=%s", user_id)
+                logger.info("VPN creation already in progress user_id=%s key_id=%s", user_id, key_id)
                 raise VPNManagerError("VPN creation in progress")
-            # status='failed' (or ready-but-empty): fall through to creation.
 
-        # Atomically claim the creation slot via a single DB transaction.
-        claim = await self._user_vpn_repo.claim_creating(user_id)
+        claim = await self._user_vpn_repo.claim_creating(user_id, key_id)
 
         if claim == "ready":
-            # Another request finished between our read and the claim call.
-            vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+            vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
             configs = self._row_to_configs(vpn) if vpn else []
             if configs:
                 return configs
 
         if claim != "claimed":
-            logger.info("VPN claim rejected claim=%s user_id=%s", claim, user_id)
+            logger.info("VPN claim rejected claim=%s user_id=%s key_id=%s", claim, user_id, key_id)
             raise VPNManagerError("VPN creation in progress")
 
-        logger.info("VPN creation claimed user_id=%s", user_id)
+        logger.info("VPN creation claimed user_id=%s key_id=%s", user_id, key_id)
         try:
-            # If the previous row had a valid server reference, try repair first.
             if vpn and int(vpn.get("server_id") or 0) > 0:
-                configs = await self._validate_or_repair_existing_access(user_id, vpn, expiry_time)
+                configs = await self._validate_or_repair_existing_access(user_id, vpn, expiry_time, key_id)
                 if configs:
                     return configs
 
-            return await self._create_on_best_server(user_id, expiry_time)
+            return await self._create_on_best_server(user_id, expiry_time, key_id)
         except Exception:
-            await self._user_vpn_repo.set_failed(user_id)
+            await self._user_vpn_repo.set_failed(user_id, key_id)
             raise
 
     def _row_to_configs(self, row: dict | None) -> list[str]:
@@ -144,9 +139,14 @@ class VPNManager:
         return configs
 
     async def get_subscription(self, user_id: int, create_if_missing: bool = False) -> list[str]:
-        existing = await self.get_existing_subscription(user_id)
-        if existing:
-            return existing
+        rows = await self._user_vpn_repo.list_user_vpns(user_id)
+        configs: list[str] = []
+        for row in rows:
+            if (row.get("status") or "ready") == "ready":
+                configs.extend(self._row_to_configs(row))
+        if configs:
+            logger.info("VPN subscription returned configs user_id=%s count=%s", user_id, len(configs))
+            return configs
         if not create_if_missing:
             return []
         return await self.create_user_access(user_id)
@@ -251,7 +251,7 @@ class VPNManager:
         if self._users_repo is None:
             return False
 
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id=None)
         if not vpn:
             return False
         if vpn.get("status") != "ready":
@@ -271,15 +271,13 @@ class VPNManager:
         if not isinstance(provider, XUIProvider):
             return False
 
-        # Fetch live traffic — skip user if the 3x-ui API is unavailable
         try:
             reality_email = f"{user_id}-reality"
             traffic = await provider.get_client_traffic(server, reality_email)
             if not isinstance(traffic, dict):
                 return False
             if not traffic.get("enable", True):
-                # Client already disabled in xray; sync DB state and stop
-                await self._user_vpn_repo.set_status(user_id, "limit_exceeded")
+                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=None)
                 return False
             bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
         except Exception as error:
@@ -329,7 +327,7 @@ class VPNManager:
                         all_disabled = False
 
         if all_disabled:
-            await self._user_vpn_repo.set_status(user_id, "limit_exceeded")
+            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=None)
 
         return all_disabled
 
@@ -351,39 +349,53 @@ class VPNManager:
                 logger.exception("enforce_traffic_limit unexpected error user_id=%s", user_id)
         return disabled
 
-    async def update_user_expiry(self, user_id: int, expiry_time_ms: int) -> bool:
-        """Update XUI client expiryTime after subscription renewal. Returns True on success."""
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
-        if not vpn:
+    async def update_user_expiry(self, user_id: int, expiry_time_ms: int, key_id: int | None = None) -> bool:
+        """Update XUI client expiryTime after subscription renewal. Returns True on success.
+
+        If key_id is given, only update that specific key's XUI clients.
+        If key_id is None, update all user's XUI clients.
+        """
+        if key_id is not None:
+            rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
+            rows = [r for r in rows if r]
+        else:
+            rows = await self._user_vpn_repo.list_user_vpns(user_id)
+
+        if not rows:
             return False
-        server_id = int(vpn.get("server_id") or 0)
-        if server_id <= 0:
-            return False
+
         servers = await self._servers_repo.list_all()
-        server = next((s for s in servers if s.id == server_id), None)
-        if not server:
-            return False
         provider = self._providers.get("xui")
         if not isinstance(provider, XUIProvider):
             return False
-        reality_uuid = str(vpn.get("reality_uuid") or "").strip()
-        ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+
         updated = False
-        for uuid in filter(None, [reality_uuid, ws_uuid]):
-            try:
-                ok = await provider.update_client_expiry(server, uuid, expiry_time_ms)
-                if ok:
-                    updated = True
-                    logger.info("XUI expiry updated user_id=%s uuid=%s expiry_ms=%s", user_id, uuid, expiry_time_ms)
-            except Exception:
-                logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
+        for vpn in rows:
+            server_id = int(vpn.get("server_id") or 0)
+            if server_id <= 0:
+                continue
+            server = next((s for s in servers if s.id == server_id), None)
+            if not server:
+                continue
+            reality_uuid = str(vpn.get("reality_uuid") or "").strip()
+            ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+            for uuid in filter(None, [reality_uuid, ws_uuid]):
+                try:
+                    ok = await provider.update_client_expiry(server, uuid, expiry_time_ms)
+                    if ok:
+                        updated = True
+                        logger.info("XUI expiry updated user_id=%s uuid=%s expiry_ms=%s", user_id, uuid, expiry_time_ms)
+                except Exception:
+                    logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
         return updated
 
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)
         return int(expires.timestamp() * 1000)
 
-    async def _create_on_best_server(self, user_id: int, expiry_time: int | None) -> list[str]:
+    async def _create_on_best_server(
+        self, user_id: int, expiry_time: int | None, key_id: int | None = None
+    ) -> list[str]:
         await self._servers_repo.bootstrap_from_env_if_empty(self._settings)
         all_servers = await self._servers_repo.list_all()
         counts = await self._user_vpn_repo.count_users_by_server()
@@ -404,9 +416,11 @@ class VPNManager:
         for server in candidates:
             try:
                 result = await provider.create_client(user_id, server, limits)
-                await self._save_access(user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles)
+                await self._save_access(
+                    user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id
+                )
                 await self._servers_repo.update_health(server.id, is_active=True, ok=True, error_text=None)
-                logger.info("VPN client created user_id=%s server_id=%s", user_id, server.id)
+                logger.info("VPN client created user_id=%s server_id=%s key_id=%s", user_id, server.id, key_id)
                 return self._profiles_to_subscription(result.profiles)
             except Exception as error:
                 last_error = error
@@ -414,7 +428,9 @@ class VPNManager:
                 await self._servers_repo.update_health(server.id, is_active=False, ok=False, error_text=str(error)[:500])
         raise VPNManagerError("All VPN servers failed") from last_error
 
-    async def _validate_or_repair_existing_access(self, user_id: int, row: dict, expiry_time: int | None) -> list[str]:
+    async def _validate_or_repair_existing_access(
+        self, user_id: int, row: dict, expiry_time: int | None, key_id: int | None = None
+    ) -> list[str]:
         server_id = int(row.get("server_id") or 0)
         if server_id <= 0:
             return []
@@ -455,7 +471,9 @@ class VPNManager:
             reality_uuid=reality_uuid or None,
             ws_uuid=ws_uuid or None,
         )
-        await self._save_access(user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles)
+        await self._save_access(
+            user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id
+        )
         logger.info("VPN client repaired user_id=%s server_id=%s", user_id, server.id)
         return self._profiles_to_subscription(result.profiles)
 
@@ -466,6 +484,7 @@ class VPNManager:
         reality_uuid: str,
         ws_uuid: str | None,
         profiles: list,
+        key_id: int | None = None,
     ) -> None:
         reality = ""
         ws = ""
@@ -483,6 +502,7 @@ class VPNManager:
             ws_uuid=ws_uuid,
             reality_config=reality,
             ws_config=ws,
+            key_id=key_id,
         )
 
     def _profiles_to_subscription(self, profiles: list) -> list[str]:

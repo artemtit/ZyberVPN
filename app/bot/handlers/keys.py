@@ -48,8 +48,13 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
 
     key_rows: list[tuple[str, str]] = []
     for index, key_data in enumerate(keys, start=1):
-        status = "✅" if active_sub else "⚪"
-        key_rows.append((f"{status} #{index} (Основной) ({months_left} мес)", str(key_data["id"])))
+        is_primary = key_data.get("is_primary", False)
+        if is_primary:
+            status = "✅" if active_sub else "⚪"
+            label = f"⭐ {status} #{index} (Основной) ({months_left} мес)"
+        else:
+            label = f"#{index} (Дополнительный)"
+        key_rows.append((label, str(key_data["id"])))
 
     await callback.message.edit_text(
         "🔑 Ваши ключи доступа\n\nНиже представлен список ваших активных и истекших ключей:",

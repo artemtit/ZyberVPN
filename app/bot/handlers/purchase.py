@@ -18,10 +18,23 @@ logger = logging.getLogger(__name__)
 
 
 @router.callback_query(F.data == "buy_open")
-async def buy_open(callback: CallbackQuery, state: FSMContext) -> None:
+async def buy_new_key(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
+    await state.update_data(purchase_type="new", renew_key_id=None)
     await callback.message.edit_text(
-        "💳 Выбор тарифа: Основной\n\nВыберите подходящий период подписки:",
+        "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
+        reply_markup=tariffs_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("key_renew:"))
+async def buy_renew_key(callback: CallbackQuery, state: FSMContext) -> None:
+    key_id = int(callback.data.split(":")[1])
+    await state.clear()
+    await state.update_data(purchase_type="renewal", renew_key_id=key_id)
+    await callback.message.edit_text(
+        f"🔄 Продление ключа #{key_id}\n\nВыберите подходящий период подписки:",
         reply_markup=tariffs_keyboard(),
     )
     await callback.answer()
@@ -90,13 +103,15 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         return
     tariff = TARIFFS[tariff_code]
     email = data.get("email")
+    purchase_type = str(data.get("purchase_type") or "new")
+    renew_key_id = data.get("renew_key_id")
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
     try:
         await users_repo.get_or_create(callback.from_user.id)
         payload = generate_payload(callback.from_user.id, tariff_code)
-        idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}"
+        idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
         payment = await payments_repo.create_pending(
             tg_id=callback.from_user.id,
             amount=tariff["price_rub"],
@@ -104,6 +119,8 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
             email=email,
             payload=payload,
             idempotency_key=idempotency_key,
+            purchase_type=purchase_type,
+            renew_key_id=int(renew_key_id) if renew_key_id is not None else None,
         )
         payload = str(payment.get("payload") or payload)
         await state.clear()
