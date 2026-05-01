@@ -22,6 +22,7 @@ from app.api.middlewares import (
     request_logging_middleware,
 )
 from app.api.subscription import register_subscription_routes
+from app.bot.handlers.admin import router as admin_router
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
@@ -220,6 +221,7 @@ async def run() -> None:
     dp["db"] = db
     dp["settings"] = settings
     setup_routers(dp)
+    dp.include_router(admin_router)
 
     web_runner = await _start_health_server(db, settings)
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))

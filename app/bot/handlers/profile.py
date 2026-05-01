@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 from html import escape
 from urllib.parse import quote
@@ -34,6 +35,21 @@ from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
+_promo_attempts: dict[int, list[float]] = {}
+MAX_ATTEMPTS = 5
+WINDOW_SECONDS = 3600
+
+
+def _check_promo_rate_limit(tg_id: int) -> bool:
+    now = time.time()
+    attempts = _promo_attempts.get(tg_id, [])
+    attempts = [stamp for stamp in attempts if now - stamp < WINDOW_SECONDS]
+    if len(attempts) >= MAX_ATTEMPTS:
+        _promo_attempts[tg_id] = attempts
+        return False
+    attempts.append(now)
+    _promo_attempts[tg_id] = attempts
+    return True
 
 
 def _promo_success_text(expires_dt, *, include_status: bool = True) -> str:
@@ -157,6 +173,9 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
     users_repo = UsersRepository(db)
     promo_repo = PromoRepository()
     tg_id = message.from_user.id
+    if not _check_promo_rate_limit(tg_id):
+        await message.answer("❌ Слишком много попыток. Попробуйте через час.")
+        return
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user and bool(supabase_user.get("promo_used")):
@@ -374,7 +393,7 @@ def _build_share_url(bot_username: str, tg_id: int) -> str:
 
 
 @router.callback_query(F.data == "profile_ref")
-async def referral_open(callback: CallbackQuery, db: Database) -> None:
+async def referral_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
     local_user = await users_repo.get_or_create(callback.from_user.id)
     invited = await users_repo.count_referrals(callback.from_user.id)
@@ -385,7 +404,7 @@ async def referral_open(callback: CallbackQuery, db: Database) -> None:
         "🌟 Реферальная программа\n\n"
         "Приглашайте друзей и получайте бонусы! 💰\n\n"
         "💎 Ваша награда:\n"
-        "• Вы зарабатываете 20% от каждой покупки ваших друзей\n\n"
+        f"• Вы зарабатываете {settings.referral_bonus_percent}% от каждой покупки ваших друзей\n\n"
         "🎁 Бонус другу:\n"
         "• Скидка 5% на первую покупку\n\n"
         "📊 Статистика:\n"

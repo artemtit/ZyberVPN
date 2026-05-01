@@ -339,6 +339,39 @@ class UsersRepository:
         )
         return len(response.data or [])
 
+    async def count_all(self) -> int:
+        if not self._supabase:
+            return 0
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("tg_id").execute(),
+            operation="users.count_all",
+        )
+        return len(response.data or [])
+
+    async def count_active(self) -> int:
+        if not self._supabase:
+            return 0
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("tg_id").eq("is_active", True).execute(),
+            operation="users.count_active",
+        )
+        return len(response.data or [])
+
+    async def list_active_tg_ids(self) -> list[int]:
+        if not self._supabase:
+            return []
+        response = await execute_with_retry(
+            lambda: (
+                self._supabase.table("users")
+                .select("tg_id")
+                .eq("is_active", True)
+                .execute()
+            ),
+            operation="users.list_active_tg_ids",
+        )
+        rows = response.data or []
+        return [int(row.get("tg_id")) for row in rows if isinstance(row, dict) and row.get("tg_id") is not None]
+
     async def add_balance(self, tg_id: int, amount: int) -> None:
         if not self._supabase:
             return

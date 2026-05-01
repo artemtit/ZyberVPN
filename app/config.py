@@ -36,6 +36,7 @@ class Settings:
     privacy_policy_url: str
     terms_url: str
     bot_username: str
+    admin_ids: list[int]
 
 
 def load_settings() -> Settings:
@@ -58,11 +59,22 @@ def load_settings() -> Settings:
             pass
         else:
             public_base_url = f"https://{xui_public_host}".rstrip("/")
+    admin_ids_raw = os.getenv("ADMIN_IDS", "").strip()
+    admin_ids: list[int] = []
+    if admin_ids_raw:
+        for part in admin_ids_raw.split(","):
+            value = part.strip()
+            if not value:
+                continue
+            try:
+                admin_ids.append(int(value))
+            except ValueError:
+                continue
     return Settings(
         bot_token=bot_token,
         db_path=os.getenv("DB_PATH", "./data/vpn_bot.sqlite3"),
         support_url=os.getenv("SUPPORT_URL", "https://t.me/ZyberVPN_Support_bot"),
-        referral_bonus_percent=int(os.getenv("REFERRAL_BONUS_PERCENT", "10")),
+        referral_bonus_percent=int(os.getenv("REFERRAL_BONUS_PERCENT", "20")),
         public_base_url=public_base_url,
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),
         supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY", "").strip(),
@@ -87,4 +99,5 @@ def load_settings() -> Settings:
         privacy_policy_url=os.getenv("PRIVACY_POLICY_URL", "https://telegra.ph/Politika-konfidencialnosti-04-01-26"),
         terms_url=os.getenv("TERMS_URL", "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"),
         bot_username=os.getenv("BOT_USERNAME", "ZyberVPNBot").strip(),
+        admin_ids=admin_ids,
     )

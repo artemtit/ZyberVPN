@@ -84,3 +84,13 @@ class PaymentsRepository:
         if rows:
             return rows[0]
         return await self.get_by_payload(payload)
+
+    async def total_revenue(self) -> int:
+        if not self._supabase:
+            return 0
+        response = await execute_with_retry(
+            lambda: self._supabase.table("payments").select("amount").eq("status", "paid").execute(),
+            operation="payments.total_revenue",
+        )
+        rows = response.data or []
+        return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
