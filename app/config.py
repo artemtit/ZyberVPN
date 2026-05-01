@@ -37,6 +37,7 @@ class Settings:
     terms_url: str
     bot_username: str
     admin_ids: list[int]
+    test_mode: bool
 
 
 def load_settings() -> Settings:
@@ -100,4 +101,5 @@ def load_settings() -> Settings:
         terms_url=os.getenv("TERMS_URL", "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"),
         bot_username=os.getenv("BOT_USERNAME", "ZyberVPNBot").strip(),
         admin_ids=admin_ids,
+        test_mode=os.getenv("TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"},
     )
