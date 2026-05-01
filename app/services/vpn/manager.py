@@ -395,14 +395,21 @@ class VPNManager:
                 continue
             reality_uuid = str(vpn.get("reality_uuid") or "").strip()
             ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+            row_updated = False
             for uuid in filter(None, [reality_uuid, ws_uuid]):
                 try:
                     ok = await provider.update_client_expiry(server, uuid, expiry_time_ms)
                     if ok:
                         updated = True
+                        row_updated = True
                         logger.info("XUI expiry updated user_id=%s uuid=%s expiry_ms=%s", user_id, uuid, expiry_time_ms)
                 except Exception:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
+            if row_updated:
+                try:
+                    await provider.reset_client_traffic(server, user_id)
+                except Exception:
+                    logger.warning("traffic reset failed user_id=%s server_id=%s", user_id, server_id)
         return updated
 
     def _default_expiry_ms(self) -> int:

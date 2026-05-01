@@ -150,13 +150,6 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
 
-    # Update XUI client expiry to match the extended subscription
-    try:
-        manager = build_vpn_manager(db, settings, bot=message.bot)
-        await manager.update_user_expiry(tg_id, expiry_ms)
-    except Exception:
-        logger.exception("Failed to update XUI expiry after payment tg_id=%s", tg_id)
-
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
 
     if link and sub_url:

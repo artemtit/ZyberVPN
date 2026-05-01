@@ -206,12 +206,6 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
 
-    try:
-        manager = build_vpn_manager(db, settings, bot=callback.bot)
-        await manager.update_user_expiry(tg_id, expiry_ms)
-    except Exception:
-        logger.exception("Failed to update XUI expiry after test SBP payment tg_id=%s", tg_id)
-
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     await referral_service.accrue_bonus(user, int(processed["amount"]))
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""

@@ -283,6 +283,21 @@ class XUIProvider(VPNProvider):
         if clients is not None and not isinstance(clients, list):
             raise XUIProviderError("inbound clients unreadable")
 
+    async def reset_client_traffic(self, server: ServerInfo, user_id: int) -> None:
+        """Reset traffic counters for the user's reality and ws clients (best-effort)."""
+        self._validate_server_security(server)
+        emails = [f"{user_id}-reality", f"{user_id}-ws"]
+        async with self._session() as session:
+            await self._login(session, server)
+            for email in emails:
+                url = f"{server.api_url}/panel/api/inbounds/{server.inbound_id}/resetClientTraffic/{email}"
+                try:
+                    data = await self._request_json(session, "post", url)
+                    if isinstance(data, dict) and data.get("success") is True:
+                        logger.info("traffic reset server_id=%s email=%s", server.id, email)
+                except Exception as error:
+                    logger.warning("traffic reset failed server_id=%s email=%s error=%s", server.id, email, error)
+
     async def get_client_traffic(self, server: ServerInfo, email: str) -> dict | None:
         """Fetch traffic stats for a client email from 3x-ui panel."""
         self._validate_server_security(server)
