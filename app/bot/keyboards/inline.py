@@ -170,8 +170,6 @@ def connect_apps_keyboard(apps: list[tuple[str, str]]) -> InlineKeyboardMarkup:
 def connect_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Скопировать sub-ссылку", callback_data="connect_copy_sub")],
-            [InlineKeyboardButton(text="📋 Скопировать ключ", callback_data="connect_copy_key")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="connect_back_devices")],
         ]
     )
