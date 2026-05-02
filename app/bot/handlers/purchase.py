@@ -158,9 +158,13 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                                 int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
                             )
             await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
+            base_limit = int(tariff.get("months", 1)) * 60
             current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
             current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
-            new_limit = current_limit + int(tariff.get("traffic_gb", 60))
+            if purchase_type == "renewal":
+                new_limit = current_limit + base_limit
+            else:
+                new_limit = base_limit
             await users_repo.set_traffic_limit(int(payment["tg_id"]), new_limit)
         return {
             "tg_id": int(payment["tg_id"]),
