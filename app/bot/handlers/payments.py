@@ -178,7 +178,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             force_new_key=True,
         )
         link = str(access_user.get("vpn_key") or "")
-        sub_token = str(access_user.get("sub_token") or "")
+        # Prefer per-key sub_token; fall back to user-level for backward compat
+        sub_token = str(access_user.get("key_sub_token") or access_user.get("sub_token") or "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
@@ -216,12 +217,19 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 @router.callback_query(F.data == "payment_show_qr")
 async def show_payment_qr(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
-    user = await users_repo.get_by_tg_id(callback.from_user.id)
-    sub_token = str((user or {}).get("sub_token") or "")
-    if not sub_token or not settings.public_base_url:
+    keys_repo = KeysRepository(db)
+    user_keys = await keys_repo.list_by_user(callback.from_user.id)
+    primary_key = next((k for k in user_keys if k.get("is_primary")), user_keys[0] if user_keys else None)
+    key_sub_token = str((primary_key or {}).get("sub_token") or "")
+    if not key_sub_token and primary_key:
+        try:
+            key_sub_token = await keys_repo.ensure_sub_token(int(primary_key["id"]), callback.from_user.id)
+        except Exception:
+            pass
+    if not key_sub_token or not settings.public_base_url:
         await callback.answer("Subscription URL не найден", show_alert=True)
         return
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}"
+    sub_url = f"{settings.public_base_url}/sub/{key_sub_token}"
     qr_bytes = qr_png_from_text(sub_url)
     await callback.message.answer_photo(
         BufferedInputFile(qr_bytes, filename="subscription-qr.png"),

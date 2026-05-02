@@ -205,6 +205,14 @@ async def ensure_user_access(
                 tg_id=tg_id,
             )
             logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
+
+        # Generate per-key sub_token so each key has an independent subscription URL.
+        key_sub_token = ""
+        try:
+            key_sub_token = await keys_repo.ensure_sub_token(new_key_id, tg_id)
+            logger.info("sub_token generated for key tg_id=%s key_id=%s", tg_id, new_key_id)
+        except Exception:
+            logger.warning("Failed to generate sub_token tg_id=%s key_id=%s", tg_id, new_key_id)
     else:
         # Return existing configs without provisioning anything new.
         vpn_configs = await manager.get_subscription(tg_id, create_if_missing=False)
@@ -219,4 +227,7 @@ async def ensure_user_access(
     final_user = refreshed or supabase_user
     final_user["vpn_key"] = primary_key
     final_user["vpn_configs"] = vpn_configs
+    # Expose per-key sub_token if available (used by payments handler for sub_url)
+    if force_new_key and "key_sub_token" in locals() and key_sub_token:
+        final_user["key_sub_token"] = key_sub_token
     return final_user

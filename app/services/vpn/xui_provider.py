@@ -289,10 +289,13 @@ class XUIProvider(VPNProvider):
         if clients is not None and not isinstance(clients, list):
             raise XUIProviderError("inbound clients unreadable")
 
-    async def reset_client_traffic(self, server: ServerInfo, user_id: int) -> None:
+    async def reset_client_traffic(self, server: ServerInfo, user_id: int, key_id: int | None = None) -> None:
         """Reset traffic counters for the user's reality and ws clients (best-effort)."""
         self._validate_server_security(server)
-        emails = [f"{user_id}-reality", f"{user_id}-ws"]
+        emails = [
+            self._client_email(user_id, "reality", key_id),
+            self._client_email(user_id, "ws", key_id),
+        ]
         async with self._session() as session:
             await self._login(session, server)
             for email in emails:

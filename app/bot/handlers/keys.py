@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from html import escape
 
@@ -129,16 +130,23 @@ async def _build_key_card(
     days, hours, _ = _remaining_parts(expires_at)
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
-    sub_token = str((supabase_user or {}).get("sub_token") or "")
     traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+
+    # Per-key sub_token: generate one on first access if missing
+    key_sub_token = str(key_data.get("sub_token") or "")
+    if not key_sub_token and settings.public_base_url:
+        try:
+            key_sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
+        except Exception:
+            logger.warning("Failed to generate sub_token for key_id=%s tg_id=%s", key_id, tg_id)
+    sub_url = f"{settings.public_base_url}/sub/{key_sub_token}" if key_sub_token and settings.public_base_url else ""
 
     traffic_used_gb = 0.0
     online_devices = 0
     limit_exceeded = False
     try:
         manager = build_vpn_manager(db, settings, bot=bot)
-        bytes_used, online_devices = await manager.get_client_stats(tg_id)
+        bytes_used, online_devices = await manager.get_client_stats(tg_id, key_id=key_id)
         traffic_used_gb = round(bytes_used / (1024 ** 3), 2)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
@@ -231,9 +239,13 @@ async def key_qr(callback: CallbackQuery, db: Database, settings: Settings) -> N
     if not key_data:
         await callback.answer("Ключ не найден", show_alert=True)
         return
-    supabase_user = await users_repo.get_by_tg_id(tg_id)
-    sub_token = str((supabase_user or {}).get("sub_token") or "")
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    key_sub_token = str(key_data.get("sub_token") or "")
+    if not key_sub_token:
+        try:
+            key_sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
+        except Exception:
+            logger.warning("Failed to generate sub_token key_id=%s", key_id)
+    sub_url = f"{settings.public_base_url}/sub/{key_sub_token}" if key_sub_token and settings.public_base_url else ""
     if not sub_url:
         await callback.answer("Subscription URL не найден", show_alert=True)
         return
@@ -266,12 +278,14 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
         await users_repo.update_status(callback.from_user.id, False)
         await callback.answer("❌ Подписка истекла", show_alert=True)
         return
-    try:
-        sub_token = await users_repo.ensure_sub_token_for_tg(callback.from_user.id)
-    except Exception:
-        await callback.answer("Не удалось подготовить subscription-ссылку", show_alert=True)
-        return
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}"
+    key_sub_token = str(key_data.get("sub_token") or "")
+    if not key_sub_token:
+        try:
+            key_sub_token = await keys_repo.ensure_sub_token(key_id, callback.from_user.id)
+        except Exception:
+            await callback.answer("Не удалось подготовить subscription-ссылку", show_alert=True)
+            return
+    sub_url = f"{settings.public_base_url}/sub/{key_sub_token}"
     await callback.message.answer(
         "🔗 Ваша subscription-ссылка:\n"
         f"<code>{sub_url}</code>",
