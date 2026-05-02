@@ -454,7 +454,7 @@ class VPNManager:
         last_error: Exception | None = None
         for server in candidates:
             try:
-                result = await provider.create_client(user_id, server, limits)
+                result = await provider.create_client(user_id, server, limits, key_id=key_id)
                 await self._save_access(
                     user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id
                 )
@@ -500,10 +500,10 @@ class VPNManager:
                 if not server.is_active or server.id == primary_server_id:
                     continue
                 try:
-                    existing_uuid = await provider.get_client(server, user_id)
+                    existing_uuid = await provider.get_client(server, user_id, key_id=key_id)
                     if existing_uuid:
                         continue
-                    result = await provider.add_client(server, user_id, reality_uuid, expiry_time)
+                    result = await provider.add_client(server, user_id, reality_uuid, expiry_time, key_id=key_id)
                     await self._save_additional_server_access(
                         user_id=user_id,
                         key_id=self._secondary_key_id(key_id, server.id),
@@ -565,6 +565,7 @@ class VPNManager:
             limits=limits,
             reality_uuid=reality_uuid or None,
             ws_uuid=ws_uuid or None,
+            key_id=key_id,
         )
         await self._save_access(
             user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id

@@ -40,10 +40,11 @@ class XUIProvider(VPNProvider):
         limits: ClientLimits,
         reality_uuid: str | None = None,
         ws_uuid: str | None = None,
+        key_id: int | None = None,
     ) -> CreateClientResult:
         self._validate_server_security(server)
-        reality_email = f"{user_id}-reality"
-        ws_email = f"{user_id}-ws"
+        reality_email = self._client_email(user_id, "reality", key_id)
+        ws_email = self._client_email(user_id, "ws", key_id)
         async with self._session() as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
@@ -114,28 +115,14 @@ class XUIProvider(VPNProvider):
         self._validate_server_security(server)
         async with self._session() as session:
             await self._login(session, server)
-            inbound = await self._get_inbound(session, server)
-            settings_raw = inbound.get("settings")
-            settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
-            if not isinstance(settings, dict):
-                raise XUIProviderError("inbound settings invalid")
-            clients = settings.get("clients")
-            if not isinstance(clients, list):
-                raise XUIProviderError("inbound clients invalid")
-            changed = False
-            for client in clients:
-                if isinstance(client, dict) and str(client.get("id")) == client_uuid:
-                    client["enable"] = False
-                    changed = True
-                    break
+            changed = await self._update_client_record(
+                session,
+                server,
+                client_uuid,
+                lambda client: client.__setitem__("enable", False),
+            )
             if not changed:
                 return
-            update_url = f"{server.api_url}/panel/api/inbounds/update/{server.inbound_id}"
-            payload = {
-                "id": server.inbound_id,
-                "settings": json.dumps({"clients": clients}),
-            }
-            await self._request_json(session, "post", update_url, data=payload)
             await self._reload_xray(session, server)
 
     async def update_client_expiry(
@@ -162,28 +149,17 @@ class XUIProvider(VPNProvider):
             clients = settings.get("clients")
             if not isinstance(clients, list):
                 return False
-            changed = False
-            for client in clients:
-                if isinstance(client, dict) and str(client.get("id")) == client_uuid:
-                    client["expiryTime"] = expiry_time_ms
-                    client["enable"] = True
-                    if total_gb and total_gb > 0:
-                        client["totalGB"] = total_gb * 1024 * 1024 * 1024
-                    changed = True
-                    break
+            changed = await self._update_client_record(
+                session,
+                server,
+                client_uuid,
+                lambda client: (
+                    client.__setitem__("expiryTime", expiry_time_ms),
+                    client.__setitem__("enable", True),
+                    client.__setitem__("totalGB", total_gb * 1024 * 1024 * 1024) if total_gb and total_gb > 0 else None,
+                ),
+            )
             if not changed:
-                return False
-            update_url = f"{server.api_url}/panel/api/inbounds/update/{server.inbound_id}"
-            payload = {
-                "id": server.inbound_id,
-                "settings": json.dumps({"clients": clients}),
-            }
-            data = await self._request_json(session, "post", update_url, data=payload)
-            if not isinstance(data, dict) or data.get("success") is not True:
-                logger.error(
-                    "update_client_expiry failed server_id=%s uuid=%s response=%s",
-                    server.id, client_uuid, data,
-                )
                 return False
             await self._reload_xray(session, server)
             return True
@@ -195,16 +171,16 @@ class XUIProvider(VPNProvider):
             inbound = await self._get_inbound(session, server)
             return self._find_client_by_uuid(inbound, client_uuid)
 
-    async def get_client(self, server: ServerInfo, user_id: int) -> str | None:
+    async def get_client(self, server: ServerInfo, user_id: int, key_id: int | None = None) -> str | None:
         self._validate_server_security(server)
-        reality_email = f"{user_id}-reality"
+        reality_email = self._client_email(user_id, "reality", key_id)
         async with self._session() as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             return self._find_existing_client_uuid(inbound, reality_email)
 
     async def add_client(
-        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int
+        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int, key_id: int | None = None
     ) -> CreateClientResult:
         limits = ClientLimits(expiry_time=expiry_time)
         return await self.create_client(
@@ -212,6 +188,7 @@ class XUIProvider(VPNProvider):
             server=server,
             limits=limits,
             reality_uuid=reality_uuid,
+            key_id=key_id,
         )
 
     async def get_client_config(self, user_id: int, server: ServerInfo, client_uuid: str) -> list[VpnProfile]:
@@ -410,6 +387,44 @@ class XUIProvider(VPNProvider):
             email, old_uuid, new_uuid, server.id,
         )
 
+    async def _update_client_record(
+        self,
+        session: ClientSession,
+        server: ServerInfo,
+        client_uuid: str,
+        mutator,
+    ) -> bool:
+        """Safely update a single client via updateClient endpoint.
+
+        This avoids using /inbounds/update with partial payload, which can
+        corrupt inbound fields (port/protocol) on some 3x-ui versions.
+        """
+        inbound = await self._get_inbound(session, server)
+        settings_raw = inbound.get("settings")
+        settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
+        if not isinstance(settings, dict):
+            raise XUIProviderError("inbound settings invalid")
+        clients = settings.get("clients")
+        if not isinstance(clients, list):
+            raise XUIProviderError("inbound clients invalid")
+        target: dict | None = None
+        for client in clients:
+            if isinstance(client, dict) and str(client.get("id")) == client_uuid:
+                target = {**client}
+                break
+        if target is None:
+            return False
+        mutator(target)
+        url = f"{server.api_url}/panel/api/inbounds/updateClient/{client_uuid}"
+        payload = {
+            "id": server.inbound_id,
+            "settings": json.dumps({"clients": [target]}),
+        }
+        data = await self._request_json(session, "post", url, data=payload)
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise XUIProviderError(f"updateClient returned error: {data}")
+        return True
+
     def _find_existing_client_uuid(self, inbound: dict, email: str) -> str | None:
         raw = inbound.get("settings")
         if not raw:
@@ -429,6 +444,12 @@ class XUIProvider(VPNProvider):
                 if value:
                     return value
         return None
+
+    @staticmethod
+    def _client_email(user_id: int, suffix: str, key_id: int | None = None) -> str:
+        if key_id is None:
+            return f"{user_id}-{suffix}"
+        return f"{user_id}-k{key_id}-{suffix}"
 
     def _find_client_by_uuid(self, inbound: dict, client_uuid: str) -> bool:
         raw = inbound.get("settings")
