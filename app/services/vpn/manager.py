@@ -428,6 +428,18 @@ class VPNManager:
                     logger.warning("traffic reset failed user_id=%s server_id=%s", user_id, server_id)
         return updated
 
+    async def _user_traffic_limit_gb(self, user_id: int) -> int:
+        """Return user's traffic_limit_gb from DB; fall back to vpn_total_gb setting."""
+        if self._users_repo:
+            try:
+                user = await self._users_repo.get_by_tg_id(user_id)
+                gb = int((user or {}).get("traffic_limit_gb") or 0)
+                if gb > 0:
+                    return gb
+            except Exception:
+                pass
+        return self._settings.vpn_total_gb
+
     def _default_expiry_ms(self) -> int:
         expires = utc_now() + timedelta(days=self._settings.vpn_default_expiry_days)
         return int(expires.timestamp() * 1000)
@@ -448,7 +460,7 @@ class VPNManager:
 
         limits = ClientLimits(
             limit_ip=self._settings.vpn_limit_ip,
-            total_gb=self._settings.vpn_total_gb,
+            total_gb=await self._user_traffic_limit_gb(user_id),
             expiry_time=expiry_time if expiry_time is not None else self._default_expiry_ms(),
         )
         last_error: Exception | None = None
@@ -556,7 +568,7 @@ class VPNManager:
         logger.info("VPN client repair started user_id=%s server_id=%s", user_id, server.id)
         limits = ClientLimits(
             limit_ip=self._settings.vpn_limit_ip,
-            total_gb=self._settings.vpn_total_gb,
+            total_gb=await self._user_traffic_limit_gb(user_id),
             expiry_time=expiry_time if expiry_time is not None else self._default_expiry_ms(),
         )
         result = await provider.create_client(
