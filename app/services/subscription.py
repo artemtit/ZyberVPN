@@ -50,57 +50,45 @@ class SubscriptionService:
         self._vpn_manager = vpn_manager
 
     async def get_payload_by_token(self, token: str) -> dict:
-        """Resolve subscription by token.
+        """Resolve subscription strictly by keys.sub_token.
 
-        Resolution order:
-        1. keys.sub_token  → per-key subscription (new path)
-        2. users.sub_token → user-level subscription (legacy backward compat)
+        No fallback to users.sub_token — each key has its own independent token.
+        Raises PermissionError if token is unknown or subscription is inactive.
         """
         from app.repositories.keys import KeysRepository
         from app.services.supabase import get_supabase_client
         _sb = get_supabase_client()
-        if _sb:
-            _kr = KeysRepository.__new__(KeysRepository)
-            _kr._supabase = _sb
-            try:
-                key_row = await _kr.get_by_sub_token(token)
-                if key_row:
-                    tg_id = int(key_row["tg_id"])
-                    key_id = key_row.get("id")
-                    user = await self._users_repo.get_by_tg_id(tg_id)
-                    if not user:
-                        raise PermissionError("forbidden")
-                    if self._is_expired(user.get("expires_at")):
-                        raise PermissionError("subscription inactive")
-                    return await self._build_key_payload(tg_id, key_id, user, key_row)
-            except (PermissionError, LookupError):
-                raise
-            except Exception as error:
-                logger.warning("key sub_token resolution failed token_prefix=%s error=%s", token[:8], error)
-
-        # Fall back to user-level token (legacy)
-        try:
-            user = await self._users_repo.get_by_sub_token(token)
-        except Exception as error:
-            logger.error("users.get_by_sub_token failed error=%s", error)
-            user = None
+        if not _sb:
+            raise PermissionError("forbidden")
+        _kr = KeysRepository.__new__(KeysRepository)
+        _kr._supabase = _sb
+        key_row = await _kr.get_by_sub_token(token)
+        if not key_row:
+            raise PermissionError("forbidden")
+        tg_id = int(key_row["tg_id"])
+        key_id = key_row.get("id")
+        if key_id is None:
+            raise PermissionError("forbidden")
+        user = await self._users_repo.get_by_tg_id(tg_id)
         if not user:
             raise PermissionError("forbidden")
         if self._is_expired(user.get("expires_at")):
             raise PermissionError("subscription inactive")
-        tg_id = int(user["tg_id"])
-        return await self._build_user_payload(tg_id, user)
+        return await self._build_key_payload(tg_id, int(key_id), user, key_row)
 
-    async def _build_key_payload(self, tg_id: int, key_id, user: dict, key_row: dict) -> dict:
-        """Build subscription payload for a specific key_id (per-key subscription)."""
+    async def _build_key_payload(self, tg_id: int, key_id: int, user: dict, key_row: dict) -> dict:
+        """Build subscription payload for a specific key_id (per-key subscription).
+
+        key_id is always a real integer — null-slot is never passed here.
+        """
         from app.repositories.user_vpn import UserVpnRepository
         from app.services.supabase import get_supabase_client
         _sb = get_supabase_client()
         vpn_row = None
-        if _sb and key_id is not None:
+        if _sb:
             _uvr = UserVpnRepository.__new__(UserVpnRepository)
             _uvr._supabase = _sb
-            vpn_row = await _uvr.get_user_vpn(tg_id, int(key_id))
+            vpn_row = await _uvr.get_user_vpn(tg_id, key_id)
         configs: list[str] = []
         if vpn_row:
             reality = str(vpn_row.get("reality_config") or "").strip()
@@ -120,9 +108,7 @@ class SubscriptionService:
             raise LookupError("vpn access not found for key")
         download_bytes = 0
         try:
-            bytes_used, _ = await self._vpn_manager.get_client_stats(
-                tg_id, key_id=int(key_id) if key_id else None
-            )
+            bytes_used, _ = await self._vpn_manager.get_client_stats(tg_id, key_id=key_id)
             download_bytes = bytes_used
         except Exception:
             pass

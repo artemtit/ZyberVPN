@@ -137,15 +137,16 @@ class VPNManager:
         return output
 
     async def get_existing_subscription(self, user_id: int) -> list[str]:
-        row = await self._user_vpn_repo.get_user_vpn(user_id)
-        if not row or (row.get("status") or "ready") != "ready":
-            return []
-        configs = self._row_to_configs(row)
-        if configs:
-            logger.info("VPN subscription returned existing configs user_id=%s count=%s", user_id, len(configs))
-        return configs
+        """Return configs from all ready per-key rows (null-slot excluded)."""
+        return await self.get_subscription(user_id, create_if_missing=False)
 
     async def get_subscription(self, user_id: int, create_if_missing: bool = False) -> list[str]:
+        """Return configs from all ready per-key rows for user_id.
+
+        create_if_missing=True is intentionally disabled — creating a key requires
+        an explicit key_id from ensure_user_access (payments flow). Callers that
+        previously relied on this path should use ensure_user_access(force_new_key=True).
+        """
         rows = await self._user_vpn_repo.list_user_vpns(user_id)
         configs: list[str] = []
         for row in rows:
@@ -153,10 +154,7 @@ class VPNManager:
                 configs.extend(self._row_to_configs(row))
         if configs:
             logger.info("VPN subscription returned configs user_id=%s count=%s", user_id, len(configs))
-            return configs
-        if not create_if_missing:
-            return []
-        return await self.create_user_access(user_id)
+        return configs
 
     async def disable_user_access(self, user_id: int) -> None:
         rows = await self._user_vpn_repo.list_user_vpns(user_id)
@@ -220,8 +218,11 @@ class VPNManager:
     async def get_client_stats(self, user_id: int, key_id: int | None = None) -> tuple[int, int]:
         """Return (total_bytes_used, online_device_count) for the given (user_id, key_id).
 
-        key_id=None uses the null-slot (legacy). Returns (0, 0) on any failure.
+        key_id must be a real key ID. Returns (0, 0) if key_id is None or on any failure.
         """
+        if key_id is None:
+            logger.debug("get_client_stats called without key_id user_id=%s — skipped", user_id)
+            return 0, 0
         vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
         if not vpn:
             return 0, 0
@@ -251,9 +252,13 @@ class VPNManager:
     async def enforce_traffic_limit(self, user_id: int, key_id: int | None = None) -> bool:
         """Disable VPN client for (user_id, key_id) if traffic_limit_gb is exceeded.
 
+        key_id must be a real key ID. Returns False immediately if key_id is None.
         Returns True if the client was disabled during this call.
         """
         if self._users_repo is None:
+            return False
+        if key_id is None:
+            logger.debug("enforce_traffic_limit called without key_id user_id=%s — skipped", user_id)
             return False
 
         vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id=key_id)
@@ -389,12 +394,12 @@ class VPNManager:
         """Update XUI client expiryTime (and totalGB) after subscription renewal.
 
         If key_id is given, only update that specific key's XUI clients.
-        If key_id is None, update all user's XUI clients.
+        If key_id is None, update all per-key rows (null-slot excluded via list_user_vpns).
         Returns True on success.
         """
         if key_id is not None:
             rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
-            rows = [r for r in rows if r]
+            rows = [r for r in rows if r and r.get("key_id") is not None]
         else:
             rows = await self._user_vpn_repo.list_user_vpns(user_id)
 

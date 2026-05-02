@@ -466,9 +466,19 @@ class XUIProvider(VPNProvider):
 
     @staticmethod
     def _client_email(user_id: int, suffix: str, key_id: int | None = None) -> str:
+        """Generate unique x-ui client email for (user_id, key_id, protocol).
+
+        Format: user_{user_id}_{key_id} for reality
+                user_{user_id}_{key_id}_ws for WebSocket
+        key_id=None is legacy null-slot — returns old format for backward compat
+        with any existing null-slot clients still in x-ui.
+        """
         if key_id is None:
+            # Legacy null-slot path — should not be hit in normal flow
             return f"{user_id}-{suffix}"
-        return f"{user_id}-k{key_id}-{suffix}"
+        if suffix == "ws":
+            return f"user_{user_id}_{key_id}_ws"
+        return f"user_{user_id}_{key_id}"
 
     def _find_client_by_uuid(self, inbound: dict, client_uuid: str) -> bool:
         raw = inbound.get("settings")
