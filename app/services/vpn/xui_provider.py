@@ -71,6 +71,16 @@ class XUIProvider(VPNProvider):
                 )
             else:
                 final_reality_uuid = existing_reality
+                # Re-enable if the client is disabled (e.g. after traffic limit enforcement).
+                if not self._is_client_enabled(inbound, final_reality_uuid):
+                    logger.info(
+                        "xui reality client disabled — re-enabling uuid=%s server_id=%s",
+                        final_reality_uuid, server.id,
+                    )
+                    await self._update_client_record(
+                        session, server, final_reality_uuid,
+                        lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
+                    )
 
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
@@ -89,6 +99,12 @@ class XUIProvider(VPNProvider):
                     logger.info("xui ws client added user_id=%s server_id=%s", user_id, server.id)
                 else:
                     final_ws_uuid = existing_ws
+                    if not self._is_client_enabled(inbound, final_ws_uuid):
+                        logger.info("xui ws client disabled — re-enabling uuid=%s", final_ws_uuid)
+                        await self._update_client_record(
+                            session, server, final_ws_uuid,
+                            lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
+                        )
 
             await self._reload_xray(session, server)
             await self._verify_client_visible(session, server, final_reality_uuid)

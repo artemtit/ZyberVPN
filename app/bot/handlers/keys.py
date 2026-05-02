@@ -20,6 +20,7 @@ from app.services.vpn import qr_png_from_text
 from app.utils.datetime import parse_iso_utc, to_moscow, utc_diff, utc_now
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
@@ -138,7 +139,7 @@ async def _build_key_card(
     try:
         manager = build_vpn_manager(db, settings, bot=bot)
         bytes_used, online_devices = await manager.get_client_stats(tg_id)
-        traffic_used_gb = bytes_used / (1024 ** 3)
+        traffic_used_gb = round(bytes_used / (1024 ** 3), 2)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
             async def _enforce() -> None:
@@ -148,7 +149,7 @@ async def _build_key_card(
                     pass
             asyncio.create_task(_enforce())
     except Exception:
-        pass
+        logger.warning("get_client_stats failed tg_id=%s", tg_id)
 
     if limit_exceeded:
         status_text = "Заблокирован (лимит трафика)"
@@ -165,7 +166,7 @@ async def _build_key_card(
         f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК ({days}д. {hours}ч.)\n"
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
-        f"📱 Устройств онлайн: {online_devices} / 3"
+        f"📱 Устройств подключено: {online_devices} / 3"
         f"{comment_line}"
     )
     return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment))
