@@ -141,15 +141,16 @@ class VPNManager:
         return output
 
     async def get_existing_subscription(self, user_id: int) -> list[str]:
-        row = await self._user_vpn_repo.get_user_vpn(user_id)
-        if not row or (row.get("status") or "ready") != "ready":
-            return []
-        configs = self._row_to_configs(row)
-        if configs:
-            logger.info("VPN subscription returned existing configs user_id=%s count=%s", user_id, len(configs))
-        return configs
+        """Return configs from all ready per-key rows (null-slot excluded)."""
+        return await self.get_subscription(user_id, create_if_missing=False)
 
     async def get_subscription(self, user_id: int, create_if_missing: bool = False) -> list[str]:
+        """Return configs from all ready per-key rows for user_id.
+
+        create_if_missing=True is intentionally disabled — creating a key requires
+        an explicit key_id from ensure_user_access (payments flow). Callers that
+        previously relied on this path should use ensure_user_access(force_new_key=True).
+        """
         rows = await self._user_vpn_repo.list_user_vpns(user_id)
         configs: list[str] = []
         for row in rows:
@@ -157,10 +158,7 @@ class VPNManager:
                 configs.extend(self._row_to_configs(row))
         if configs:
             logger.info("VPN subscription returned configs user_id=%s count=%s", user_id, len(configs))
-            return configs
-        if not create_if_missing:
-            return []
-        return await self.create_user_access(user_id)
+        return configs
 
     async def disable_user_access(self, user_id: int) -> None:
         rows = await self._user_vpn_repo.list_user_vpns(user_id)
@@ -222,12 +220,14 @@ class VPNManager:
         }
 
     async def get_client_stats(self, user_id: int, key_id: int | None = None) -> tuple[int, int]:
-        """Return (total_bytes_used, online_device_count). Returns (0, 0) on any failure."""
+        """Return (total_bytes_used, online_device_count) for the given (user_id, key_id).
+
+        key_id must be a real key ID. Returns (0, 0) if key_id is None or on any failure.
+        """
+        if key_id is None:
+            logger.debug("get_client_stats called without key_id user_id=%s — skipped", user_id)
+            return 0, 0
         vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
-        logger.warning(
-            "FLOW TRACE | step=get_client_stats | user_id=%s key_id=%s vpn_found=%s",
-            user_id, key_id, vpn is not None,
-        )
         if not vpn:
             return 0, 0
         server_id = int(vpn.get("server_id") or 0)
@@ -241,13 +241,8 @@ class VPNManager:
         if not isinstance(provider, XUIProvider):
             return 0, 0
         try:
-            # Use key_id-aware email so keyed clients are found correctly.
             reality_email = XUIProvider._client_email(user_id, "reality", key_id)
             ws_email = XUIProvider._client_email(user_id, "ws", key_id)
-            logger.warning(
-                "FLOW TRACE | step=get_client_stats.fetch | user_id=%s key_id=%s reality_email=%s",
-                user_id, key_id, reality_email,
-            )
             traffic = await provider.get_client_traffic(server, reality_email)
             bytes_used = 0
             if isinstance(traffic, dict):
@@ -258,20 +253,27 @@ class VPNManager:
             logger.exception("get_client_stats failed user_id=%s key_id=%s", user_id, key_id)
             return 0, 0
 
-    async def enforce_traffic_limit(self, user_id: int) -> bool:
-        """Disable VPN client if user exceeded traffic_limit_gb.
+    async def enforce_traffic_limit(self, user_id: int, key_id: int | None = None) -> bool:
+        """Disable VPN client for (user_id, key_id) if traffic_limit_gb is exceeded.
 
+        key_id must be a real key ID. Returns False immediately if key_id is None.
         Returns True if the client was disabled during this call.
         Checks all ready user_vpn rows (any key_id) so keyed users are covered.
         """
         if self._users_repo is None:
             return False
+        if key_id is None:
+            logger.debug("enforce_traffic_limit called without key_id user_id=%s — skipped", user_id)
+            return False
 
-        # Use all ready rows — null-slot-only lookup misses every key created with
-        # force_new_key=True (which assigns a real key_id, not NULL).
-        all_rows = await self._user_vpn_repo.list_user_vpns(user_id)
-        vpn = next((r for r in all_rows if (r.get("status") or "ready") == "ready"), None)
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id=key_id)
         if not vpn:
+            return False
+        if vpn.get("status") != "ready":
+            logger.debug(
+                "skip (already blocked) user_id=%s key_id=%s status=%s",
+                user_id, key_id, vpn.get("status"),
+            )
             return False
 
         row_key_id = vpn.get("key_id")  # int or None
@@ -289,20 +291,19 @@ class VPNManager:
             return False
 
         try:
-            reality_email = XUIProvider._client_email(user_id, "reality", row_key_id)
-            logger.warning(
-                "FLOW TRACE | step=enforce_traffic_limit | user_id=%s key_id=%s reality_email=%s",
-                user_id, row_key_id, reality_email,
-            )
+            reality_email = XUIProvider._client_email(user_id, "reality", key_id)
             traffic = await provider.get_client_traffic(server, reality_email)
             if not isinstance(traffic, dict):
                 return False
             if not traffic.get("enable", True):
-                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=row_key_id)
+                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
                 return False
             bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
         except Exception as error:
-            logger.warning("traffic fetch failed, skipping user_id=%s error=%s", user_id, error)
+            logger.warning(
+                "traffic fetch failed, skipping user_id=%s key_id=%s error=%s",
+                user_id, key_id, error,
+            )
             return False
 
         user = await self._users_repo.get_by_tg_id(user_id)
@@ -316,14 +317,14 @@ class VPNManager:
 
         logger.info(
             "limit exceeded user_id=%s key_id=%s used_gb=%.2f limit_gb=%s",
-            user_id, row_key_id, bytes_used / 1024 ** 3, traffic_limit_gb,
+            user_id, key_id, bytes_used / 1024 ** 3, traffic_limit_gb,
         )
 
         reality_uuid = str(vpn.get("reality_uuid") or "").strip()
         ws_uuid = str(vpn.get("ws_uuid") or "").strip()
 
         if not reality_uuid:
-            logger.warning("uuid missing, cannot disable user_id=%s", user_id)
+            logger.warning("uuid missing, cannot disable user_id=%s key_id=%s", user_id, key_id)
             return False
 
         all_disabled = True
@@ -331,24 +332,24 @@ class VPNManager:
             for attempt in range(2):
                 try:
                     await provider.disable_client(server, uuid)
-                    logger.info("client disabled user_id=%s uuid=%s", user_id, uuid)
+                    logger.info("client disabled user_id=%s key_id=%s uuid=%s", user_id, key_id, uuid)
                     break
                 except Exception as error:
                     if attempt == 0:
                         logger.warning(
-                            "disable_client failed, retrying user_id=%s uuid=%s error=%s",
-                            user_id, uuid, error,
+                            "disable_client failed, retrying user_id=%s key_id=%s uuid=%s error=%s",
+                            user_id, key_id, uuid, error,
                         )
                         await asyncio.sleep(1.0)
                     else:
                         logger.error(
-                            "disable_client failed after retry user_id=%s uuid=%s error=%s",
-                            user_id, uuid, error,
+                            "disable_client failed after retry user_id=%s key_id=%s uuid=%s error=%s",
+                            user_id, key_id, uuid, error,
                         )
                         all_disabled = False
 
         if all_disabled:
-            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=row_key_id)
+            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
             if self._bot is not None:
                 try:
                     await self._bot.send_message(
@@ -362,38 +363,49 @@ class VPNManager:
                 except TelegramForbiddenError:
                     pass
                 except Exception as error:
-                    logger.warning("traffic block notification failed user_id=%s error=%s", user_id, error)
+                    logger.warning(
+                        "traffic block notification failed user_id=%s key_id=%s error=%s",
+                        user_id, key_id, error,
+                    )
 
         return all_disabled
 
     async def enforce_all_users(self) -> list[int]:
-        """Check traffic limits for all ready users. Returns list of newly disabled user IDs."""
+        """Check traffic limits for all ready (user_id, key_id) rows.
+
+        Returns list of user_ids where at least one key was disabled.
+        """
         try:
-            user_ids = await self._user_vpn_repo.list_ready_user_ids()
+            vpn_rows = await self._user_vpn_repo.list_ready_vpn_rows()
         except Exception:
-            logger.exception("enforce_all_users: failed to list ready users")
+            logger.exception("enforce_all_users: failed to list ready vpn rows")
             return []
 
-        logger.info("enforce_all_users: checking %s users", len(user_ids))
-        disabled: list[int] = []
-        for user_id in user_ids:
+        logger.info("enforce_all_users: checking %s vpn rows", len(vpn_rows))
+        disabled_users: set[int] = set()
+        for row in vpn_rows:
+            user_id = row["user_id"]
+            key_id = row.get("key_id")
             try:
-                if await self.enforce_traffic_limit(user_id):
-                    disabled.append(user_id)
+                if await self.enforce_traffic_limit(user_id, key_id=key_id):
+                    disabled_users.add(user_id)
             except Exception:
-                logger.exception("enforce_traffic_limit unexpected error user_id=%s", user_id)
-        return disabled
+                logger.exception(
+                    "enforce_traffic_limit unexpected error user_id=%s key_id=%s",
+                    user_id, key_id,
+                )
+        return list(disabled_users)
 
     async def update_user_expiry(self, user_id: int, expiry_time_ms: int, key_id: int | None = None) -> bool:
         """Update XUI client expiryTime (and totalGB) after subscription renewal.
 
         If key_id is given, only update that specific key's XUI clients.
-        If key_id is None, update all user's XUI clients.
+        If key_id is None, update all per-key rows (null-slot excluded via list_user_vpns).
         Returns True on success.
         """
         if key_id is not None:
             rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
-            rows = [r for r in rows if r]
+            rows = [r for r in rows if r and r.get("key_id") is not None]
         else:
             rows = await self._user_vpn_repo.list_user_vpns(user_id)
 
@@ -441,11 +453,14 @@ class VPNManager:
                 except Exception:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
             if row_updated:
+                row_key_id = vpn.get("key_id")
                 try:
-                    row_key_id = vpn.get("key_id")
                     await provider.reset_client_traffic(server, user_id, key_id=row_key_id)
                 except Exception:
-                    logger.warning("traffic reset failed user_id=%s server_id=%s key_id=%s", user_id, server_id, vpn.get("key_id"))
+                    logger.warning(
+                        "traffic reset failed user_id=%s server_id=%s key_id=%s",
+                        user_id, server_id, row_key_id,
+                    )
         return updated
 
     async def _user_traffic_limit_gb(self, user_id: int) -> int:
@@ -628,6 +643,15 @@ class VPNManager:
                 ws = str(getattr(profile, "config", "")).strip()
         if not reality:
             raise VPNManagerError("Reality config is missing")
+        # Safety: ensure this UUID is not already stored for a DIFFERENT key_id of the same user.
+        collision = await self._user_vpn_repo.uuid_exists_for_different_key(
+            user_id, reality_uuid, key_id
+        )
+        if collision:
+            raise VPNManagerError(
+                f"UUID collision: reality_uuid={reality_uuid} already assigned to another "
+                f"key of user_id={user_id}. Provisioning aborted."
+            )
         await self._user_vpn_repo.set_ready(
             user_id=user_id,
             server_id=server_id,

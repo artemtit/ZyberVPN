@@ -41,7 +41,12 @@ class UserVpnRepository:
         return await self.get_user_vpn(user_id)
 
     async def list_user_vpns(self, user_id: int) -> list[dict]:
-        """Return all user_vpn rows for *user_id* ordered by created_at."""
+        """Return per-key user_vpn rows for *user_id* ordered by created_at.
+
+        Excludes:
+        - null-slot rows (key_id IS NULL) — legacy, ignored for isolation
+        - secondary server slots (key_id >= 9_000_000_000)
+        """
         if not self._supabase:
             return []
         try:
@@ -50,12 +55,18 @@ class UserVpnRepository:
                     self._supabase.table("user_vpn")
                     .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,key_id,created_at,updated_at")
                     .eq("user_id", user_id)
+                    .not_.is_("key_id", "null")
                     .order("created_at")
                     .execute()
                 ),
                 operation="user_vpn.list_user_vpns",
             )
-            return list(response.data or [])
+            rows = response.data or []
+            # Also exclude synthetic secondary-server slots
+            return [
+                r for r in rows
+                if isinstance(r, dict) and int(r.get("key_id") or 0) < 9_000_000_000
+            ]
         except Exception:
             logger.exception("list_user_vpns failed user_id=%s", user_id)
             return []
@@ -291,23 +302,81 @@ class UserVpnRepository:
         )
 
     async def list_ready_user_ids(self) -> list[int]:
+        """Backward-compat wrapper. Returns unique user_ids only."""
+        rows = await self.list_ready_vpn_rows()
+        seen: set[int] = set()
+        result: list[int] = []
+        for r in rows:
+            uid = int(r.get("user_id") or 0)
+            if uid and uid not in seen:
+                seen.add(uid)
+                result.append(uid)
+        return result
+
+    async def list_ready_vpn_rows(self) -> list[dict]:
+        """Return all (user_id, key_id) pairs with status='ready'.
+
+        Excludes:
+        - null-slot rows (key_id IS NULL)
+        - secondary server slots (key_id >= 9_000_000_000)
+        """
         if not self._supabase:
             return []
         try:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("user_vpn")
-                    .select("user_id")
+                    .select("user_id,key_id")
                     .eq("status", "ready")
+                    .not_.is_("key_id", "null")
                     .execute()
                 ),
-                operation="user_vpn.list_ready_user_ids",
+                operation="user_vpn.list_ready_vpn_rows",
             )
             rows = response.data or []
-            return [int(row["user_id"]) for row in rows if isinstance(row, dict) and row.get("user_id")]
+            result = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                user_id = row.get("user_id")
+                key_id = row.get("key_id")
+                if not user_id or key_id is None:
+                    continue
+                # Skip secondary server slots
+                if int(key_id) >= 9_000_000_000:
+                    continue
+                result.append({"user_id": int(user_id), "key_id": int(key_id)})
+            return result
         except Exception:
-            logger.exception("list_ready_user_ids failed")
+            logger.exception("list_ready_vpn_rows failed")
             return []
+
+
+    async def uuid_exists_for_different_key(
+        self, user_id: int, reality_uuid: str, key_id: int | None
+    ) -> bool:
+        """Return True if reality_uuid is already stored in user_vpn for a DIFFERENT key_id of the same user."""
+        if not self._supabase or not reality_uuid:
+            return False
+        try:
+            query = (
+                self._supabase.table("user_vpn")
+                .select("key_id")
+                .eq("user_id", user_id)
+                .eq("reality_uuid", reality_uuid)
+            )
+            if key_id is None:
+                query = query.not_.is_("key_id", "null")
+            else:
+                query = query.neq("key_id", key_id)
+            response = await execute_with_retry(
+                lambda: query.limit(1).execute(),
+                operation="user_vpn.uuid_exists_for_different_key",
+            )
+            return bool(response.data)
+        except Exception:
+            logger.warning("uuid_exists_for_different_key failed user_id=%s uuid=%s", user_id, reality_uuid)
+            return False
 
     async def count_users_by_server(self) -> dict[int, int]:
         if not self._supabase:

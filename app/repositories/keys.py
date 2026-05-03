@@ -127,6 +127,66 @@ class KeysRepository:
             operation="keys.update_expires_at",
         )
 
+
+    async def ensure_sub_token(self, key_id: int, tg_id: int) -> str:
+        """Return existing sub_token for this key, or generate and store a new one."""
+        import secrets
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        response = await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .select("sub_token")
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .limit(1)
+                .execute()
+            ),
+            operation="keys.ensure_sub_token.read",
+        )
+        rows = response.data or []
+        if rows and rows[0].get("sub_token"):
+            return str(rows[0]["sub_token"])
+        for _ in range(10):
+            token = secrets.token_urlsafe(32)
+            try:
+                updated = await execute_with_retry(
+                    lambda t=token: (
+                        self._supabase.table("keys")
+                        .update({"sub_token": t})
+                        .eq("id", key_id)
+                        .eq("tg_id", tg_id)
+                        .execute()
+                    ),
+                    operation="keys.ensure_sub_token.write",
+                )
+                if updated.data:
+                    return token
+            except Exception:
+                continue
+        raise RuntimeError(f"Failed to generate unique sub_token for key_id={key_id}")
+
+    async def get_by_sub_token(self, token: str) -> Optional[dict]:
+        """Lookup a key row by its sub_token. Returns None if not found."""
+        if not self._supabase or not token or len(token) < 20:
+            return None
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("keys")
+                    .select("id,tg_id,key,comment,is_primary,expires_at,created_at,sub_token")
+                    .eq("sub_token", token)
+                    .limit(1)
+                    .execute()
+                ),
+                operation="keys.get_by_sub_token",
+            )
+            rows = response.data or []
+            return rows[0] if rows else None
+        except Exception:
+            logger.exception("keys.get_by_sub_token failed token_prefix=%s", token[:8])
+            return None
+
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:
             return False
