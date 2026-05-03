@@ -6,6 +6,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.payments import PaymentsRepository
@@ -26,7 +27,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
     await message.answer(
         "🔧 Admin commands:\n"
         "/stats — project statistics\n"
-        "/broadcast <text> — send message to all active users"
+        "/broadcast <text> — send message to all active users",
+        reply_markup=get_main_menu_keyboard(),
     )
 
 
@@ -46,7 +48,8 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
         f"📊 Stats:\n"
         f"👥 Total users: {total_users}\n"
         f"✅ Active subscribers: {active_users}\n"
-        f"💰 Total revenue: {total_revenue} RUB"
+        f"💰 Total revenue: {total_revenue} RUB",
+        reply_markup=get_main_menu_keyboard(),
     )
 
 
@@ -56,7 +59,7 @@ async def admin_broadcast(message: Message, db: Database, settings: Settings) ->
         return
     text = (message.text or "").removeprefix("/broadcast").strip()
     if not text:
-        await message.answer("Usage: /broadcast <your message>")
+        await message.answer("Usage: /broadcast <your message>", reply_markup=get_main_menu_keyboard())
         return
     users_repo = UsersRepository(db)
     active_tg_ids = await users_repo.list_active_tg_ids()
@@ -69,4 +72,4 @@ async def admin_broadcast(message: Message, db: Database, settings: Settings) ->
         except Exception:
             failed += 1
         await asyncio.sleep(0.05)
-    await message.answer(f"Broadcast done: {sent} sent, {failed} failed.")
+    await message.answer(f"Broadcast done: {sent} sent, {failed} failed.", reply_markup=get_main_menu_keyboard())

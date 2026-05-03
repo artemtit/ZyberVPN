@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 from app.bot.keyboards.inline import connect_apps_keyboard, connect_devices_keyboard, connect_result_keyboard
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.connect import ConnectFlowState
 from app.config import Settings
 from app.db.database import Database
@@ -187,7 +188,10 @@ async def connect_copy_sub(callback: CallbackQuery, state: FSMContext) -> None:
     if not sub_url:
         await callback.answer("Subscription URL недоступен. Откройте ключ заново.", show_alert=True)
         return
-    await callback.message.answer(f"🔗 Subscription URL:\n<code>{escape(str(sub_url))}</code>")
+    await callback.message.answer(
+        f"🔗 Subscription URL:\n<code>{escape(str(sub_url))}</code>",
+        reply_markup=get_main_menu_keyboard(),
+    )
     await callback.answer("Ссылка отправлена")
 
 
@@ -204,7 +208,7 @@ async def connect_copy_key(callback: CallbackQuery, state: FSMContext) -> None:
     if vpn_configs and len(vpn_configs) > 1:
         rendered = "\n".join(f"<code>{escape(item)}</code>" for item in vpn_configs[:6])
         text += f"\n\nВсе конфиги:\n{rendered}"
-    await callback.message.answer(text)
+    await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
     await callback.answer("Ключ отправлен")
 
 

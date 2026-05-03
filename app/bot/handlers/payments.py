@@ -8,6 +8,7 @@ from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery
 
 from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
@@ -42,7 +43,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     keys_repo = KeysRepository(db)
     payment = await payments_repo.get_by_payload(payment_info.invoice_payload)
     if not payment:
-        await message.answer("Платеж не найден.")
+        await message.answer("Платеж не найден.", reply_markup=get_main_menu_keyboard())
         return
 
     idem_key = f"payment-success:{payment_info.invoice_payload}"
@@ -88,7 +89,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         processed = await idem.execute("payment_success", idem_key, _process_payment)
     except Exception:
         logger.exception("Payment processing failed")
-        await message.answer("Платеж получен, но обработка временно недоступна. Попробуйте позже.")
+        await message.answer(
+            "Платеж получен, но обработка временно недоступна. Попробуйте позже.",
+            reply_markup=get_main_menu_keyboard(),
+        )
         return
 
     logger.info("Payment processed idempotently payload=%s tg_id=%s", payment_info.invoice_payload, processed["tg_id"])
@@ -98,7 +102,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     user = await users_repo.get_by_tg_id(tg_id)
     if not user:
-        await message.answer("Пользователь не найден.")
+        await message.answer("Пользователь не найден.", reply_markup=get_main_menu_keyboard())
         return
 
     # Read actual expiry from subscriptions table
@@ -155,13 +159,13 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>"
         )
-        await message.answer(text)
+        await message.answer(text, reply_markup=get_main_menu_keyboard())
         await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
 
         referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
         bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
         if bonus > 0:
-            await message.answer(f"Реферальный бонус: +{bonus} RUB")
+            await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
         return
 
     # New key: provision a fresh VPN key.
@@ -182,7 +186,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         sub_token = str(access_user.get("key_sub_token") or access_user.get("sub_token") or "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
-        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.")
+        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
 
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
 
@@ -205,13 +209,13 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
             "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
         )
-        await message.answer(text)
+        await message.answer(text, reply_markup=get_main_menu_keyboard())
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if bonus > 0:
-        await message.answer(f"Реферальный бонус: +{bonus} RUB")
+        await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
 
 
 @router.callback_query(F.data == "payment_show_qr")

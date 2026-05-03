@@ -19,6 +19,7 @@ from app.bot.keyboards.inline import (
     subscription_info_keyboard,
     topup_keyboard,
 )
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.promo import PromoState
 from app.bot.states.purchase import ProfileState
 from app.config import Settings
@@ -155,7 +156,7 @@ async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(ProfileState.waiting_topup_amount)
 async def topup_input(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Пополнение временно недоступно.")
+    await message.answer("Пополнение временно недоступно.", reply_markup=get_main_menu_keyboard())
 
 
 @router.callback_query(F.data == "profile_promo")
@@ -172,32 +173,32 @@ async def promo_open(callback: CallbackQuery, state: FSMContext) -> None:
 async def promo_input(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
     code = (message.text or "").strip()
     if not code:
-        await message.answer("❌ Промокод не найден")
+        await message.answer("❌ Промокод не найден", reply_markup=get_main_menu_keyboard())
         return
 
     users_repo = UsersRepository(db)
     promo_repo = PromoRepository()
     tg_id = message.from_user.id
     if not _check_promo_rate_limit(tg_id):
-        await message.answer("❌ Слишком много попыток. Попробуйте через час.")
+        await message.answer("❌ Слишком много попыток. Попробуйте через час.", reply_markup=get_main_menu_keyboard())
         return
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user and bool(supabase_user.get("promo_used")):
         await state.clear()
-        await message.answer("❌ Промокод уже использован")
+        await message.answer("❌ Промокод уже использован", reply_markup=get_main_menu_keyboard())
         return
 
     validation = await validate_promo(code, promo_repo)
     if not validation.ok:
         await state.clear()
         if validation.error == "expired":
-            await message.answer("❌ Срок действия истёк")
+            await message.answer("❌ Срок действия истёк", reply_markup=get_main_menu_keyboard())
             return
         if validation.error in {"max_uses_reached"}:
-            await message.answer("❌ Промокод уже использован")
+            await message.answer("❌ Промокод уже использован", reply_markup=get_main_menu_keyboard())
             return
-        await message.answer("❌ Промокод не найден")
+        await message.answer("❌ Промокод не найден", reply_markup=get_main_menu_keyboard())
         return
 
     promo = validation.promo or {}

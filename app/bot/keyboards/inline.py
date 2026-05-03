@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from app.services.plans import get_all_plans
 
 
 def payment_success_keyboard(sub_url: str) -> InlineKeyboardMarkup:
@@ -13,6 +14,7 @@ def payment_success_keyboard(sub_url: str) -> InlineKeyboardMarkup:
 def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")],
             [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
             [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
             [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
@@ -62,14 +64,18 @@ def key_card_keyboard(
 
 
 def tariffs_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="1 месяц - 49 RUB", callback_data="tariff:m1")],
-            [InlineKeyboardButton(text="3 месяца - 129 RUB", callback_data="tariff:m3")],
-            [InlineKeyboardButton(text="6 месяцев - 225 RUB", callback_data="tariff:m6")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_keys")],
-        ]
-    )
+    rows: list[list[InlineKeyboardButton]] = []
+    for plan in get_all_plans():
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{plan['name']} — {plan['traffic_gb']} ГБ — {plan['price_rub']}₽",
+                    callback_data=f"buy_plan:{plan['id']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_keys")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def email_keyboard() -> InlineKeyboardMarkup:

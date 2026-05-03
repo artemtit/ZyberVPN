@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.keys import KeyCommentState
 from app.config import Settings
 from app.db.database import Database
@@ -290,6 +291,7 @@ async def key_subscription(callback: CallbackQuery, db: Database, settings: Sett
         "🔗 Ваша subscription-ссылка:\n"
         f"<code>{sub_url}</code>",
         disable_web_page_preview=True,
+        reply_markup=get_main_menu_keyboard(),
     )
     await callback.answer()
 
@@ -343,6 +345,7 @@ async def key_comment_cancel(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer("Отменено")
     await callback.message.answer(
         f"Редактирование комментария отменено. Откройте ключ #{key_id} снова.",
+        reply_markup=get_main_menu_keyboard(),
     )
 
 
@@ -361,7 +364,7 @@ async def key_comment_save(message: Message, db: Database, state: FSMContext, se
     await state.clear()
     result = await _build_key_card(tg_id, key_id, db, settings, bot=message.bot)
     if not result:
-        await message.answer("✅ Комментарий сохранён.")
+        await message.answer("✅ Комментарий сохранён.", reply_markup=get_main_menu_keyboard())
         return
     text, keyboard = result
     await message.answer(text, reply_markup=keyboard)

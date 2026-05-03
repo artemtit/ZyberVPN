@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
 from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_keyboard, payment_success_keyboard, tariffs_keyboard
+from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.config import Settings
 from app.db.database import Database
@@ -17,12 +18,26 @@ from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
 from app.services.payments import generate_payload
+from app.services.plans import get_plan_by_id, get_plan_by_tariff_code
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+def _selected_plan(data: dict) -> dict | None:
+    plan_id = data.get("plan_id")
+    if plan_id is not None:
+        try:
+            return get_plan_by_id(int(plan_id))
+        except (TypeError, ValueError):
+            return None
+    tariff_code = data.get("tariff_code")
+    if tariff_code:
+        return get_plan_by_tariff_code(str(tariff_code))
+    return None
 
 
 @router.callback_query(F.data == "buy_open")
@@ -64,19 +79,50 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("buy_plan:"))
+async def choose_plan(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data.split(":", 1)[1]
+    try:
+        plan_id = int(raw)
+    except ValueError:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+    plan = get_plan_by_id(plan_id)
+    if not plan:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+
+    await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"])
+    await state.set_state(PurchaseState.waiting_email)
+    await callback.message.edit_text(
+        "✅ Вы выбрали: "
+        f"{plan['name']} ({plan['traffic_gb']} ГБ, {plan['price_rub']}₽)\n\n"
+        "Введите email для получения доступа:",
+        reply_markup=email_keyboard(),
+    )
+    await callback.answer()
+
+
 @router.message(PurchaseState.waiting_email)
 async def input_email(message: Message, state: FSMContext) -> None:
     email = (message.text or "").strip()
     if "@" not in email or "." not in email:
-        await message.answer("Введите корректный email или нажмите кнопку «Продолжить без почты».")
+        await message.answer(
+            "Введите корректный email или нажмите кнопку «Продолжить без почты».",
+            reply_markup=get_main_menu_keyboard(),
+        )
         return
     await state.update_data(email=email)
-    await message.answer(f"✅ Email сохранен: {email}")
+    await message.answer(f"✅ Email сохранен: {email}", reply_markup=get_main_menu_keyboard())
     await state.set_state(PurchaseState.waiting_payment)
     data = await state.get_data()
-    tariff = TARIFFS[data["tariff_code"]]
+    plan = _selected_plan(data)
+    if not plan:
+        await state.clear()
+        await message.answer("Сначала выберите тариф.", reply_markup=get_main_menu_keyboard())
+        return
     await message.answer(
-        f"💰 К оплате: {tariff['price_rub']:.2f} RUB\n\nВыберите удобный способ оплаты:",
+        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(),
     )
 
@@ -84,15 +130,14 @@ async def input_email(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "email_skip")
 async def skip_email(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    tariff_code = data.get("tariff_code")
-    if not tariff_code:
+    plan = _selected_plan(data)
+    if not plan:
         await callback.answer("Сначала выберите тариф", show_alert=True)
         return
     await state.update_data(email=None)
     await state.set_state(PurchaseState.waiting_payment)
-    tariff = TARIFFS[tariff_code]
     await callback.message.edit_text(
-        f"💰 К оплате: {tariff['price_rub']:.2f} RUB\n\nВыберите удобный способ оплаты:",
+        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(),
     )
     await callback.answer()
@@ -112,7 +157,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     if not tariff_code:
         await callback.answer("Сначала выберите тариф", show_alert=True)
         return
-    tariff = TARIFFS[tariff_code]
+    plan = _selected_plan(data)
+    if not plan:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
     email = data.get("email")
     purchase_type = str(data.get("purchase_type") or "new")
     renew_key_id = data.get("renew_key_id")
@@ -130,7 +178,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         )
         payment = await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=tariff["price_rub"],
+            amount=int(plan["price_rub"]),
             tariff_code=tariff_code,
             email=email,
             payload=payload,
@@ -157,8 +205,9 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                             await keys_repo.update_expires_at(
                                 int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
                             )
-            await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
-            base_limit = int(tariff.get("months", 1)) * 60
+            months = max(1, int(plan["duration_days"]) // 30)
+            await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
+            base_limit = int(plan["traffic_gb"])
             current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
             current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
             if purchase_type == "renewal":
@@ -212,7 +261,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
             except Exception:
                 logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
-        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Подписка продлена.")
+        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Подписка продлена.", reply_markup=get_main_menu_keyboard())
         await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
         return
 
@@ -241,7 +290,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             reply_markup=payment_success_keyboard(sub_url),
         )
     else:
-        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Ключ создаётся.")
+        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Ключ создаётся.", reply_markup=get_main_menu_keyboard())
     await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     await callback.answer("Тестовая СБП-оплата успешно проведена", show_alert=True)
 
@@ -253,7 +302,10 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
     if not tariff_code:
         await callback.answer("Сначала выберите тариф", show_alert=True)
         return
-    tariff = TARIFFS[tariff_code]
+    plan = _selected_plan(data)
+    if not plan:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
     email = data.get("email")
     purchase_type = str(data.get("purchase_type") or "new")
     renew_key_id = data.get("renew_key_id")
@@ -266,7 +318,7 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
         payment = await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=tariff["price_rub"],
+            amount=int(plan["price_rub"]),
             tariff_code=tariff_code,
             email=email,
             payload=payload,
@@ -282,11 +334,11 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         return
 
     await callback.message.answer_invoice(
-        title=f"ZyberVPN — {tariff['title']}",
-        description=f"Подписка ZyberVPN на {tariff['title']}",
+        title=f"ZyberVPN — {plan['name']}",
+        description=f"Подписка ZyberVPN на {plan['name']}",
         payload=payload,
         currency="XTR",
-        prices=[LabeledPrice(label=tariff["title"], amount=tariff["price_stars"])],
+        prices=[LabeledPrice(label=plan["name"], amount=int(plan["price_stars"]))],
         provider_token="",
     )
     await callback.answer()
