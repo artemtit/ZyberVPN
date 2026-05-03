@@ -88,6 +88,10 @@ class VPNManager:
         failed / absent → claim the slot, provision, then set ready or failed
         """
         vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        logger.warning(
+            "FLOW TRACE | step=create_user_access.entry | user_id=%s key_id=%s vpn_status=%s",
+            user_id, key_id, (vpn or {}).get("status", "NO_ROW"),
+        )
 
         if vpn:
             status = vpn.get("status") or "ready"
@@ -217,9 +221,13 @@ class VPNManager:
             "active_vpn_users": sum(counts.values()),
         }
 
-    async def get_client_stats(self, user_id: int) -> tuple[int, int]:
+    async def get_client_stats(self, user_id: int, key_id: int | None = None) -> tuple[int, int]:
         """Return (total_bytes_used, online_device_count). Returns (0, 0) on any failure."""
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id)
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        logger.warning(
+            "FLOW TRACE | step=get_client_stats | user_id=%s key_id=%s vpn_found=%s",
+            user_id, key_id, vpn is not None,
+        )
         if not vpn:
             return 0, 0
         server_id = int(vpn.get("server_id") or 0)
@@ -233,8 +241,13 @@ class VPNManager:
         if not isinstance(provider, XUIProvider):
             return 0, 0
         try:
-            reality_email = f"{user_id}-reality"
-            ws_email = f"{user_id}-ws"
+            # Use key_id-aware email so keyed clients are found correctly.
+            reality_email = XUIProvider._client_email(user_id, "reality", key_id)
+            ws_email = XUIProvider._client_email(user_id, "ws", key_id)
+            logger.warning(
+                "FLOW TRACE | step=get_client_stats.fetch | user_id=%s key_id=%s reality_email=%s",
+                user_id, key_id, reality_email,
+            )
             traffic = await provider.get_client_traffic(server, reality_email)
             bytes_used = 0
             if isinstance(traffic, dict):
@@ -242,24 +255,26 @@ class VPNManager:
             online = await provider.get_online_count(server, {reality_email, ws_email})
             return bytes_used, online
         except Exception:
-            logger.exception("get_client_stats failed user_id=%s", user_id)
+            logger.exception("get_client_stats failed user_id=%s key_id=%s", user_id, key_id)
             return 0, 0
 
     async def enforce_traffic_limit(self, user_id: int) -> bool:
         """Disable VPN client if user exceeded traffic_limit_gb.
 
         Returns True if the client was disabled during this call.
+        Checks all ready user_vpn rows (any key_id) so keyed users are covered.
         """
         if self._users_repo is None:
             return False
 
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id=None)
+        # Use all ready rows — null-slot-only lookup misses every key created with
+        # force_new_key=True (which assigns a real key_id, not NULL).
+        all_rows = await self._user_vpn_repo.list_user_vpns(user_id)
+        vpn = next((r for r in all_rows if (r.get("status") or "ready") == "ready"), None)
         if not vpn:
             return False
-        if vpn.get("status") != "ready":
-            logger.debug("skip user (already blocked) user_id=%s status=%s", user_id, vpn.get("status"))
-            return False
 
+        row_key_id = vpn.get("key_id")  # int or None
         server_id = int(vpn.get("server_id") or 0)
         if server_id <= 0:
             return False
@@ -274,12 +289,16 @@ class VPNManager:
             return False
 
         try:
-            reality_email = f"{user_id}-reality"
+            reality_email = XUIProvider._client_email(user_id, "reality", row_key_id)
+            logger.warning(
+                "FLOW TRACE | step=enforce_traffic_limit | user_id=%s key_id=%s reality_email=%s",
+                user_id, row_key_id, reality_email,
+            )
             traffic = await provider.get_client_traffic(server, reality_email)
             if not isinstance(traffic, dict):
                 return False
             if not traffic.get("enable", True):
-                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=None)
+                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=row_key_id)
                 return False
             bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
         except Exception as error:
@@ -296,8 +315,8 @@ class VPNManager:
             return False
 
         logger.info(
-            "limit exceeded user_id=%s used_gb=%.2f limit_gb=%s",
-            user_id, bytes_used / 1024 ** 3, traffic_limit_gb,
+            "limit exceeded user_id=%s key_id=%s used_gb=%.2f limit_gb=%s",
+            user_id, row_key_id, bytes_used / 1024 ** 3, traffic_limit_gb,
         )
 
         reality_uuid = str(vpn.get("reality_uuid") or "").strip()
@@ -329,7 +348,7 @@ class VPNManager:
                         all_disabled = False
 
         if all_disabled:
-            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=None)
+            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=row_key_id)
             if self._bot is not None:
                 try:
                     await self._bot.send_message(
@@ -423,9 +442,10 @@ class VPNManager:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
             if row_updated:
                 try:
-                    await provider.reset_client_traffic(server, user_id)
+                    row_key_id = vpn.get("key_id")
+                    await provider.reset_client_traffic(server, user_id, key_id=row_key_id)
                 except Exception:
-                    logger.warning("traffic reset failed user_id=%s server_id=%s", user_id, server_id)
+                    logger.warning("traffic reset failed user_id=%s server_id=%s key_id=%s", user_id, server_id, vpn.get("key_id"))
         return updated
 
     async def _user_traffic_limit_gb(self, user_id: int) -> int:
@@ -479,10 +499,15 @@ class VPNManager:
                 )
                 await self._servers_repo.update_health(server.id, is_active=True, ok=True, error_text=None)
                 logger.info("VPN client created user_id=%s server_id=%s key_id=%s", user_id, server.id, key_id)
-                all_configs = await self.get_subscription(user_id, create_if_missing=False)
-                if all_configs:
-                    return all_configs
-                return self._profiles_to_subscription(result.profiles)
+                # Return ONLY the newly created key's profiles.
+                # Do NOT call get_subscription here — it returns all ready rows sorted
+                # by created_at ASC, so vpn_configs[0] would be an old key's config.
+                new_configs = self._profiles_to_subscription(result.profiles)
+                logger.warning(
+                    "FLOW TRACE | step=_create_on_best_server | user_id=%s key_id=%s new_configs=%s",
+                    user_id, key_id, new_configs,
+                )
+                return new_configs
             except (asyncio.TimeoutError, ClientError) as error:
                 last_error = error
                 logger.warning(

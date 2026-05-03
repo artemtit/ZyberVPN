@@ -137,7 +137,7 @@ async def _build_key_card(
     limit_exceeded = False
     try:
         manager = build_vpn_manager(db, settings, bot=bot)
-        bytes_used, online_devices = await manager.get_client_stats(tg_id)
+        bytes_used, online_devices = await manager.get_client_stats(tg_id, key_id=key_id)
         traffic_used_gb = bytes_used / (1024 ** 3)
         if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
