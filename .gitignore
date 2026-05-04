@@ -212,4 +212,6 @@ CLAUDE.md
 .claude/
 .claude/secrets
 .claude\settings.local.json
+.claude/settings.local.json
 deploy.py
+settings.local.json
