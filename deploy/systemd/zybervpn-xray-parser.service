@@ -1,0 +1,14 @@
+[Unit]
+Description=ZyberVPN Xray Device Parser
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/ZyberVPN
+EnvironmentFile=/root/ZyberVPN/.env
+ExecStart=/root/ZyberVPN/venv/bin/python -m app.xray_parser_main
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

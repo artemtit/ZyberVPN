@@ -12,6 +12,7 @@ from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
+from app.repositories.vpn_devices import VpnDevicesRepository
 from app.repositories.users import UsersRepository
 from app.services.vpn.manager import VPNManager, VPNManagerError
 from app.services.vpn.xui_provider import XUIProvider
@@ -54,11 +55,13 @@ def build_vpn_manager(db: Database, settings: Settings, bot: Bot | None = None) 
     servers_repo = ServersRepository(db)
     user_vpn_repo = UserVpnRepository(db)
     users_repo = UsersRepository(db)
+    vpn_devices_repo = VpnDevicesRepository(db)
     providers = {"xui": XUIProvider()}
     return VPNManager(
         providers=providers,
         servers_repo=servers_repo,
         user_vpn_repo=user_vpn_repo,
+        vpn_devices_repo=vpn_devices_repo,
         settings=settings,
         users_repo=users_repo,
         bot=bot,

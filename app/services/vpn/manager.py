@@ -12,6 +12,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.config import Settings
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
+from app.repositories.vpn_devices import VpnDevicesRepository
 from app.repositories.users import UsersRepository
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
 from app.services.vpn.xui_provider import XUIProvider
@@ -62,6 +63,7 @@ class VPNManager:
         providers: dict[str, VPNProvider],
         servers_repo: ServersRepository,
         user_vpn_repo: UserVpnRepository,
+        vpn_devices_repo: VpnDevicesRepository | None,
         settings: Settings,
         users_repo: UsersRepository | None = None,
         bot: Bot | None = None,
@@ -69,6 +71,7 @@ class VPNManager:
         self._providers = providers
         self._servers_repo = servers_repo
         self._user_vpn_repo = user_vpn_repo
+        self._vpn_devices_repo = vpn_devices_repo
         self._settings = settings
         self._users_repo = users_repo
         self._bot = bot
@@ -201,7 +204,7 @@ class VPNManager:
         }
 
     async def get_client_stats(self, user_id: int, key_id: int | None = None) -> tuple[int, int]:
-        """Return (total_bytes_used, online_device_count) for the given (user_id, key_id).
+        """Return (total_bytes_used, unique_device_count_24h) for the given (user_id, key_id).
 
         key_id must be a real key ID. Returns (0, 0) if key_id is None or on any failure.
         """
@@ -228,8 +231,14 @@ class VPNManager:
             bytes_used = 0
             if isinstance(traffic, dict):
                 bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
-            online = await provider.get_online_count(server, {reality_email, ws_email})
-            return bytes_used, online
+            unique_devices = 0
+            if self._vpn_devices_repo is not None:
+                unique_devices = await self._vpn_devices_repo.count_recent_devices(
+                    user_id=user_id,
+                    key_id=key_id,
+                    window_hours=self._settings.xray_device_window_hours,
+                )
+            return bytes_used, unique_devices
         except Exception:
             logger.exception("get_client_stats failed user_id=%s key_id=%s", user_id, key_id)
             return 0, 0

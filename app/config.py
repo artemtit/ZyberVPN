@@ -38,6 +38,14 @@ class Settings:
     bot_username: str
     admin_ids: list[int]
     test_mode: bool
+    xray_parser_enabled: bool
+    xray_parser_server_id: int
+    xray_access_log_path: str
+    xray_parser_state_path: str
+    xray_parser_interval_seconds: int
+    xray_parser_max_bytes_per_cycle: int
+    xray_parser_max_lines_per_cycle: int
+    xray_device_window_hours: int
 
 
 def load_settings() -> Settings:
@@ -102,4 +110,12 @@ def load_settings() -> Settings:
         bot_username=os.getenv("BOT_USERNAME", "ZyberVPNBot").strip(),
         admin_ids=admin_ids,
         test_mode=os.getenv("TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"},
+        xray_parser_enabled=os.getenv("XRAY_PARSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"},
+        xray_parser_server_id=max(0, int(os.getenv("XRAY_PARSER_SERVER_ID", "0"))),
+        xray_access_log_path=os.getenv("XRAY_ACCESS_LOG_PATH", "/var/log/xray/access.log").strip(),
+        xray_parser_state_path=os.getenv("XRAY_PARSER_STATE_PATH", "./data/xray_parser_state.json").strip(),
+        xray_parser_interval_seconds=max(10, int(os.getenv("XRAY_PARSER_INTERVAL_SECONDS", "45"))),
+        xray_parser_max_bytes_per_cycle=max(4096, int(os.getenv("XRAY_PARSER_MAX_BYTES_PER_CYCLE", str(512 * 1024)))),
+        xray_parser_max_lines_per_cycle=max(100, int(os.getenv("XRAY_PARSER_MAX_LINES_PER_CYCLE", "5000"))),
+        xray_device_window_hours=max(1, int(os.getenv("XRAY_DEVICE_WINDOW_HOURS", "24"))),
     )
