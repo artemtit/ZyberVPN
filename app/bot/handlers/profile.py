@@ -351,7 +351,14 @@ async def _apply_promo(
     expires_dt = parse_iso_utc(expires_raw) if expires_raw else utc_now() + timedelta(days=days)
 
     try:
-        access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
+        access_user = await ensure_user_access(
+            tg_id=tg_id,
+            db=db,
+            settings=settings,
+            require_active=True,
+            force_new_key=(apply_mode == "new"),
+            action="create" if apply_mode == "new" else "existing",
+        )
     except AccessEnsureError:
         logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
         if apply_mode == "active":
@@ -364,17 +371,23 @@ async def _apply_promo(
         return
 
     expiry_ms = int(expires_dt.timestamp() * 1000)
-    try:
-        manager = build_vpn_manager(db, settings)
-        await manager.update_user_expiry(tg_id, expiry_ms)
-    except Exception:
-        logger.exception("Failed to update XUI expiry after promo tg_id=%s", tg_id)
+    if apply_mode == "active":
+        try:
+            manager = build_vpn_manager(db, settings)
+            keys_repo = KeysRepository(db)
+            for key_row in await keys_repo.list_by_user(tg_id):
+                key_id = key_row.get("id")
+                if key_id is None:
+                    continue
+                await manager.update_user_expiry(tg_id, expiry_ms, key_id=int(key_id))
+        except Exception:
+            logger.exception("Failed to update XUI expiry after promo tg_id=%s", tg_id)
 
     if apply_mode == "active":
         await reply(_promo_success_text(expires_dt, include_status=False) + "Подписка продлена.")
         return
 
-    sub_token = str((access_user or {}).get("sub_token") or "")
+    sub_token = str((access_user or {}).get("key_sub_token") or "")
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
     if sub_url:
         await reply(

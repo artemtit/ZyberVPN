@@ -79,50 +79,31 @@ class VPNManager:
         expiry_time: int | None = None,
         key_id: int | None = None,
     ) -> list[str]:
-        """Return VPN configs for (user_id, key_id), creating or repairing as needed.
+        """Provision a fresh VPN client for (user_id, key_id).
 
-        State machine
-        -------------
-        ready    → return existing configs immediately (no network call)
-        creating → another request owns the slot; raise VPNManagerError
-        failed / absent → claim the slot, provision, then set ready or failed
+        key_id must be a pre-allocated ID from the keys table.
+        NEVER returns cached configs — always provisions from scratch.
+        NEVER falls back to existing rows for a different key.
         """
-        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        if key_id is None:
+            raise VPNManagerError("key_id is required — null-slot provisioning is not allowed")
+
+        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=create", user_id, key_id)
+
         logger.warning(
-            "FLOW TRACE | step=create_user_access.entry | user_id=%s key_id=%s vpn_status=%s",
-            user_id, key_id, (vpn or {}).get("status", "NO_ROW"),
+            "FLOW TRACE | step=create_user_access.entry | user_id=%s key_id=%s",
+            user_id, key_id,
         )
 
-        if vpn:
-            status = vpn.get("status") or "ready"
-            if status == "ready":
-                configs = self._row_to_configs(vpn)
-                if configs:
-                    logger.info("VPN ready, returning cached configs user_id=%s key_id=%s", user_id, key_id)
-                    return configs
-            elif status == "creating":
-                logger.info("VPN creation already in progress user_id=%s key_id=%s", user_id, key_id)
-                raise VPNManagerError("VPN creation in progress")
-
+        # Reserve the exact key slot. Do not read or reuse existing VPN rows here.
+        # A purchase create flow must always provision a fresh client for key_id.
         claim = await self._user_vpn_repo.claim_creating(user_id, key_id)
-
-        if claim == "ready":
-            vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
-            configs = self._row_to_configs(vpn) if vpn else []
-            if configs:
-                return configs
-
-        if claim != "claimed":
-            logger.info("VPN claim rejected claim=%s user_id=%s key_id=%s", claim, user_id, key_id)
+        if claim == "creating":
+            logger.info("VPN claim rejected (creating) user_id=%s key_id=%s", user_id, key_id)
             raise VPNManagerError("VPN creation in progress")
 
-        logger.info("VPN creation claimed user_id=%s key_id=%s", user_id, key_id)
+        logger.info("VPN creation claimed user_id=%s key_id=%s claim=%s", user_id, key_id, claim)
         try:
-            if vpn and int(vpn.get("server_id") or 0) > 0:
-                configs = await self._validate_or_repair_existing_access(user_id, vpn, expiry_time, key_id)
-                if configs:
-                    return configs
-
             return await self._create_on_best_server(user_id, expiry_time, key_id)
         except Exception:
             await self._user_vpn_repo.set_failed(user_id, key_id)
@@ -396,18 +377,27 @@ class VPNManager:
                 )
         return list(disabled_users)
 
+    async def renew_user_access(self, user_id: int, expiry_time_ms: int, key_id: int | None) -> bool:
+        """Renew exactly one existing key.
+
+        Renewal must never fan out to all user_vpn rows because traffic/expiry are
+        isolated per key.
+        """
+        if key_id is None:
+            raise VPNManagerError("key_id is required for renew")
+        return await self.update_user_expiry(user_id, expiry_time_ms, key_id=key_id)
+
     async def update_user_expiry(self, user_id: int, expiry_time_ms: int, key_id: int | None = None) -> bool:
         """Update XUI client expiryTime (and totalGB) after subscription renewal.
 
-        If key_id is given, only update that specific key's XUI clients.
-        If key_id is None, update all per-key rows (null-slot excluded via list_user_vpns).
+        key_id is required. Only that specific key's XUI clients are updated.
         Returns True on success.
         """
-        if key_id is not None:
-            rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
-            rows = [r for r in rows if r and r.get("key_id") is not None]
-        else:
-            rows = await self._user_vpn_repo.list_user_vpns(user_id)
+        if key_id is None:
+            raise VPNManagerError("key_id is required for expiry update")
+        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=renew", user_id, key_id)
+        rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
+        rows = [r for r in rows if r and r.get("key_id") is not None]
 
         if not rows:
             return False

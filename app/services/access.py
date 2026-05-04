@@ -87,9 +87,16 @@ async def ensure_user_access(
     require_recent_activation_for_key_creation: bool = False,
     idempotency_key: str | None = None,  # kept for API compatibility; no longer used
     force_new_key: bool = False,
+    action: str | None = None,
 ) -> dict:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
+    access_action = action or ("create" if force_new_key else "existing")
+    if force_new_key and access_action != "create":
+        raise AccessEnsureError("force_new_key requires action=create")
+    if access_action not in {"create", "existing"}:
+        raise AccessEnsureError(f"Unsupported access action: {access_action}")
+    force_new_key = access_action == "create"
 
     users_repo = UsersRepository(db)
     if not users_repo.has_supabase:
@@ -97,7 +104,7 @@ async def ensure_user_access(
     keys_repo = KeysRepository(db)
     manager = build_vpn_manager(db, settings)
 
-    logger.info("Ensuring access tg_id=%s force_new_key=%s", tg_id, force_new_key)
+    logger.info("Ensuring access tg_id=%s action=%s force_new_key=%s", tg_id, access_action, force_new_key)
     ensured = await _safe_repo_call("users.get_or_create", lambda: users_repo.get_or_create(tg_id), fallback=None, tg_id=tg_id)
     if not ensured:
         raise AccessEnsureError("Failed to initialize user")
@@ -152,8 +159,10 @@ async def ensure_user_access(
     expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
 
     if force_new_key:
+        logger.warning("ACCESS FLOW | user_id=%s key_id=PENDING action=create", tg_id)
+
         # Pre-allocate a real key_id before VPN creation.
-        # Passing key_id=None would target the null-slot which may already hold a 'ready' row,
+        # Passing key_id=None targets the null-slot which may already hold a 'ready' row,
         # causing the state machine to return stale configs instead of provisioning a new client.
         placeholder = f"creating:{uuid4()}"
         pre_key = await _safe_repo_call(
@@ -165,6 +174,10 @@ async def ensure_user_access(
         if not pre_key:
             raise AccessEnsureError("Failed to allocate key slot")
         new_key_id = int(pre_key["id"])
+        if not new_key_id:
+            raise AccessEnsureError("Failed to allocate valid key ID")
+
+        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=create step=allocated", tg_id, new_key_id)
         logger.info("VPN key slot pre-allocated tg_id=%s key_id=%s", tg_id, new_key_id)
 
         logger.warning(
@@ -235,6 +248,8 @@ async def ensure_user_access(
     final_user = refreshed or supabase_user
     final_user["vpn_key"] = primary_key
     final_user["vpn_configs"] = vpn_configs
+    if force_new_key and "new_key_id" in locals():
+        final_user["key_id"] = new_key_id
     # Expose per-key sub_token if available (used by payments handler for sub_url)
     if force_new_key and "key_sub_token" in locals() and key_sub_token:
         final_user["key_sub_token"] = key_sub_token

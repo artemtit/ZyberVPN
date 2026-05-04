@@ -52,9 +52,16 @@ async def test_full_flow(tg_id: int, db: Database | None = None, settings: Setti
         if not updated_expiry:
             raise AccessEnsureError("test_full_flow: failed to activate subscription")
 
-    access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
+    access_user = await ensure_user_access(
+        tg_id=tg_id,
+        db=db,
+        settings=settings,
+        require_active=True,
+        force_new_key=True,
+        action="create",
+    )
     vpn_key = str((access_user or {}).get("vpn_key") or "")
-    token = await users_repo.ensure_sub_token_for_tg(tg_id)
+    token = str((access_user or {}).get("key_sub_token") or "")
     if not _is_vpn_key_valid(vpn_key):
         raise AccessEnsureError("test_full_flow: vpn_key is invalid")
     if not users_repo.is_valid_sub_token(token):

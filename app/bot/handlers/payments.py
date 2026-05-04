@@ -27,6 +27,15 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+def _require_renew_key_id(raw: object) -> int:
+    if raw is None:
+        raise ValueError("renew_key_id is required for renewal")
+    key_id = int(raw)
+    if key_id <= 0:
+        raise ValueError("renew_key_id must be positive")
+    return key_id
+
+
 @router.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
     await pre_checkout_query.answer(ok=True)
@@ -50,8 +59,12 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     logger.info("Payment callback received payload=%s tg_id=%s", payment_info.invoice_payload, payment.get("tg_id"))
 
     async def _process_payment() -> dict:
-        purchase_type = payment.get("purchase_type") or "new"
-        renew_key_id = payment.get("renew_key_id")
+        purchase_type = str(payment.get("purchase_type") or "new")
+        renew_key_id = _require_renew_key_id(payment.get("renew_key_id")) if purchase_type == "renewal" else None
+        if purchase_type == "renewal":
+            key_row = await keys_repo.get_by_id_for_user(renew_key_id, int(payment["tg_id"]))
+            if not key_row:
+                raise RuntimeError(f"renewal key not found tg_id={payment['tg_id']} key_id={renew_key_id}")
 
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(
@@ -64,7 +77,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 if current_sub:
                     all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
                     for k in all_keys:
-                        if k["id"] != renew_key_id and not k.get("expires_at"):
+                        if int(k["id"]) != renew_key_id and not k.get("expires_at"):
                             await keys_repo.update_expires_at(
                                 int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
                             )
@@ -140,19 +153,26 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     if purchase_type == "renewal":
         # Renewal: extend subscription only, update XUI expiry for the specific key.
-        key_id_int = int(renew_key_id) if renew_key_id is not None else None
+        try:
+            key_id_int = _require_renew_key_id(renew_key_id)
+        except ValueError:
+            logger.error("Renewal payment has no valid key_id tg_id=%s payload=%s", tg_id, payment_info.invoice_payload)
+            await message.answer(
+                "Платеж получен, но не удалось определить ключ для продления. Напишите в поддержку.",
+                reply_markup=get_main_menu_keyboard(),
+            )
+            return
         try:
             manager = build_vpn_manager(db, settings, bot=message.bot)
-            await manager.update_user_expiry(tg_id, expiry_ms, key_id=key_id_int)
+            await manager.renew_user_access(tg_id, expiry_ms, key_id=key_id_int)
         except Exception:
             logger.exception("Failed to update XUI expiry after renewal tg_id=%s key_id=%s", tg_id, renew_key_id)
-        if key_id_int is not None:
-            try:
-                await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
+        try:
+            await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
+        except Exception:
+            logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
 
-        key_label = f" ключа #{renew_key_id}" if renew_key_id else ""
+        key_label = f" ключа #{key_id_int}"
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
             f"🔄 <b>Продление{key_label}</b>\n"
@@ -180,10 +200,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             require_active=True,
             idempotency_key=f"vpn-after-payment:{payment_info.invoice_payload}",
             force_new_key=True,
+            action="create",
         )
         link = str(access_user.get("vpn_key") or "")
-        # Prefer per-key sub_token; fall back to user-level for backward compat
-        sub_token = str(access_user.get("key_sub_token") or access_user.get("sub_token") or "")
+        sub_token = str(access_user.get("key_sub_token") or "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())

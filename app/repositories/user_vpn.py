@@ -94,7 +94,12 @@ class UserVpnRepository:
             )
             return str(response.data or "creating")
         except Exception:
-            logger.exception("claim_creating RPC failed user_id=%s", user_id)
+            logger.exception("claim_creating RPC failed user_id=%s key_id=%s", user_id, key_id)
+            if key_id is not None:
+                # Older deployments may still have the legacy one-argument RPC.
+                # Keyed create can continue because set_ready performs an exact
+                # key_id upsert after provisioning.
+                return "claimed"
             return "creating"
 
     async def set_ready(
@@ -107,27 +112,66 @@ class UserVpnRepository:
         ws_config: str,
         key_id: int | None = None,
     ) -> None:
-        """Write the final configs and flip status to 'ready'."""
+        """Write the final configs and flip status to 'ready'.
+
+        Uses update-then-insert: if claim_creating did not pre-insert the row
+        (e.g. RPC mismatch or null-slot confusion), we insert it here so the
+        new key's user_vpn row always lands correctly.
+        """
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        payload = {
+        if key_id is None:
+            raise RuntimeError("key_id is required for user_vpn.set_ready")
+        now = utc_now().isoformat()
+        update_payload = {
             "server_id": server_id,
             "reality_uuid": reality_uuid,
             "ws_uuid": ws_uuid or "",
             "reality_config": reality_config,
             "ws_config": ws_config or "",
             "status": "ready",
-            "updated_at": utc_now().isoformat(),
+            "updated_at": now,
         }
-        query = self._supabase.table("user_vpn").update(payload).eq("user_id", user_id)
+        query = self._supabase.table("user_vpn").update(update_payload).eq("user_id", user_id)
         if key_id is None:
             query = query.is_("key_id", "null")
         else:
             query = query.eq("key_id", key_id)
-        await execute_with_retry(
+        response = await execute_with_retry(
             lambda: query.execute(),
-            operation="user_vpn.set_ready",
+            operation="user_vpn.set_ready.update",
         )
+        if not response.data:
+            existing_response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .select("user_id")
+                    .eq("user_id", user_id)
+                    .eq("key_id", key_id)
+                    .limit(1)
+                    .execute()
+                ),
+                operation="user_vpn.set_ready.verify",
+            )
+            if existing_response.data:
+                return
+
+            # No row matched the update — claim_creating didn't pre-insert for this key_id.
+            # Upsert the row so the new key always has a user_vpn record.
+            logger.warning(
+                "set_ready: no row to update, upserting fresh user_id=%s key_id=%s",
+                user_id, key_id,
+            )
+            insert_payload = {
+                **update_payload,
+                "user_id": user_id,
+                "key_id": key_id,
+                "created_at": now,
+            }
+            await execute_with_retry(
+                lambda: self._supabase.table("user_vpn").upsert(insert_payload, on_conflict="user_id,key_id").execute(),
+                operation="user_vpn.set_ready.upsert",
+            )
 
     async def upsert_server_access(
         self,

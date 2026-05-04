@@ -27,6 +27,15 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+def _require_renew_key_id(raw: object) -> int:
+    if raw is None:
+        raise ValueError("renew_key_id is required for renewal")
+    key_id = int(raw)
+    if key_id <= 0:
+        raise ValueError("renew_key_id must be positive")
+    return key_id
+
+
 def _selected_plan(data: dict) -> dict | None:
     plan_id = data.get("plan_id")
     if plan_id is not None:
@@ -171,6 +180,12 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     subs_repo = SubscriptionsRepository(db)
     idem = IdempotencyService(IdempotencyRepository())
     try:
+        if purchase_type == "renewal":
+            renew_key_id = _require_renew_key_id(renew_key_id)
+            key_row = await keys_repo.get_by_id_for_user(renew_key_id, callback.from_user.id)
+            if not key_row:
+                await callback.answer("Ключ для продления не найден", show_alert=True)
+                return
         await users_repo.get_or_create(callback.from_user.id)
         payload = generate_payload(callback.from_user.id, tariff_code)
         idempotency_key = (
@@ -201,7 +216,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 if current_sub:
                     all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
                     for k in all_keys:
-                        if k["id"] != renew_key_id and not k.get("expires_at"):
+                        if int(k["id"]) != int(renew_key_id) and not k.get("expires_at"):
                             await keys_repo.update_expires_at(
                                 int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
                             )
@@ -250,17 +265,24 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":
-        key_id_int = int(renew_key_id) if renew_key_id is not None else None
+        try:
+            key_id_int = _require_renew_key_id(renew_key_id)
+        except ValueError:
+            logger.error("Test SBP renewal has no valid key_id tg_id=%s payload=%s", tg_id, payload)
+            await callback.message.answer(
+                "Платеж получен, но не удалось определить ключ для продления. Напишите в поддержку.",
+                reply_markup=get_main_menu_keyboard(),
+            )
+            return
         try:
             manager = build_vpn_manager(db, settings, bot=callback.bot)
-            await manager.update_user_expiry(tg_id, expiry_ms, key_id=key_id_int)
+            await manager.renew_user_access(tg_id, expiry_ms, key_id=key_id_int)
         except Exception:
             logger.exception("Failed to update XUI expiry after test SBP renewal tg_id=%s", tg_id)
-        if key_id_int is not None:
-            try:
-                await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
+        try:
+            await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
+        except Exception:
+            logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
         await callback.message.answer("✅ Тестовая СБП-оплата проведена. Подписка продлена.", reply_markup=get_main_menu_keyboard())
         await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
         return
@@ -275,9 +297,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             require_active=True,
             idempotency_key=f"vpn-after-payment:{payload}",
             force_new_key=True,
+            action="create",
         )
         link = str(access_user.get("vpn_key") or "")
-        sub_token = str(access_user.get("sub_token") or "")
+        sub_token = str(access_user.get("key_sub_token") or "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
 
@@ -311,8 +334,15 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
     renew_key_id = data.get("renew_key_id")
 
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
     payments_repo = PaymentsRepository(db)
     try:
+        if purchase_type == "renewal":
+            renew_key_id = _require_renew_key_id(renew_key_id)
+            key_row = await keys_repo.get_by_id_for_user(renew_key_id, callback.from_user.id)
+            if not key_row:
+                await callback.answer("Ключ для продления не найден", show_alert=True)
+                return
         await users_repo.get_or_create(callback.from_user.id)
         payload = generate_payload(callback.from_user.id, tariff_code)
         idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
