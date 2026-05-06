@@ -21,7 +21,7 @@ from app.services.idempotency import IdempotencyService
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
-from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
+from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -72,24 +72,27 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 telegram_charge_id=payment_info.telegram_payment_charge_id,
             )
             tariff = TARIFFS[str(payment["tariff_code"])]
-            if purchase_type == "renewal" and renew_key_id is not None:
-                current_sub = await subs_repo.get_active(int(payment["tg_id"]))
-                if current_sub:
-                    all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
-                    for k in all_keys:
-                        if int(k["id"]) != renew_key_id and not k.get("expires_at"):
-                            await keys_repo.update_expires_at(
-                                int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
-                            )
-            await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
-            base_limit = int(tariff.get("months", 1)) * 60
-            current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
-            current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
             if purchase_type == "renewal":
-                new_limit = current_limit + base_limit
+                # Renewal: extend the existing subscription from its current end date.
+                if renew_key_id is not None:
+                    current_sub = await subs_repo.get_active(int(payment["tg_id"]))
+                    if current_sub:
+                        all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
+                        for k in all_keys:
+                            if int(k["id"]) != renew_key_id and not k.get("expires_at"):
+                                await keys_repo.update_expires_at(
+                                    int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
+                                )
+                await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
+                base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+                current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
+                current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
+                await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
             else:
-                new_limit = base_limit
-            await users_repo.set_traffic_limit(int(payment["tg_id"]), new_limit)
+                # New key: independent subscription — do NOT chain off the existing one.
+                # The per-key expiry is computed fresh in the outer handler and stored in keys.expires_at.
+                base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+                await users_repo.set_traffic_limit(int(payment["tg_id"]), base_limit)
         return {
             "tg_id": int(payment["tg_id"]),
             "tariff_code": str(payment["tariff_code"]),
@@ -118,14 +121,22 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         await message.answer("Пользователь не найден.", reply_markup=get_main_menu_keyboard())
         return
 
-    # Read actual expiry from subscriptions table
-    active_sub = await subs_repo.get_active(tg_id)
     activated_dt = utc_now()
-    if active_sub:
-        expires_dt = parse_iso_utc(active_sub["expires_at"])
-    else:
-        expires_dt = activated_dt + timedelta(days=30)
     activated_at = activated_dt.isoformat()
+    tariff_code = str(processed.get("tariff_code") or "m1")
+    tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
+
+    if purchase_type == "renewal":
+        # Renewal: expiry comes from the extended global subscription.
+        active_sub = await subs_repo.get_active(tg_id)
+        if active_sub:
+            expires_dt = parse_iso_utc(active_sub["expires_at"])
+        else:
+            expires_dt = add_months(activated_dt, tariff["months"])
+    else:
+        # New key: fresh independent expiry from NOW — not chained off any existing subscription.
+        # Each new key purchase gets its own duration.
+        expires_dt = add_months(activated_dt, tariff["months"])
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user:
@@ -137,18 +148,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             last_activated_at=activated_at,
         )
 
-    # Use primary key's per-key expiry for display if available.
-    display_dt = expires_dt
-    try:
-        user_keys = await keys_repo.list_by_user(tg_id)  # sorted: primary first
-        if user_keys:
-            raw = user_keys[0].get("expires_at")
-            if raw:
-                display_dt = parse_iso_utc(raw)
-    except Exception:
-        pass
-    expires_str = to_moscow(display_dt).strftime("%d.%m.%Y")
-    days_remaining = max(0, (display_dt - utc_now()).days)
+    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":
@@ -204,6 +205,13 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         )
         link = str(access_user.get("vpn_key") or "")
         sub_token = str(access_user.get("key_sub_token") or "")
+        # Store per-key expiry so each key has an independent timeline.
+        new_key_id = int(access_user.get("key_id") or 0)
+        if new_key_id:
+            try:
+                await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())

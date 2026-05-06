@@ -21,7 +21,7 @@ from app.services.payments import generate_payload
 from app.services.plans import get_plan_by_id, get_plan_by_tariff_code
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
-from app.utils.datetime import parse_iso_utc, utc_now
+from app.utils.datetime import add_months, parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -211,25 +211,26 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     async def _process_payment() -> dict:
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="test-sbp")
-            if purchase_type == "renewal" and renew_key_id is not None:
-                current_sub = await subs_repo.get_active(int(payment["tg_id"]))
-                if current_sub:
-                    all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
-                    for k in all_keys:
-                        if int(k["id"]) != int(renew_key_id) and not k.get("expires_at"):
-                            await keys_repo.update_expires_at(
-                                int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
-                            )
-            months = max(1, int(plan["duration_days"]) // 30)
-            await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
             base_limit = int(plan["traffic_gb"])
-            current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
-            current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
             if purchase_type == "renewal":
-                new_limit = current_limit + base_limit
+                # Renewal: extend the existing subscription from its current end date.
+                if renew_key_id is not None:
+                    current_sub = await subs_repo.get_active(int(payment["tg_id"]))
+                    if current_sub:
+                        all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
+                        for k in all_keys:
+                            if int(k["id"]) != int(renew_key_id) and not k.get("expires_at"):
+                                await keys_repo.update_expires_at(
+                                    int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
+                                )
+                months = max(1, int(plan["duration_days"]) // 30)
+                await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
+                current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
+                current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
+                await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
             else:
-                new_limit = base_limit
-            await users_repo.set_traffic_limit(int(payment["tg_id"]), new_limit)
+                # New key: independent subscription — do NOT chain off the existing one.
+                await users_repo.set_traffic_limit(int(payment["tg_id"]), base_limit)
         return {
             "tg_id": int(payment["tg_id"]),
             "amount": int(payment["amount"]),
@@ -252,9 +253,16 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         await callback.answer("Пользователь не найден.", show_alert=True)
         return
 
-    active_sub = await subs_repo.get_active(tg_id)
     activated_dt = utc_now()
-    expires_dt = parse_iso_utc(active_sub["expires_at"]) if active_sub else (activated_dt)
+    plan_months = max(1, int(plan["duration_days"]) // 30)
+
+    if purchase_type == "renewal":
+        active_sub = await subs_repo.get_active(tg_id)
+        expires_dt = parse_iso_utc(active_sub["expires_at"]) if active_sub else add_months(activated_dt, plan_months)
+    else:
+        # New key: fresh independent expiry from NOW — not chained off any existing subscription.
+        expires_dt = add_months(activated_dt, plan_months)
+
     await users_repo.set_expiry(
         tg_id,
         expires_at=expires_dt.isoformat(),
@@ -301,6 +309,13 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         )
         link = str(access_user.get("vpn_key") or "")
         sub_token = str(access_user.get("key_sub_token") or "")
+        # Store per-key expiry so each key has an independent timeline.
+        new_key_id = int(access_user.get("key_id") or 0)
+        if new_key_id and purchase_type != "renewal":
+            try:
+                await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
 
