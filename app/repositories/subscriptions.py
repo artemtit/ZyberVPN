@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from datetime import timedelta
 from typing import Optional
 
@@ -10,7 +11,7 @@ from app.services.supabase import execute_with_retry, get_supabase_client
 from app.utils.datetime import add_months, parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
-_SUB_LOCKS: dict[int, asyncio.Lock] = {}
+_SUB_LOCKS: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 class SubscriptionsRepository:

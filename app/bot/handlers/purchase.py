@@ -214,15 +214,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             base_limit = int(plan["traffic_gb"])
             if purchase_type == "renewal":
                 # Renewal: extend the existing subscription from its current end date.
-                if renew_key_id is not None:
-                    current_sub = await subs_repo.get_active(int(payment["tg_id"]))
-                    if current_sub:
-                        all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
-                        for k in all_keys:
-                            if int(k["id"]) != int(renew_key_id) and not k.get("expires_at"):
-                                await keys_repo.update_expires_at(
-                                    int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
-                                )
+                # Do NOT touch other keys — each key has independent expiry in keys.expires_at.
                 months = max(1, int(plan["duration_days"]) // 30)
                 await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
                 current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))

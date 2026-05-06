@@ -95,25 +95,37 @@ class IdempotencyRepository:
             logger.exception("Idempotency save_failed persist failed")
 
     async def is_stale_processing(self, operation: str, key: str, max_age_seconds: int = 60) -> bool:
-        """Return True if the key is stuck in 'processing' older than *max_age_seconds*."""
+        """Return True if the record should be evicted and retried.
+
+        'failed' status → always stale (previous attempt errored; allow retry).
+        'processing' status → stale after max_age_seconds (crashed handler).
+        """
         if not self._supabase:
             return False
-        cutoff = (utc_now() - timedelta(seconds=max_age_seconds)).isoformat()
         try:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("idempotency_keys")
-                    .select("operation")
+                    .select("status,started_at")
                     .eq("operation", operation)
                     .eq("idempotency_key", key)
-                    .eq("status", "processing")
-                    .lt("started_at", cutoff)
                     .limit(1)
                     .execute()
                 ),
                 operation="idempotency.is_stale_processing",
             )
-            return bool(response.data)
+            rows = response.data or []
+            if not rows:
+                return False
+            row = rows[0]
+            status = row.get("status")
+            if status == "failed":
+                return True  # always allow retry after a previous failure
+            if status == "processing":
+                cutoff = (utc_now() - timedelta(seconds=max_age_seconds)).isoformat()
+                started_at = row.get("started_at") or ""
+                return bool(started_at and started_at < cutoff)
+            return False
         except Exception:
             logger.exception("Idempotency stale check failed")
             return False

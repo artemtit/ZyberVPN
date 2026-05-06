@@ -426,13 +426,22 @@ class UserVpnRepository:
         if not self._supabase:
             return {}
         response = await execute_with_retry(
-            lambda: self._supabase.table("user_vpn").select("server_id").execute(),
+            lambda: (
+                self._supabase.table("user_vpn")
+                .select("server_id,key_id")
+                .not_.is_("key_id", "null")  # exclude legacy null-slot rows
+                .execute()
+            ),
             operation="user_vpn.count_users_by_server",
         )
         rows = response.data or []
         counts: dict[int, int] = {}
         for row in rows:
             if not isinstance(row, dict):
+                continue
+            key_id = row.get("key_id")
+            # Exclude synthetic secondary-server slots
+            if key_id is not None and int(key_id) >= 9_000_000_000:
                 continue
             server_id = int(row.get("server_id") or 0)
             if server_id <= 0:

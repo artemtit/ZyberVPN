@@ -74,15 +74,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             tariff = TARIFFS[str(payment["tariff_code"])]
             if purchase_type == "renewal":
                 # Renewal: extend the existing subscription from its current end date.
-                if renew_key_id is not None:
-                    current_sub = await subs_repo.get_active(int(payment["tg_id"]))
-                    if current_sub:
-                        all_keys = await keys_repo.list_by_user(int(payment["tg_id"]))
-                        for k in all_keys:
-                            if int(k["id"]) != renew_key_id and not k.get("expires_at"):
-                                await keys_repo.update_expires_at(
-                                    int(k["id"]), int(payment["tg_id"]), current_sub["expires_at"]
-                                )
+                # Do NOT touch other keys — each key has independent expiry in keys.expires_at.
                 await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
                 current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))

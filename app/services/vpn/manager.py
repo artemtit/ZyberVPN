@@ -227,10 +227,13 @@ class VPNManager:
         try:
             reality_email = XUIProvider._client_email(user_id, "reality", key_id)
             ws_email = XUIProvider._client_email(user_id, "ws", key_id)
-            traffic = await provider.get_client_traffic(server, reality_email)
             bytes_used = 0
-            if isinstance(traffic, dict):
-                bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
+            reality_traffic = await provider.get_client_traffic(server, reality_email)
+            if isinstance(reality_traffic, dict):
+                bytes_used += int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
+            ws_traffic = await provider.get_client_traffic(server, ws_email)
+            if isinstance(ws_traffic, dict):
+                bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
             unique_devices = 0
             if self._vpn_devices_repo is not None:
                 unique_devices = await self._vpn_devices_repo.count_recent_devices(
@@ -282,15 +285,20 @@ class VPNManager:
 
         try:
             reality_email = XUIProvider._client_email(user_id, "reality", key_id)
-            traffic = await provider.get_client_traffic(server, reality_email)
-            if not isinstance(traffic, dict):
+            ws_email = XUIProvider._client_email(user_id, "ws", key_id)
+            reality_traffic = await provider.get_client_traffic(server, reality_email)
+            if not isinstance(reality_traffic, dict):
                 return False
-            if not traffic.get("enable", True):
+            if not reality_traffic.get("enable", True):
                 await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
                 return False
-            bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
-            # Use the per-client XUI limit (totalGB) — this is the correct per-key value.
-            xui_total_bytes = int(traffic.get("total") or 0)
+            # Sum reality + WS traffic so WS usage is not invisible to enforcement.
+            bytes_used = int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
+            ws_traffic = await provider.get_client_traffic(server, ws_email)
+            if isinstance(ws_traffic, dict):
+                bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
+            # Use reality client's XUI totalGB as the single shared limit.
+            xui_total_bytes = int(reality_traffic.get("total") or 0)
         except Exception as error:
             logger.warning(
                 "traffic fetch failed, skipping user_id=%s key_id=%s error=%s",

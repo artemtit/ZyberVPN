@@ -12,6 +12,7 @@ from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.connect import ConnectFlowState
 from app.config import Settings
 from app.db.database import Database
+from app.repositories.keys import KeysRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
 
@@ -65,7 +66,6 @@ def _app_name(callback_data: str) -> str | None:
 @router.callback_query(F.data.startswith("key_connect:"))
 async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     tg_id = callback.from_user.id
-    users_repo = UsersRepository(db)
     try:
         access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
     except AccessEnsureError as error:
@@ -78,13 +78,21 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
 
     vpn_configs = [str(item) for item in (access_user.get("vpn_configs") or []) if str(item).startswith("vless://")]
     vpn_key = str(access_user.get("vpn_key") or (vpn_configs[0] if vpn_configs else ""))
+    # Build subscription URL from the primary key's per-key sub_token.
+    # users.sub_token is NOT resolved by SubscriptionService; only keys.sub_token is.
+    sub_url = ""
     try:
-        sub_token = await users_repo.ensure_sub_token_for_tg(tg_id)
+        keys_repo = KeysRepository(db)
+        user_keys = await keys_repo.list_by_user(tg_id)
+        primary_key_row = next((k for k in user_keys if k.get("is_primary")), user_keys[0] if user_keys else None)
+        if primary_key_row:
+            key_sub_token = str(primary_key_row.get("sub_token") or "")
+            if not key_sub_token:
+                key_sub_token = await keys_repo.ensure_sub_token(int(primary_key_row["id"]), tg_id)
+            if key_sub_token and settings.public_base_url:
+                sub_url = f"{settings.public_base_url}/sub/{key_sub_token}"
     except Exception:
-        logger.exception("Failed to issue subscription token for tg_id=%s", tg_id)
-        await callback.answer("Не удалось подготовить subscription-ссылку. Попробуйте позже.", show_alert=True)
-        return
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if settings.public_base_url and sub_token else ""
+        logger.exception("Failed to build subscription URL for tg_id=%s", tg_id)
     if not vpn_key and not vpn_configs:
         await callback.answer("Не удалось получить VPN-ключ. Попробуйте позже.", show_alert=True)
         return

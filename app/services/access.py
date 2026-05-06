@@ -239,13 +239,17 @@ async def ensure_user_access(
             logger.warning("Failed to generate sub_token tg_id=%s key_id=%s", tg_id, new_key_id)
     else:
         # Return existing configs without provisioning anything new.
+        # Use the primary key's config (not vpn_configs[0] which is oldest by created_at).
+        all_keys = await _safe_repo_call(
+            "keys.list_by_user", lambda: keys_repo.list_by_user(tg_id), fallback=[], tg_id=tg_id
+        )
+        primary_key_row = next((k for k in all_keys if k.get("is_primary")), all_keys[0] if all_keys else None)
+        primary_key = str((primary_key_row or {}).get("key") or "")
+        if not _is_vpn_key_valid(primary_key):
+            primary_key = ""
         vpn_configs = await manager.get_subscription(tg_id, create_if_missing=False)
         vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
-        logger.info("VPN ensure (existing) completed tg_id=%s configs=%s", tg_id, len(vpn_configs))
-
-        primary_key = vpn_configs[0] if vpn_configs else ""
-        if primary_key and not _is_vpn_key_valid(primary_key):
-            raise AccessEnsureError("Invalid vpn_key after ensure")
+        logger.info("VPN ensure (existing) completed tg_id=%s configs=%s primary=%s", tg_id, len(vpn_configs), bool(primary_key))
 
     refreshed = await _safe_repo_call("users.get_by_tg_id.refresh", lambda: users_repo.get_by_tg_id(tg_id), fallback=None, tg_id=tg_id)
     final_user = refreshed or supabase_user
