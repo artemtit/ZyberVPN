@@ -34,13 +34,6 @@ def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
     return days, hours, minutes
 
 
-def _key_protocol(key_str: str) -> str:
-    if "security=reality" in key_str:
-        return "REALITY"
-    if "type=ws" in key_str or "path=" in key_str:
-        return "WS+TLS"
-    return "VPN"
-
 
 def _key_label(is_primary: bool, num: int, months_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
@@ -155,7 +148,7 @@ async def _build_key_card(
             limit_exceeded = True
             async def _enforce() -> None:
                 try:
-                    await build_vpn_manager(db, settings, bot=bot).enforce_traffic_limit(tg_id)
+                    await build_vpn_manager(db, settings, bot=bot).enforce_traffic_limit(tg_id, key_id=key_id)
                 except Exception:
                     pass
             asyncio.create_task(_enforce())

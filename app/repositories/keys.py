@@ -188,7 +188,7 @@ class KeysRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("keys")
-                    .select("id,tg_id,key,comment,is_primary,expires_at,created_at,sub_token")
+                    .select("id,tg_id,key,comment,is_primary,expires_at,created_at,sub_token,traffic_limit_gb")
                     .eq("sub_token", token)
                     .limit(1)
                     .execute()

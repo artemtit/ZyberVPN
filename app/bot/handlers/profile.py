@@ -379,7 +379,8 @@ async def _apply_promo(
                 key_id = key_row.get("id")
                 if key_id is None:
                     continue
-                await manager.update_user_expiry(tg_id, expiry_ms, key_id=int(key_id))
+                key_traffic_gb = int((key_row or {}).get("traffic_limit_gb") or 0) or None
+                await manager.update_user_expiry(tg_id, expiry_ms, key_id=int(key_id), traffic_limit_gb=key_traffic_gb)
         except Exception:
             logger.exception("Failed to update XUI expiry after promo tg_id=%s", tg_id)
 

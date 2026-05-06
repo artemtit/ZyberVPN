@@ -72,7 +72,8 @@ class SubscriptionService:
         user = await self._users_repo.get_by_tg_id(tg_id)
         if not user:
             raise PermissionError("forbidden")
-        if self._is_expired(user.get("expires_at")):
+        key_expires = key_row.get("expires_at") or user.get("expires_at")
+        if self._is_expired(key_expires):
             raise PermissionError("subscription inactive")
         return await self._build_key_payload(tg_id, int(key_id), user, key_row)
 
@@ -112,7 +113,7 @@ class SubscriptionService:
             download_bytes = bytes_used
         except Exception:
             pass
-        traffic_limit_gb = int(user.get("traffic_limit_gb") or 60)
+        traffic_limit_gb = int(key_row.get("traffic_limit_gb") or user.get("traffic_limit_gb") or 60)
         expire_ts = 0
         try:
             expires_raw = key_row.get("expires_at") or user.get("expires_at")
