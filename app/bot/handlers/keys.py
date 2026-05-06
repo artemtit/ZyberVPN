@@ -42,11 +42,10 @@ def _key_protocol(key_str: str) -> str:
     return "VPN"
 
 
-def _key_label(key_str: str, is_primary: bool, num: int, months_left: int, is_active: bool) -> str:
+def _key_label(is_primary: bool, num: int, months_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
-    protocol = _key_protocol(key_str)
     status = f"{months_left} мес." if is_active else "истёк"
-    return f"{icon} Ключ #{num} {protocol} — {status}"
+    return f"{icon} Ключ #{num} — {status}"
 
 
 @router.callback_query(F.data == "menu_keys")
@@ -83,7 +82,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
             key_months = 0
             key_is_active = False
 
-        label = _key_label(key_str, is_primary, num, key_months, key_is_active)
+        label = _key_label(is_primary, num, key_months, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
     await callback.message.edit_text(
@@ -130,8 +129,11 @@ async def _build_key_card(
 
     days, hours, _ = _remaining_parts(expires_at)
 
-    supabase_user = await users_repo.get_by_tg_id(tg_id)
-    traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
+    # Per-key traffic limit (stored in keys table); fall back to users.traffic_limit_gb.
+    traffic_limit_gb = int((key_data or {}).get("traffic_limit_gb") or 0)
+    if not traffic_limit_gb:
+        supabase_user = await users_repo.get_by_tg_id(tg_id)
+        traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
 
     # Per-key sub_token: generate one on first access if missing
     key_sub_token = str(key_data.get("sub_token") or "")
@@ -174,8 +176,7 @@ async def _build_key_card(
         f"{status_emoji} Статус: {status_text}\n"
         f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК ({days}д. {hours}ч.)\n"
         f"{sub_line}\n"
-        f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ\n"
-        f"📱 Устройств подключено: {online_devices} / 3"
+        f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ"
         f"{comment_line}"
     )
     return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment))

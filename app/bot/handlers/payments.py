@@ -88,6 +88,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
                 current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
                 await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
+                # Also accumulate per-key traffic limit for the specific renewed key.
+                if renew_key_id is not None and key_row:
+                    old_key_limit = int((key_row or {}).get("traffic_limit_gb") or 60)
+                    await keys_repo.update_traffic_limit(renew_key_id, int(payment["tg_id"]), old_key_limit + base_limit)
             else:
                 # New key: independent subscription — do NOT chain off the existing one.
                 # The per-key expiry is computed fresh in the outer handler and stored in keys.expires_at.
@@ -163,9 +167,14 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 reply_markup=get_main_menu_keyboard(),
             )
             return
+        # Read the updated per-key traffic limit (accumulated in _process_payment).
+        renewed_key = await keys_repo.get_by_id_for_user(key_id_int, tg_id)
+        per_key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
         try:
             manager = build_vpn_manager(db, settings, bot=message.bot)
-            await manager.renew_user_access(tg_id, expiry_ms, key_id=key_id_int)
+            await manager.renew_user_access(
+                tg_id, expiry_ms, key_id=key_id_int, traffic_limit_gb=per_key_traffic_gb
+            )
         except Exception:
             logger.exception("Failed to update XUI expiry after renewal tg_id=%s key_id=%s", tg_id, renew_key_id)
         try:
@@ -212,6 +221,11 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
+            try:
+                key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+                await keys_repo.update_traffic_limit(new_key_id, tg_id, key_traffic_gb)
+            except Exception:
+                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, new_key_id)
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())

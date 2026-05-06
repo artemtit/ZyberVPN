@@ -32,7 +32,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,expires_at,created_at")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token")
                 .eq("tg_id", tg_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -50,7 +50,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,expires_at,created_at")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token")
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .limit(1)
@@ -60,6 +60,20 @@ class KeysRepository:
         )
         rows = response.data or []
         return rows[0] if rows else None
+
+    async def update_traffic_limit(self, key_id: int, tg_id: int, traffic_limit_gb: int) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"traffic_limit_gb": traffic_limit_gb})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.update_traffic_limit",
+        )
 
     async def update_comment(self, key_id: int, tg_id: int, comment: str) -> None:
         if not self._supabase:

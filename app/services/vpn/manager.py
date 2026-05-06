@@ -289,6 +289,8 @@ class VPNManager:
                 await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
                 return False
             bytes_used = int(traffic.get("up", 0)) + int(traffic.get("down", 0))
+            # Use the per-client XUI limit (totalGB) — this is the correct per-key value.
+            xui_total_bytes = int(traffic.get("total") or 0)
         except Exception as error:
             logger.warning(
                 "traffic fetch failed, skipping user_id=%s key_id=%s error=%s",
@@ -296,11 +298,14 @@ class VPNManager:
             )
             return False
 
-        user = await self._users_repo.get_by_tg_id(user_id)
-        if not user:
-            return False
-        traffic_limit_gb = int(user.get("traffic_limit_gb") or 60)
-        limit_bytes = traffic_limit_gb * 1024 ** 3
+        if xui_total_bytes > 0:
+            limit_bytes = xui_total_bytes
+            traffic_limit_gb = xui_total_bytes // (1024 ** 3) or 1
+        else:
+            # XUI client has no limit set — fall back to global users field.
+            user = await self._users_repo.get_by_tg_id(user_id) if self._users_repo else None
+            traffic_limit_gb = int((user or {}).get("traffic_limit_gb") or 60)
+            limit_bytes = traffic_limit_gb * 1024 ** 3
 
         if bytes_used < limit_bytes:
             return False
@@ -386,20 +391,35 @@ class VPNManager:
                 )
         return list(disabled_users)
 
-    async def renew_user_access(self, user_id: int, expiry_time_ms: int, key_id: int | None) -> bool:
+    async def renew_user_access(
+        self,
+        user_id: int,
+        expiry_time_ms: int,
+        key_id: int | None,
+        traffic_limit_gb: int | None = None,
+    ) -> bool:
         """Renew exactly one existing key.
 
         Renewal must never fan out to all user_vpn rows because traffic/expiry are
-        isolated per key.
+        isolated per key. Pass traffic_limit_gb to update the XUI per-key limit.
         """
         if key_id is None:
             raise VPNManagerError("key_id is required for renew")
-        return await self.update_user_expiry(user_id, expiry_time_ms, key_id=key_id)
+        return await self.update_user_expiry(
+            user_id, expiry_time_ms, key_id=key_id, traffic_limit_gb=traffic_limit_gb
+        )
 
-    async def update_user_expiry(self, user_id: int, expiry_time_ms: int, key_id: int | None = None) -> bool:
+    async def update_user_expiry(
+        self,
+        user_id: int,
+        expiry_time_ms: int,
+        key_id: int | None = None,
+        traffic_limit_gb: int | None = None,
+    ) -> bool:
         """Update XUI client expiryTime (and totalGB) after subscription renewal.
 
         key_id is required. Only that specific key's XUI clients are updated.
+        traffic_limit_gb: per-key traffic allowance in GB. If None, XUI totalGB is unchanged.
         Returns True on success.
         """
         if key_id is None:
@@ -416,14 +436,8 @@ class VPNManager:
         if not isinstance(provider, XUIProvider):
             return False
 
-        # Read accumulated traffic limit from DB; 0 means "leave XUI unchanged".
-        traffic_limit_gb: int = 0
-        if self._users_repo:
-            try:
-                user = await self._users_repo.get_by_tg_id(user_id)
-                traffic_limit_gb = int((user or {}).get("traffic_limit_gb") or 0)
-            except Exception:
-                logger.warning("Could not read traffic_limit_gb for user_id=%s", user_id)
+        # Use the explicitly passed per-key limit; fallback: leave XUI totalGB unchanged (0 = no change).
+        effective_traffic_limit_gb: int = traffic_limit_gb if traffic_limit_gb and traffic_limit_gb > 0 else 0
 
         updated = False
         for vpn in rows:
@@ -440,14 +454,14 @@ class VPNManager:
                 try:
                     ok = await provider.update_client_expiry(
                         server, uuid, expiry_time_ms,
-                        total_gb=traffic_limit_gb if traffic_limit_gb > 0 else None,
+                        total_gb=effective_traffic_limit_gb if effective_traffic_limit_gb > 0 else None,
                     )
                     if ok:
                         updated = True
                         row_updated = True
                         logger.info(
                             "XUI expiry updated user_id=%s uuid=%s expiry_ms=%s total_gb=%s",
-                            user_id, uuid, expiry_time_ms, traffic_limit_gb or "unchanged",
+                            user_id, uuid, expiry_time_ms, effective_traffic_limit_gb or "unchanged",
                         )
                 except Exception:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)

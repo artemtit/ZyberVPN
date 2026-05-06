@@ -228,6 +228,11 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
                 current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
                 await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
+                # Also accumulate per-key traffic limit for the specific renewed key.
+                if renew_key_id is not None:
+                    renew_row = await keys_repo.get_by_id_for_user(int(renew_key_id), int(payment["tg_id"]))
+                    old_key_limit = int((renew_row or {}).get("traffic_limit_gb") or 60)
+                    await keys_repo.update_traffic_limit(int(renew_key_id), int(payment["tg_id"]), old_key_limit + base_limit)
             else:
                 # New key: independent subscription — do NOT chain off the existing one.
                 await users_repo.set_traffic_limit(int(payment["tg_id"]), base_limit)
@@ -282,9 +287,13 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 reply_markup=get_main_menu_keyboard(),
             )
             return
+        renewed_key = await keys_repo.get_by_id_for_user(key_id_int, tg_id)
+        key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
         try:
             manager = build_vpn_manager(db, settings, bot=callback.bot)
-            await manager.renew_user_access(tg_id, expiry_ms, key_id=key_id_int)
+            await manager.renew_user_access(
+                tg_id, expiry_ms, key_id=key_id_int, traffic_limit_gb=key_traffic_gb
+            )
         except Exception:
             logger.exception("Failed to update XUI expiry after test SBP renewal tg_id=%s", tg_id)
         try:
@@ -316,6 +325,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
+            try:
+                await keys_repo.update_traffic_limit(new_key_id, tg_id, int(plan["traffic_gb"]))
+            except Exception:
+                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, new_key_id)
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
 
