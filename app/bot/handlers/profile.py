@@ -94,21 +94,46 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
     invited = await users_repo.count_referrals(callback.from_user.id)
 
     keys_repo = KeysRepository(db)
-    user_keys = await keys_repo.list_by_user(callback.from_user.id)  # sorted: primary first
+    user_keys = await keys_repo.list_by_user(callback.from_user.id)
     primary_expiry_raw = user_keys[0].get("expires_at") if user_keys else None
-    expiry_display = _format_expiry(primary_expiry_raw or (supabase_user or {}).get("expires_at"))
+    expires_raw = primary_expiry_raw or (supabase_user or {}).get("expires_at")
+
+    days_left = 0
+    hours_left = 0
+    months_count = 0
+    if is_active and expires_raw:
+        try:
+            expires_dt = parse_iso_utc(expires_raw)
+            delta = expires_dt - utc_now()
+            total_seconds = max(0, int(delta.total_seconds()))
+            days_left = total_seconds // 86400
+            hours_left = (total_seconds % 86400) // 3600
+            months_count = max(1, (days_left + 29) // 30)
+        except Exception:
+            pass
+
+    status_line = "Активна ✅" if is_active else "Не активна ❌"
+    subs_repo = SubscriptionsRepository(db)
+    active_sub = await subs_repo.get_active(callback.from_user.id)
+    earned_rub = int((supabase_user or {}).get("balance") or 0)
+
+    news_url = "https://t.me/ZyberVPN_News"
+    support_url = "https://t.me/ZyberVPN_Support_bot"
 
     await callback.message.edit_text(
-        f"👤 ПРОФИЛЬ: {username} / ID: {callback.from_user.id}\n\n"
+        f"👤 ПРОФИЛЬ: {username} / iD: {callback.from_user.id}\n\n"
         "💎 ПОДПИСКА\n"
-        f"🏅 Статус: {_status_text(is_active)}\n"
-        f"📅 Действует до: {expiry_display}\n"
-        f"📦 План: {(supabase_user or {}).get('plan') or 'не задан'}\n\n"
+        f"🛡 Подписка: {status_line}\n"
+        f"⏳ Осталось: {days_left} д. {hours_left} ч.\n"
+        f"📅 Приобретено месяцев: {months_count}\n\n"
         "💼 ФИНАНСЫ\n"
         f"💳 Основной баланс: {local_user['balance']} RUB\n"
-        f"👥 Рефералов: {invited}\n"
-        "💰 Заработано: 0.00 RUB",
+        f"🤝 Рефералов: {invited}\n"
+        f"💰 Заработано: {earned_rub} RUB\n\n"
+        f"📄 <a href=\"{news_url}\">Новости</a>\n"
+        f"💬 <a href=\"{support_url}\">Поддержка</a>",
         reply_markup=profile_keyboard(),
+        disable_web_page_preview=True,
     )
     await callback.answer()
 

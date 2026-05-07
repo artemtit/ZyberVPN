@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
-from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_keyboard, payment_success_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.config import Settings
@@ -88,7 +88,9 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(tariff_code=tariff_code)
     await state.set_state(PurchaseState.waiting_email)
     await callback.message.edit_text(
-        "📧 Ввод Email\nВведите адрес почты или пропустите этот шаг:",
+        "📧 Ваш Email\n\n"
+        "Пожалуйста, введите адрес электронной почты. "
+        "На него будет отправлен чек после успешной оплаты.",
         reply_markup=email_keyboard(),
     )
     await callback.answer()
@@ -112,7 +114,9 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
         "✅ Вы выбрали: "
         f"{plan['name']} ({plan['traffic_gb']} ГБ, {plan['price_rub']}₽)\n\n"
-        "Введите email для получения доступа:",
+        "📧 Ваш Email\n\n"
+        "Пожалуйста, введите адрес электронной почты. "
+        "На него будет отправлен чек после успешной оплаты.",
         reply_markup=email_keyboard(),
     )
     await callback.answer()
@@ -405,6 +409,10 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         await callback.answer("Платёж временно недоступен. Попробуйте позже.", show_alert=True)
         return
 
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer_invoice(
         title=f"ZyberVPN — {plan['name']}",
         description=f"Подписка ZyberVPN на {plan['name']}",
@@ -412,6 +420,27 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         currency="XTR",
         prices=[LabeledPrice(label=plan["name"], amount=int(plan["price_stars"]))],
         provider_token="",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "payment_select_back")
+async def payment_select_back(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    """Return to payment method selection from a payment details message."""
+    data = await state.get_data()
+    plan = _selected_plan(data)
+    if not plan:
+        await callback.answer("Сессия истекла, выберите тариф заново.", show_alert=True)
+        return
+    platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
+    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
     )
     await callback.answer()
 
@@ -497,17 +526,18 @@ async def _pay_via_platega(
         await callback.answer("Ошибка при создании платежа. Попробуйте позже.", show_alert=True)
         return
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"💳 Перейти к оплате ({method_label})", url=redirect_url)],
-    ])
+    # Delete the payment method selection message before showing payment details.
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer(
         f"💳 <b>Оплата через {method_label} (Platega)</b>\n\n"
         f"💰 Сумма: <b>{int(plan['price_rub'])} RUB</b>\n"
         f"📦 Тариф: <b>{plan['name']}</b>\n\n"
         "Нажмите кнопку ниже для перехода к оплате.\n"
         "После оплаты бот автоматически выдаст VPN-ключ.",
-        reply_markup=keyboard,
+        reply_markup=payment_back_keyboard(redirect_url),
     )
     await callback.answer()
 

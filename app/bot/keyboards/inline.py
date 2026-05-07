@@ -94,8 +94,15 @@ def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool
     if platega_crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
     rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_open")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payment_back_keyboard(redirect_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data="payment_select_back")],
+    ])
 
 
 def profile_keyboard() -> InlineKeyboardMarkup:
