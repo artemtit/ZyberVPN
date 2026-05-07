@@ -16,7 +16,7 @@ from app.repositories.vpn_devices import VpnDevicesRepository
 from app.repositories.users import UsersRepository
 from app.services.vpn.base import ClientLimits, ServerInfo, VPNProvider
 from app.services.vpn.xui_provider import XUIProvider
-from app.utils.datetime import ensure_utc, utc_diff, utc_now
+from app.utils.datetime import ensure_utc, parse_iso_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,25 @@ class VPNManager:
             "FLOW TRACE | step=create_user_access.entry | user_id=%s key_id=%s",
             user_id, key_id,
         )
+
+        # Evict stale "creating" rows before claiming the slot.
+        # If the process crashed mid-provisioning, the row can stay in "creating" forever.
+        existing = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        if existing and existing.get("status") == "creating":
+            updated_at_raw = existing.get("updated_at") or existing.get("created_at") or ""
+            stale = False
+            if updated_at_raw:
+                try:
+                    age = utc_diff(utc_now(), ensure_utc(parse_iso_utc(updated_at_raw)))
+                    stale = age.total_seconds() > 300  # 5 minutes
+                except Exception:
+                    pass
+            if stale:
+                logger.warning(
+                    "Evicting stale 'creating' row user_id=%s key_id=%s age=%s",
+                    user_id, key_id, age.total_seconds() if updated_at_raw else "unknown",
+                )
+                await self._user_vpn_repo.set_failed(user_id, key_id)
 
         # Reserve the exact key slot. Do not read or reuse existing VPN rows here.
         # A purchase create flow must always provision a fresh client for key_id.

@@ -72,8 +72,11 @@ class SubscriptionService:
         user = await self._users_repo.get_by_tg_id(tg_id)
         if not user:
             raise PermissionError("forbidden")
-        key_expires = key_row.get("expires_at") or user.get("expires_at")
-        if self._is_expired(key_expires):
+        # Check per-key expiry only. Do NOT fall back to users.expires_at —
+        # that field reflects the latest purchase and is not representative of this key.
+        # If keys.expires_at is not set, the key has no expiry (treat as valid).
+        key_expires = key_row.get("expires_at")
+        if key_expires and self._is_expired(key_expires):
             raise PermissionError("subscription inactive")
         return await self._build_key_payload(tg_id, int(key_id), user, key_row)
 

@@ -130,9 +130,20 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         else:
             expires_dt = add_months(activated_dt, tariff["months"])
     else:
-        # New key: fresh independent expiry from NOW — not chained off any existing subscription.
-        # Each new key purchase gets its own duration.
-        expires_dt = add_months(activated_dt, tariff["months"])
+        # New key: fresh independent expiry from NOW.
+        # users.expires_at must be MAX(current, new) so the watchdog doesn't
+        # deactivate the user when a short-term key expires while longer keys remain.
+        new_key_expires_dt = add_months(activated_dt, tariff["months"])
+        supabase_user_pre = await users_repo.get_by_tg_id(tg_id)
+        current_raw = (supabase_user_pre or {}).get("expires_at")
+        if current_raw:
+            try:
+                current_dt = parse_iso_utc(current_raw)
+                expires_dt = max(new_key_expires_dt, current_dt)
+            except Exception:
+                expires_dt = new_key_expires_dt
+        else:
+            expires_dt = new_key_expires_dt
 
     supabase_user = await users_repo.get_by_tg_id(tg_id)
     if supabase_user:
