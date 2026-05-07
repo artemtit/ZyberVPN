@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from html import escape
 
 from aiogram import F, Router
@@ -134,8 +133,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         # users.expires_at must be MAX(current, new) so the watchdog doesn't
         # deactivate the user when a short-term key expires while longer keys remain.
         new_key_expires_dt = add_months(activated_dt, tariff["months"])
-        supabase_user_pre = await users_repo.get_by_tg_id(tg_id)
-        current_raw = (supabase_user_pre or {}).get("expires_at")
+        current_raw = (user or {}).get("expires_at")  # reuse already-fetched user
         if current_raw:
             try:
                 current_dt = parse_iso_utc(current_raw)
@@ -145,8 +143,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         else:
             expires_dt = new_key_expires_dt
 
-    supabase_user = await users_repo.get_by_tg_id(tg_id)
-    if supabase_user:
+    if user:
         await users_repo.set_expiry(
             tg_id,
             expires_at=expires_dt.isoformat(),
@@ -232,6 +229,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
+        return
 
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
 

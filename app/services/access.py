@@ -162,7 +162,7 @@ async def ensure_user_access(
     expiry_ms = _expiry_to_ms((supabase_user or {}).get("expires_at"))
 
     if force_new_key:
-        logger.warning("ACCESS FLOW | user_id=%s key_id=PENDING action=create", tg_id)
+        logger.debug("ACCESS FLOW | user_id=%s key_id=PENDING action=create", tg_id)
 
         # Pre-allocate a real key_id before VPN creation.
         # Passing key_id=None targets the null-slot which may already hold a 'ready' row,
@@ -180,13 +180,9 @@ async def ensure_user_access(
         if not new_key_id:
             raise AccessEnsureError("Failed to allocate valid key ID")
 
-        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=create step=allocated", tg_id, new_key_id)
+        logger.debug("ACCESS FLOW | user_id=%s key_id=%s action=create step=allocated", tg_id, new_key_id)
         logger.info("VPN key slot pre-allocated tg_id=%s key_id=%s", tg_id, new_key_id)
 
-        logger.warning(
-            "FLOW TRACE | step=ensure_user_access.create_start | tg_id=%s new_key_id=%s",
-            tg_id, new_key_id,
-        )
         try:
             vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, key_id=new_key_id)
         except VPNManagerError as error:
@@ -194,10 +190,6 @@ async def ensure_user_access(
             raise AccessEnsureError(str(error)) from error
 
         vpn_configs = [str(item) for item in (vpn_configs or []) if str(item)]
-        logger.warning(
-            "FLOW TRACE | step=ensure_user_access.after_create | tg_id=%s new_key_id=%s configs=%s first=%s",
-            tg_id, new_key_id, len(vpn_configs), vpn_configs[0][:60] if vpn_configs else "NONE",
-        )
         logger.info("VPN ensure (new key) completed tg_id=%s key_id=%s configs=%s", tg_id, new_key_id, len(vpn_configs))
 
         primary_key = vpn_configs[0] if vpn_configs else ""

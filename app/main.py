@@ -73,6 +73,10 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
         return web.json_response({"status": "ok"})
 
     async def metrics(request: web.Request) -> web.Response:
+        # Require a secret token so metrics are not publicly accessible.
+        expected = os.getenv("METRICS_TOKEN", "").strip()
+        if expected and request.headers.get("X-Metrics-Token", "") != expected:
+            return web.json_response({"error": "forbidden"}, status=403)
         manager = build_vpn_manager(request.app["db"], request.app["settings"])
         data = await manager.get_metrics()
         return web.json_response(data)
@@ -92,7 +96,7 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
 
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.getenv("PORT", "10000"))
+    port = int(os.getenv("PORT") or "10000")
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
     logging.info("Health server started on 0.0.0.0:%s", port)

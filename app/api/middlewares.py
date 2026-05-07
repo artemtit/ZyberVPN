@@ -37,7 +37,11 @@ class InMemoryRateLimiter:
         while bucket and now - bucket[0] > self._window:
             bucket.popleft()
         bucket.append(now)
-        return len(bucket) <= self._limit
+        allowed = len(bucket) <= self._limit
+        # Remove empty buckets to prevent unbounded dict growth.
+        if not bucket:
+            self._buckets.pop(key, None)
+        return allowed
 
 
 class RedisRateLimiter:

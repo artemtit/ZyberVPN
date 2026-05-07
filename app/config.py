@@ -8,6 +8,11 @@ from dotenv import load_dotenv
 
 @dataclass(slots=True)
 class Settings:
+    def __repr__(self) -> str:
+        return (
+            f"Settings(bot_token=*****, supabase_url={self.supabase_url!r}, "
+            f"public_base_url={self.public_base_url!r}, test_mode={self.test_mode})"
+        )
     bot_token: str
     db_path: str
     support_url: str

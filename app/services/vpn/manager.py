@@ -91,12 +91,7 @@ class VPNManager:
         if key_id is None:
             raise VPNManagerError("key_id is required — null-slot provisioning is not allowed")
 
-        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=create", user_id, key_id)
-
-        logger.warning(
-            "FLOW TRACE | step=create_user_access.entry | user_id=%s key_id=%s",
-            user_id, key_id,
-        )
+        logger.debug("ACCESS FLOW | user_id=%s key_id=%s action=create", user_id, key_id)
 
         # Evict stale "creating" rows before claiming the slot.
         # If the process crashed mid-provisioning, the row can stay in "creating" forever.
@@ -451,7 +446,7 @@ class VPNManager:
         """
         if key_id is None:
             raise VPNManagerError("key_id is required for expiry update")
-        logger.warning("ACCESS FLOW | user_id=%s key_id=%s action=renew", user_id, key_id)
+        logger.debug("ACCESS FLOW | user_id=%s key_id=%s action=renew", user_id, key_id)
         rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
         rows = [r for r in rows if r and r.get("key_id") is not None]
 
@@ -558,10 +553,6 @@ class VPNManager:
                 # Do NOT call get_subscription here — it returns all ready rows sorted
                 # by created_at ASC, so vpn_configs[0] would be an old key's config.
                 new_configs = self._profiles_to_subscription(result.profiles)
-                logger.warning(
-                    "FLOW TRACE | step=_create_on_best_server | user_id=%s key_id=%s new_configs=%s",
-                    user_id, key_id, new_configs,
-                )
                 return new_configs
             except (asyncio.TimeoutError, ClientError) as error:
                 last_error = error
