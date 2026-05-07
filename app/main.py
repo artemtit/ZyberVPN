@@ -22,6 +22,7 @@ from app.api.middlewares import (
     request_logging_middleware,
 )
 from app.api.subscription import register_subscription_routes
+from app.api.platega_webhook import register_platega_webhook_routes
 from app.bot.handlers.admin import router as admin_router
 from app.bot.handlers import setup_routers
 from app.config import load_settings
@@ -87,12 +88,27 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     app["db"] = db
     app["settings"] = settings
     app["subscription_service"] = build_subscription_service(db, settings)
+    # Platega payment client — only created when credentials are configured.
+    if settings.platega_merchant_id and settings.platega_api_key:
+        from app.services.platega import PlategaClient
+        return_url = settings.public_base_url or "https://t.me/"
+        app["platega_client"] = PlategaClient(
+            merchant_id=settings.platega_merchant_id,
+            api_key=settings.platega_api_key,
+            return_url=return_url,
+            failed_url=return_url,
+        )
+        logging.info("Platega payment integration enabled merchant_id=***")
+    else:
+        app["platega_client"] = None
+        logging.info("Platega not configured — set PLATEGA_MERCHANT_ID and PLATEGA_API_KEY to enable")
     if settings.redis_url and Redis is not None:
         redis = Redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
         app["rate_limiter"] = RedisRateLimiter(redis, settings.api_rate_limit_per_minute)
     else:
         app["rate_limiter"] = InMemoryRateLimiter(settings.api_rate_limit_per_minute)
     register_subscription_routes(app)
+    register_platega_webhook_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -233,6 +249,8 @@ async def run() -> None:
     dp.include_router(admin_router)
 
     web_runner = await _start_health_server(db, settings)
+    # Expose bot to the aiohttp app so the webhook handler can send Telegram messages.
+    web_runner.app["bot"] = bot
     subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
