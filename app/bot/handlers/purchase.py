@@ -137,9 +137,10 @@ async def input_email(message: Message, state: FSMContext, settings: Settings) -
         await message.answer("Сначала выберите тариф.", reply_markup=get_main_menu_keyboard())
         return
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
+    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     await message.answer(
         f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on),
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
     )
 
 
@@ -153,9 +154,10 @@ async def skip_email(callback: CallbackQuery, state: FSMContext, settings: Setti
     await state.update_data(email=None)
     await state.set_state(PurchaseState.waiting_payment)
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
+    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     await callback.message.edit_text(
         f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on),
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
     )
     await callback.answer()
 
@@ -414,9 +416,15 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
     await callback.answer()
 
 
-@router.callback_query(F.data == "pay:platega")
-async def pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
-    """Create a Platega SBP/QR payment and send the user the payment link."""
+async def _pay_via_platega(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    settings: Settings,
+    payment_method: int,
+    method_label: str,
+) -> None:
+    """Shared logic for Platega SBP and Crypto payment buttons."""
     merchant_id = getattr(settings, "platega_merchant_id", "")
     api_key = getattr(settings, "platega_api_key", "")
     if not merchant_id or not api_key:
@@ -445,18 +453,12 @@ async def pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, 
             renew_key_id = _require_renew_key_id(renew_key_id)
         await users_repo.get_or_create(callback.from_user.id)
 
-        # Use a stable idempotency key so duplicate clicks don't create extra Platega payments.
         idem_key = (
-            f"platega-create:{callback.from_user.id}:{tariff_code}:"
+            f"platega-create-{payment_method}:{callback.from_user.id}:{tariff_code}:"
             f"{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
         )
 
-        # Build Platega client and create the payment link.
         webhook_secret = getattr(settings, "platega_webhook_secret", "")
-        callback_url = (
-            f"{settings.public_base_url}/platega/webhook"
-            + (f"?secret={webhook_secret}" if webhook_secret else "")
-        ) if settings.public_base_url else ""
         return_url = settings.public_base_url or "https://t.me/"
 
         client = PlategaClient(
@@ -469,38 +471,38 @@ async def pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, 
             amount=int(plan["price_rub"]),
             description=f"ZyberVPN — {plan['name']}",
             internal_payload=idem_key,
-            payment_method=2,  # SBP/QR
+            payment_method=payment_method,
         )
         transaction_id = result["transaction_id"]
         redirect_url = result["redirect_url"]
 
-        # Store payment record so the webhook can look it up by payload=transaction_id.
         await payments_repo.create_pending(
             tg_id=callback.from_user.id,
             amount=int(plan["price_rub"]),
             tariff_code=tariff_code,
             email=email,
-            payload=transaction_id,       # ← Platega transaction UUID
+            payload=transaction_id,
             idempotency_key=idem_key,
             purchase_type=purchase_type,
             renew_key_id=int(renew_key_id) if renew_key_id is not None else None,
         )
         await state.clear()
     except PlategaError as exc:
-        logger.exception("Platega payment creation failed tg_id=%s error=%s", callback.from_user.id, exc)
+        logger.exception("Platega payment creation failed tg_id=%s method=%s error=%s",
+                         callback.from_user.id, payment_method, exc)
         await callback.answer("Platega временно недоступна. Попробуйте позже.", show_alert=True)
         return
     except Exception:
-        logger.exception("pay:platega unexpected error tg_id=%s", callback.from_user.id)
+        logger.exception("pay:platega_%s unexpected error tg_id=%s", payment_method, callback.from_user.id)
         await callback.answer("Ошибка при создании платежа. Попробуйте позже.", show_alert=True)
         return
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
+        [InlineKeyboardButton(text=f"💳 Перейти к оплате ({method_label})", url=redirect_url)],
     ])
     await callback.message.answer(
-        f"💳 <b>Оплата через СБП/QR (Platega)</b>\n\n"
+        f"💳 <b>Оплата через {method_label} (Platega)</b>\n\n"
         f"💰 Сумма: <b>{int(plan['price_rub'])} RUB</b>\n"
         f"📦 Тариф: <b>{plan['name']}</b>\n\n"
         "Нажмите кнопку ниже для перехода к оплате.\n"
@@ -508,3 +510,17 @@ async def pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, 
         reply_markup=keyboard,
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "pay:platega")
+async def pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    await _pay_via_platega(callback, state, db, settings, payment_method=2, method_label="СБП / QR")
+
+
+@router.callback_query(F.data == "pay:platega_crypto")
+async def pay_platega_crypto(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    method_code = int(getattr(settings, "platega_crypto_method", 0))
+    if not method_code:
+        await callback.answer("Крипто-оплата не настроена", show_alert=True)
+        return
+    await _pay_via_platega(callback, state, db, settings, payment_method=method_code, method_label="Криптовалюта")
