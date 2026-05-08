@@ -357,6 +357,17 @@ class UsersRepository:
         )
         return len(response.data or [])
 
+    async def list_all_tg_ids(self) -> list[int]:
+        """Return tg_ids of every user (including inactive / no subscription)."""
+        if not self._supabase:
+            return []
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("tg_id").execute(),
+            operation="users.list_all_tg_ids",
+        )
+        rows = response.data or []
+        return [int(r["tg_id"]) for r in rows if isinstance(r, dict) and r.get("tg_id") is not None]
+
     async def list_active_tg_ids(self) -> list[int]:
         if not self._supabase:
             return []

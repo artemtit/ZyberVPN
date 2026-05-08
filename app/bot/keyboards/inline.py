@@ -98,10 +98,19 @@ def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def payment_back_keyboard(redirect_url: str) -> InlineKeyboardMarkup:
+def payment_back_keyboard(redirect_url: str, tariff_code: str = "", purchase_type: str = "new", renew_key_id: str = "0") -> InlineKeyboardMarkup:
+    # Encode context in callback_data so back button works even after state.clear().
+    back_data = f"payment_back:{tariff_code}:{purchase_type}:{renew_key_id}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
-        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data="payment_select_back")],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
+    ])
+
+
+def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew_key_id: str = "0") -> InlineKeyboardMarkup:
+    back_data = f"payment_back:{tariff_code}:{purchase_type}:{renew_key_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
     ])
 
 

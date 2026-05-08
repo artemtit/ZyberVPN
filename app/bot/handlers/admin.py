@@ -23,9 +23,14 @@ from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
 router = Router()
 logger = logging.getLogger(__name__)
 
+# In-memory set of banned tg_ids. Survives until bot restart.
+# On first /ban the id is added; on /unban it is removed.
+_BANNED_IDS: set[int] = set()
+
 
 class AdminState(StatesGroup):
     waiting_broadcast_confirm = State()
+    waiting_broadcastall_confirm = State()
 
 
 def _is_admin(tg_id: int, settings: Settings) -> bool:
@@ -64,7 +69,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/ban &lt;tg_id&gt; — заблокировать пользователя\n"
         "/unban &lt;tg_id&gt; — разблокировать пользователя\n"
         "/servers — список серверов\n"
-        "/broadcast &lt;текст&gt; — рассылка с подтверждением",
+        "/broadcast &lt;текст&gt; — рассылка активным пользователям\n"
+        "/broadcastall &lt;текст&gt; — рассылка ВСЕМ пользователям",
     )
 
 
@@ -248,8 +254,21 @@ async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
         await message.answer(f"⚠️ XUI отключение не удалось для {target_id}, но БД будет обновлена.")
 
     await users_repo.update_status(target_id, False)
+    _BANNED_IDS.add(target_id)
     logger.warning("ADMIN BAN | admin=%s target=%s", message.from_user.id, target_id)
-    await message.answer(f"🚫 Пользователь {target_id} заблокирован. VPN-доступ отключён.")
+
+    # Notify the banned user.
+    try:
+        await message.bot.send_message(
+            target_id,
+            "🚫 <b>Ваш аккаунт заблокирован.</b>\n\n"
+            "Если вы считаете это ошибкой, пожалуйста, обратитесь в поддержку:\n"
+            f"@ZyberVPN_Support_bot",
+        )
+    except Exception:
+        pass
+
+    await message.answer(f"🚫 Пользователь {target_id} заблокирован. VPN-доступ отключён, уведомление отправлено.")
 
 
 # ──────────────────────────────────────────
@@ -272,6 +291,7 @@ async def admin_unban(message: Message, db: Database, settings: Settings) -> Non
 
     # Re-enable account in DB — new key is NOT created automatically.
     await users_repo.update_status(target_id, True)
+    _BANNED_IDS.discard(target_id)
     logger.warning("ADMIN UNBAN | admin=%s target=%s", message.from_user.id, target_id)
     await message.answer(
         f"✅ Пользователь {target_id} разблокирован.\n"
@@ -318,3 +338,75 @@ async def admin_servers(message: Message, db: Database, settings: Settings) -> N
         )
 
     await message.answer("\n".join(lines))
+
+
+# ──────────────────────────────────────────
+# /broadcastall <text>  — рассылка ВСЕМ пользователям
+# ──────────────────────────────────────────
+@router.message(Command("broadcastall"))
+async def admin_broadcastall(message: Message, state: FSMContext, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    text = (message.text or "").removeprefix("/broadcastall").strip()
+    if not text:
+        await message.answer("Использование: /broadcastall &lt;текст&gt;")
+        return
+
+    await state.set_state(AdminState.waiting_broadcastall_confirm)
+    await state.update_data(broadcast_text=text)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить (всем)", callback_data="broadcastall_confirm")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcastall_cancel")],
+    ])
+    await message.answer(
+        "📢 <b>Превью рассылки (ВСЕ пользователи):</b>\n\n"
+        f"{text}\n\n"
+        "──────────────────\n"
+        "⚠️ Сообщение будет отправлено ВСЕМ пользователям бота, включая тех, у кого нет подписки.",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "broadcastall_confirm", AdminState.waiting_broadcastall_confirm)
+async def broadcastall_confirm(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    text = data.get("broadcast_text", "")
+    await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if not text:
+        await callback.answer("Текст не найден", show_alert=True)
+        return
+
+    users_repo = UsersRepository(db)
+    # Fetch ALL tg_ids (not just active subscribers)
+    all_tg_ids = await users_repo.list_all_tg_ids()
+    sent = failed = 0
+    for tg_id in all_tg_ids:
+        try:
+            await callback.bot.send_message(tg_id, text)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    await callback.message.answer(
+        f"✅ Рассылка (все пользователи) завершена: {sent} отправлено, {failed} ошибок."
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "broadcastall_cancel", AdminState.waiting_broadcastall_confirm)
+async def broadcastall_cancel(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("❌ Рассылка отменена.")
+    await callback.answer()

@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
-from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, stars_back_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.config import Settings
@@ -421,17 +421,44 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         prices=[LabeledPrice(label=plan["name"], amount=int(plan["price_stars"]))],
         provider_token="",
     )
+    # Invoice messages don't support custom keyboards — send a separate back button.
+    await callback.message.answer(
+        "Для отмены или выбора другого способа оплаты:",
+        reply_markup=stars_back_keyboard(
+            tariff_code=str(tariff_code),
+            purchase_type=str(purchase_type),
+            renew_key_id=str(renew_key_id or 0),
+        ),
+    )
     await callback.answer()
 
 
-@router.callback_query(F.data == "payment_select_back")
+@router.callback_query(F.data.startswith("payment_back:"))
 async def payment_select_back(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
-    """Return to payment method selection from a payment details message."""
-    data = await state.get_data()
-    plan = _selected_plan(data)
+    """Return to payment method selection.
+
+    tariff_code is encoded in callback_data as payment_back:{tc}:{pt}:{rkid}
+    so the button works even after state.clear() (e.g. after creating a Platega order).
+    """
+    parts = callback.data.split(":", 3)
+    tariff_code = parts[1] if len(parts) > 1 else ""
+    purchase_type = parts[2] if len(parts) > 2 else "new"
+    renew_raw = parts[3] if len(parts) > 3 else "0"
+
+    plan = get_plan_by_tariff_code(tariff_code) if tariff_code else None
+    if not plan:
+        # Fallback: FSM state (present if state was not cleared yet)
+        data = await state.get_data()
+        plan = _selected_plan(data)
     if not plan:
         await callback.answer("Сессия истекла, выберите тариф заново.", show_alert=True)
         return
+
+    # Restore FSM context so the payment buttons work again.
+    renew_key_id = int(renew_raw) if renew_raw.isdigit() and int(renew_raw) > 0 else None
+    await state.update_data(tariff_code=tariff_code, purchase_type=purchase_type, renew_key_id=renew_key_id)
+    await state.set_state(PurchaseState.waiting_payment)
+
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     try:
@@ -537,7 +564,12 @@ async def _pay_via_platega(
         f"📦 Тариф: <b>{plan['name']}</b>\n\n"
         "Нажмите кнопку ниже для перехода к оплате.\n"
         "После оплаты бот автоматически выдаст VPN-ключ.",
-        reply_markup=payment_back_keyboard(redirect_url),
+        reply_markup=payment_back_keyboard(
+            redirect_url,
+            tariff_code=str(tariff_code),
+            purchase_type=str(purchase_type),
+            renew_key_id=str(renew_key_id or 0),
+        ),
     )
     await callback.answer()
 

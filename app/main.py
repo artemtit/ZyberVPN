@@ -23,7 +23,7 @@ from app.api.middlewares import (
 )
 from app.api.subscription import register_subscription_routes
 from app.api.platega_webhook import register_platega_webhook_routes
-from app.bot.handlers.admin import router as admin_router
+from app.bot.handlers.admin import router as admin_router, _BANNED_IDS as BANNED_IDS
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
@@ -245,6 +245,22 @@ async def run() -> None:
     dp = _build_dispatcher(settings)
     dp["db"] = db
     dp["settings"] = settings
+
+    # Middleware: block banned users before any handler runs.
+    from aiogram import BaseMiddleware
+    from aiogram.types import TelegramObject
+    from typing import Any, Callable, Awaitable
+
+    class BanMiddleware(BaseMiddleware):
+        async def __call__(self, handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+                           event: TelegramObject, data: dict[str, Any]) -> Any:
+            user = data.get("event_from_user")
+            if user and user.id in BANNED_IDS:
+                return  # silently drop — user already received a ban message
+            return await handler(event, data)
+
+    dp.update.outer_middleware(BanMiddleware())
+
     setup_routers(dp)
     dp.include_router(admin_router)
 
