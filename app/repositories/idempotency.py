@@ -94,11 +94,13 @@ class IdempotencyRepository:
         except Exception:
             logger.exception("Idempotency save_failed persist failed")
 
-    async def is_stale_processing(self, operation: str, key: str, max_age_seconds: int = 60) -> bool:
+    async def is_stale_processing(self, operation: str, key: str, max_age_seconds: int = 300) -> bool:
         """Return True if the record should be evicted and retried.
 
         'failed' status → always stale (previous attempt errored; allow retry).
         'processing' status → stale after max_age_seconds (crashed handler).
+        300 s default gives XUI operations (login + addClient × 3 retries) enough
+        headroom before a live lock is mistakenly evicted.
         """
         if not self._supabase:
             return False

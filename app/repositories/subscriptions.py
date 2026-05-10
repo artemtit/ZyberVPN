@@ -58,16 +58,29 @@ class SubscriptionsRepository:
     async def create_or_extend(self, tg_id: int, months: int) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        lock = _SUB_LOCKS.setdefault(tg_id, asyncio.Lock())
+        lock = _SUB_LOCKS.get(tg_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SUB_LOCKS[tg_id] = lock
         async with lock:
             latest = await self.get_active(tg_id)
             start_from = utc_now()
             if latest:
                 start_from = parse_iso_utc(latest["expires_at"])
-                await execute_with_retry(
-                    lambda: self._supabase.table("subscriptions").update({"status": "expired"}).eq("id", latest["id"]).execute(),
-                    operation="subscriptions.expire_previous",
+                expires_at = add_months(start_from, months).isoformat()
+                # Single atomic UPDATE on the existing row — avoids the expire+insert
+                # two-step where a crash between both leaves the user with no subscription.
+                response = await execute_with_retry(
+                    lambda: self._supabase.table("subscriptions")
+                        .update({"expires_at": expires_at})
+                        .eq("id", latest["id"])
+                        .execute(),
+                    operation="subscriptions.extend_existing",
                 )
+                rows = response.data or []
+                if rows:
+                    logger.info("Subscription extended tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
+                    return rows[0]
             expires_at = add_months(start_from, months).isoformat()
             response = await execute_with_retry(
                 lambda: self._supabase.table("subscriptions").insert({"tg_id": tg_id, "expires_at": expires_at, "status": "active"}).execute(),
@@ -76,22 +89,33 @@ class SubscriptionsRepository:
             rows = response.data or []
             if not rows:
                 raise RuntimeError("Failed to create subscription")
-            logger.info("Subscription extended tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
+            logger.info("Subscription created tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
             return rows[0]
 
     async def create_or_extend_days(self, tg_id: int, days: int) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        lock = _SUB_LOCKS.setdefault(tg_id, asyncio.Lock())
+        lock = _SUB_LOCKS.get(tg_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SUB_LOCKS[tg_id] = lock
         async with lock:
             latest = await self.get_active(tg_id)
             start_from = utc_now()
             if latest:
                 start_from = parse_iso_utc(latest["expires_at"])
-                await execute_with_retry(
-                    lambda: self._supabase.table("subscriptions").update({"status": "expired"}).eq("id", latest["id"]).execute(),
-                    operation="subscriptions.expire_previous",
+                expires_at = (start_from + timedelta(days=days)).isoformat()
+                response = await execute_with_retry(
+                    lambda: self._supabase.table("subscriptions")
+                        .update({"expires_at": expires_at})
+                        .eq("id", latest["id"])
+                        .execute(),
+                    operation="subscriptions.extend_existing_days",
                 )
+                rows = response.data or []
+                if rows:
+                    logger.info("Subscription extended tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
+                    return rows[0]
             expires_at = (start_from + timedelta(days=days)).isoformat()
             response = await execute_with_retry(
                 lambda: self._supabase.table("subscriptions").insert({"tg_id": tg_id, "expires_at": expires_at, "status": "active"}).execute(),
@@ -100,5 +124,5 @@ class SubscriptionsRepository:
             rows = response.data or []
             if not rows:
                 raise RuntimeError("Failed to create subscription")
-            logger.info("Subscription extended tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
+            logger.info("Subscription created tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
             return rows[0]

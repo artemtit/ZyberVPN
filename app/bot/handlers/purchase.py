@@ -231,14 +231,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 # Do NOT touch other keys — each key has independent expiry in keys.expires_at.
                 months = max(1, int(plan["duration_days"]) // 30)
                 await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
-                current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
-                current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
-                await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
-                # Also accumulate per-key traffic limit for the specific renewed key.
+                # Atomic increment — prevents lost updates when two payments process concurrently.
+                await users_repo.add_traffic_limit(int(payment["tg_id"]), base_limit)
                 if renew_key_id is not None:
-                    renew_row = await keys_repo.get_by_id_for_user(int(renew_key_id), int(payment["tg_id"]))
-                    old_key_limit = int((renew_row or {}).get("traffic_limit_gb") or 60)
-                    await keys_repo.update_traffic_limit(int(renew_key_id), int(payment["tg_id"]), old_key_limit + base_limit)
+                    await keys_repo.add_traffic_limit(int(renew_key_id), int(payment["tg_id"]), base_limit)
             else:
                 # New key: independent subscription — do NOT chain off the existing one.
                 await users_repo.set_traffic_limit(int(payment["tg_id"]), base_limit)
@@ -324,31 +320,42 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
 
     link = ""
     sub_token = ""
-    try:
-        access_user = await ensure_user_access(
+    vpn_idem_key = f"vpn-provision:{payload}"
+    vpn_idem = IdempotencyService(IdempotencyRepository())
+
+    async def _provision_vpn() -> dict:
+        au = await ensure_user_access(
             tg_id=tg_id,
             db=db,
             settings=settings,
             require_active=True,
-            idempotency_key=f"vpn-after-payment:{payload}",
             force_new_key=True,
             action="create",
         )
-        link = str(access_user.get("vpn_key") or "")
-        sub_token = str(access_user.get("key_sub_token") or "")
-        # Store per-key expiry so each key has an independent timeline.
-        new_key_id = int(access_user.get("key_id") or 0)
-        if new_key_id and purchase_type != "renewal":
+        provisioned_key_id = int(au.get("key_id") or 0)
+        if provisioned_key_id:
             try:
-                await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
             except Exception:
-                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:
-                await keys_repo.update_traffic_limit(new_key_id, tg_id, int(plan["traffic_gb"]))
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan["traffic_gb"]))
             except Exception:
-                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        return {
+            "vpn_key": str(au.get("vpn_key") or ""),
+            "key_sub_token": str(au.get("key_sub_token") or ""),
+            "key_id": provisioned_key_id,
+        }
+
+    try:
+        vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
+        link = vpn_result.get("vpn_key", "")
+        sub_token = vpn_result.get("key_sub_token", "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
+    except Exception:
+        logger.exception("VPN provisioning idempotency failed tg_id=%s", tg_id)
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     await referral_service.accrue_bonus(user, int(processed["amount"]))

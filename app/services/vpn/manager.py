@@ -119,6 +119,20 @@ class VPNManager:
             logger.info("VPN claim rejected (creating) user_id=%s key_id=%s", user_id, key_id)
             raise VPNManagerError("VPN creation in progress")
 
+        if claim == "ready":
+            # Slot already has a ready row — return its configs instead of overwriting.
+            # Overwriting would destroy a working VPN key.
+            existing = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+            configs = self._row_to_configs(existing)
+            if configs:
+                logger.info("VPN slot already ready, returning existing user_id=%s key_id=%s", user_id, key_id)
+                return configs
+            # Row exists but no valid configs yet — fall through and (re)provision.
+            logger.warning(
+                "VPN slot 'ready' but has no valid configs user_id=%s key_id=%s — re-provisioning",
+                user_id, key_id,
+            )
+
         logger.info("VPN creation claimed user_id=%s key_id=%s claim=%s", user_id, key_id, claim)
         try:
             return await self._create_on_best_server(user_id, expiry_time, key_id)

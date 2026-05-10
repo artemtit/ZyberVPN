@@ -76,13 +76,11 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 # Do NOT touch other keys — each key has independent expiry in keys.expires_at.
                 await subs_repo.create_or_extend(int(payment["tg_id"]), months=tariff["months"])
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-                current_user = await users_repo.get_by_tg_id(int(payment["tg_id"]))
-                current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
-                await users_repo.set_traffic_limit(int(payment["tg_id"]), current_limit + base_limit)
+                # Atomic increment — prevents lost updates when two payments process concurrently.
+                await users_repo.add_traffic_limit(int(payment["tg_id"]), base_limit)
                 # Also accumulate per-key traffic limit for the specific renewed key.
                 if renew_key_id is not None and key_row:
-                    old_key_limit = int((key_row or {}).get("traffic_limit_gb") or 60)
-                    await keys_repo.update_traffic_limit(renew_key_id, int(payment["tg_id"]), old_key_limit + base_limit)
+                    await keys_repo.add_traffic_limit(renew_key_id, int(payment["tg_id"]), base_limit)
             else:
                 # New key: independent subscription — do NOT chain off the existing one.
                 # The per-key expiry is computed fresh in the outer handler and stored in keys.expires_at.
@@ -198,36 +196,49 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
         return
 
-    # New key: provision a fresh VPN key.
+    # New key: provision a fresh VPN key — wrapped in its own idempotency so that
+    # webhook retries don't create duplicate keys.
     link = ""
     sub_token = ""
+    vpn_idem_key = f"vpn-provision:{payment_info.invoice_payload}"
+    vpn_idem = IdempotencyService(IdempotencyRepository())
 
-    try:
-        access_user = await ensure_user_access(
+    async def _provision_vpn() -> dict:
+        au = await ensure_user_access(
             tg_id=tg_id,
             db=db,
             settings=settings,
             require_active=True,
-            idempotency_key=f"vpn-after-payment:{payment_info.invoice_payload}",
             force_new_key=True,
             action="create",
         )
-        link = str(access_user.get("vpn_key") or "")
-        sub_token = str(access_user.get("key_sub_token") or "")
-        # Store per-key expiry so each key has an independent timeline.
-        new_key_id = int(access_user.get("key_id") or 0)
-        if new_key_id:
+        provisioned_key_id = int(au.get("key_id") or 0)
+        if provisioned_key_id:
+            key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
             except Exception:
-                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:
-                key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-                await keys_repo.update_traffic_limit(new_key_id, tg_id, key_traffic_gb)
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
             except Exception:
-                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        return {
+            "vpn_key": str(au.get("vpn_key") or ""),
+            "key_sub_token": str(au.get("key_sub_token") or ""),
+            "key_id": provisioned_key_id,
+        }
+
+    try:
+        vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
+        link = vpn_result.get("vpn_key", "")
+        sub_token = vpn_result.get("key_sub_token", "")
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
+        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
+        return
+    except Exception:
+        logger.exception("VPN provisioning idempotency failed tg_id=%s", tg_id)
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
         return
 

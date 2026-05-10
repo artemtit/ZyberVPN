@@ -72,13 +72,10 @@ async def process_confirmed_platega_payment(
             if purchase_type == "renewal":
                 await subs_repo.create_or_extend(tg_id, months=tariff["months"])
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-                current_user = await users_repo.get_by_tg_id(tg_id)
-                current_limit = int((current_user or {}).get("traffic_limit_gb") or 0)
-                await users_repo.set_traffic_limit(tg_id, current_limit + base_limit)
+                # Atomic increment — prevents lost updates when two payments process concurrently.
+                await users_repo.add_traffic_limit(tg_id, base_limit)
                 if renew_key_id is not None:
-                    key_row = await keys_repo.get_by_id_for_user(renew_key_id, tg_id)
-                    old_limit = int((key_row or {}).get("traffic_limit_gb") or 60)
-                    await keys_repo.update_traffic_limit(renew_key_id, tg_id, old_limit + base_limit)
+                    await keys_repo.add_traffic_limit(renew_key_id, tg_id, base_limit)
             else:
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
                 await users_repo.set_traffic_limit(tg_id, base_limit)
@@ -155,12 +152,15 @@ async def process_confirmed_platega_payment(
             await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
         return
 
-    # New key: provision VPN access.
+    # New key: provision VPN access — wrapped in its own idempotency so that
+    # webhook retries don't create duplicate keys.
     link = ""
     sub_token = ""
-    new_key_id = 0
-    try:
-        access_user = await ensure_user_access(
+    vpn_idem_key = f"vpn-provision:{transaction_id}"
+    vpn_idem = IdempotencyService(IdempotencyRepository())
+
+    async def _provision_vpn() -> dict:
+        au = await ensure_user_access(
             tg_id=tg_id,
             db=db,
             settings=settings,
@@ -168,21 +168,33 @@ async def process_confirmed_platega_payment(
             force_new_key=True,
             action="create",
         )
-        link = str(access_user.get("vpn_key") or "")
-        sub_token = str(access_user.get("key_sub_token") or "")
-        new_key_id = int(access_user.get("key_id") or 0)
-        if new_key_id:
+        provisioned_key_id = int(au.get("key_id") or 0)
+        if provisioned_key_id:
+            key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                await keys_repo.update_expires_at(new_key_id, tg_id, expires_dt.isoformat())
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
             except Exception:
-                logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:
-                key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-                await keys_repo.update_traffic_limit(new_key_id, tg_id, key_traffic_gb)
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
             except Exception:
-                logger.warning("Platega: failed to store key traffic tg_id=%s key_id=%s", tg_id, new_key_id)
+                logger.warning("Platega: failed to store key traffic tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        return {
+            "vpn_key": str(au.get("vpn_key") or ""),
+            "key_sub_token": str(au.get("key_sub_token") or ""),
+            "key_id": provisioned_key_id,
+        }
+
+    try:
+        vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
+        link = vpn_result.get("vpn_key", "")
+        sub_token = vpn_result.get("key_sub_token", "")
     except AccessEnsureError:
         logger.exception("Platega: key provisioning failed tg_id=%s", tg_id)
+        await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
+        return
+    except Exception:
+        logger.exception("Platega: VPN provisioning idempotency failed tg_id=%s", tg_id)
         await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
         return
 

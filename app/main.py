@@ -75,8 +75,9 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
 
     async def metrics(request: web.Request) -> web.Response:
         # Require a secret token so metrics are not publicly accessible.
+        # If METRICS_TOKEN is not configured, deny all access rather than open it.
         expected = os.getenv("METRICS_TOKEN", "").strip()
-        if expected and request.headers.get("X-Metrics-Token", "") != expected:
+        if not expected or request.headers.get("X-Metrics-Token", "") != expected:
             return web.json_response({"error": "forbidden"}, status=403)
         manager = build_vpn_manager(request.app["db"], request.app["settings"])
         data = await manager.get_metrics()

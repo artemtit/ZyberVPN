@@ -75,6 +75,21 @@ class KeysRepository:
             operation="keys.update_traffic_limit",
         )
 
+    async def add_traffic_limit(self, key_id: int, tg_id: int, amount_gb: int) -> None:
+        """Atomically increment traffic_limit_gb to prevent lost updates on concurrent payments."""
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: self._supabase.rpc(
+                    "increment_key_traffic_limit",
+                    {"p_key_id": key_id, "p_tg_id": tg_id, "p_amount": amount_gb},
+                ).execute(),
+                operation="keys.add_traffic_limit",
+            )
+        except Exception:
+            logger.exception("Supabase add_traffic_limit failed key_id=%s", key_id)
+
     async def update_comment(self, key_id: int, tg_id: int, comment: str) -> None:
         if not self._supabase:
             return
@@ -90,18 +105,13 @@ class KeysRepository:
         )
 
     async def set_primary(self, tg_id: int, key_id: int) -> None:
-        """Mark key_id as primary and clear is_primary on all other keys for tg_id."""
+        """Mark key_id as primary and clear is_primary on all other keys for tg_id.
+
+        Set the new primary FIRST so there is always exactly one primary key visible
+        to concurrent readers, even between the two UPDATE statements.
+        """
         if not self._supabase:
             return
-        await execute_with_retry(
-            lambda: (
-                self._supabase.table("keys")
-                .update({"is_primary": False})
-                .eq("tg_id", tg_id)
-                .execute()
-            ),
-            operation="keys.set_primary.clear",
-        )
         await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
@@ -111,6 +121,16 @@ class KeysRepository:
                 .execute()
             ),
             operation="keys.set_primary.set",
+        )
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"is_primary": False})
+                .eq("tg_id", tg_id)
+                .neq("id", key_id)
+                .execute()
+            ),
+            operation="keys.set_primary.clear",
         )
 
     async def update_key_text(self, key_id: int, tg_id: int, key: str) -> None:
@@ -182,7 +202,7 @@ class KeysRepository:
 
     async def get_by_sub_token(self, token: str) -> Optional[dict]:
         """Lookup a key row by its sub_token. Returns None if not found."""
-        if not self._supabase or not token or len(token) < 20:
+        if not self._supabase or not token or len(token) < 32:
             return None
         try:
             response = await execute_with_retry(

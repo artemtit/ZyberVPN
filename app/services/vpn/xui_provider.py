@@ -85,6 +85,14 @@ class XUIProvider(VPNProvider):
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
                 existing_ws = self._find_existing_client_uuid(inbound, ws_email)
+                # WS client gets totalGB=0 (unlimited in XUI) because traffic enforcement
+                # sums Reality+WS and disables both clients via our 120-second loop.
+                # Setting a per-client limit in XUI would give the user 2× the intended allowance.
+                ws_limits = ClientLimits(
+                    limit_ip=limits.limit_ip,
+                    total_gb=0,
+                    expiry_time=limits.expiry_time,
+                )
                 if existing_ws and ws_uuid and existing_ws != ws_uuid:
                     logger.warning(
                         "WS UUID mismatch for email=%s: xui_has=%s expected=%s - updating in-place",
@@ -95,7 +103,7 @@ class XUIProvider(VPNProvider):
                     logger.info("xui ws client UUID updated user_id=%s server_id=%s", user_id, server.id)
                 elif not existing_ws:
                     final_ws_uuid = ws_uuid or str(uuid4())
-                    await self._add_client(session, server, final_ws_uuid, ws_email, limits)
+                    await self._add_client(session, server, final_ws_uuid, ws_email, ws_limits)
                     logger.info("xui ws client added user_id=%s server_id=%s", user_id, server.id)
                 else:
                     final_ws_uuid = existing_ws

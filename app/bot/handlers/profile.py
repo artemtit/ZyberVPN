@@ -43,8 +43,10 @@ WINDOW_SECONDS = 3600
 
 def _check_promo_rate_limit(tg_id: int) -> bool:
     now = time.time()
-    attempts = _promo_attempts.get(tg_id, [])
-    attempts = [stamp for stamp in attempts if now - stamp < WINDOW_SECONDS]
+    attempts = [t for t in _promo_attempts.get(tg_id, []) if now - t < WINDOW_SECONDS]
+    if not attempts:
+        # All previous timestamps are stale — remove the entry to prevent unbounded growth.
+        _promo_attempts.pop(tg_id, None)
     if len(attempts) >= MAX_ATTEMPTS:
         _promo_attempts[tg_id] = attempts
         return False

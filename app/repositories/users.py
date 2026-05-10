@@ -410,6 +410,20 @@ class UsersRepository:
         except Exception:
             logger.exception("Supabase set_traffic_limit failed tg_id=%s", tg_id)
 
+    async def add_traffic_limit(self, tg_id: int, amount_gb: int) -> None:
+        """Atomically increment traffic_limit_gb to prevent lost updates on concurrent payments."""
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: self._supabase.rpc(
+                    "increment_user_traffic_limit", {"p_tg_id": tg_id, "p_amount": amount_gb}
+                ).execute(),
+                operation="users.add_traffic_limit",
+            )
+        except Exception:
+            logger.exception("Supabase add_traffic_limit failed tg_id=%s", tg_id)
+
     async def is_trial_available(self, tg_id: int) -> bool:
         user = await self.get_by_tg_id(tg_id)
         if not user:
