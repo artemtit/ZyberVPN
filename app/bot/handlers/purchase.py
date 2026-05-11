@@ -268,31 +268,27 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     plan_months = max(1, int(plan["duration_days"]) // 30)
 
     if purchase_type == "renewal":
-        active_sub = await subs_repo.get_active(tg_id)
-        expires_dt = parse_iso_utc(active_sub["expires_at"]) if active_sub else add_months(activated_dt, plan_months)
+        # expires_dt computed below after fetching the specific key
+        expires_dt = add_months(activated_dt, plan_months)  # safe placeholder
     else:
-        # New key: fresh independent expiry from NOW.
-        # users.expires_at = MAX(current, new) so the watchdog doesn't deactivate
+        # New key: its OWN independent expiry from NOW (plan duration only).
+        # users.expires_at = MAX(new, current) so the watchdog doesn't deactivate
         # the user when a short-term key expires while longer keys remain active.
         new_key_expires_dt = add_months(activated_dt, plan_months)
         current_user_pre = await users_repo.get_by_tg_id(tg_id)
         current_raw = (current_user_pre or {}).get("expires_at")
         if current_raw:
             try:
-                current_dt = parse_iso_utc(current_raw)
-                expires_dt = max(new_key_expires_dt, current_dt)
+                expires_dt = max(new_key_expires_dt, parse_iso_utc(current_raw))
             except Exception:
                 expires_dt = new_key_expires_dt
         else:
             expires_dt = new_key_expires_dt
+        await users_repo.set_expiry(
+            tg_id, expires_at=expires_dt.isoformat(),
+            is_active=True, plan="monthly", last_activated_at=activated_dt.isoformat(),
+        )
 
-    await users_repo.set_expiry(
-        tg_id,
-        expires_at=expires_dt.isoformat(),
-        is_active=True,
-        plan="monthly",
-        last_activated_at=activated_dt.isoformat(),
-    )
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":
@@ -305,8 +301,26 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 reply_markup=get_main_menu_keyboard(),
             )
             return
+        # Fetch key BEFORE computing new expiry — key.expires_at is the pre-renewal value.
         renewed_key = await keys_repo.get_by_id_for_user(key_id_int, tg_id)
         key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
+
+        # Extend from the KEY's own current expiry, not from the global subscription.
+        key_expires_raw = (renewed_key or {}).get("expires_at")
+        if key_expires_raw:
+            try:
+                key_base = max(parse_iso_utc(key_expires_raw), activated_dt)
+            except Exception:
+                key_base = activated_dt
+        else:
+            key_base = activated_dt
+        expires_dt = add_months(key_base, plan_months)
+        expiry_ms = int(expires_dt.timestamp() * 1000)
+
+        await users_repo.set_expiry(
+            tg_id, expires_at=expires_dt.isoformat(),
+            is_active=True, plan="monthly", last_activated_at=activated_dt.isoformat(),
+        )
         try:
             manager = build_vpn_manager(db, settings, bot=callback.bot)
             await manager.renew_user_access(
@@ -359,7 +373,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         provisioned_key_id = int(vpn_result.get("key_id") or 0)
         if provisioned_key_id:
             try:
-                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+                # Use the plan's own duration, not the global MAX used for users.expires_at.
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_key_expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:

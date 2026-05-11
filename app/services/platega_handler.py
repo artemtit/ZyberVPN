@@ -102,12 +102,8 @@ async def process_confirmed_platega_payment(
         return
 
     if purchase_type == "renewal" and renew_key_id is not None:
-        active_sub = await subs_repo.get_active(tg_id)
-        expires_dt = (
-            parse_iso_utc(active_sub["expires_at"])
-            if active_sub and active_sub.get("expires_at")
-            else add_months(activated_dt, tariff["months"])
-        )
+        # expires_dt computed below after fetching the specific key
+        expires_dt = add_months(activated_dt, tariff["months"])  # safe placeholder
     else:
         new_exp = add_months(activated_dt, tariff["months"])
         current_raw = (user or {}).get("expires_at")
@@ -118,15 +114,11 @@ async def process_confirmed_platega_payment(
                 expires_dt = new_exp
         else:
             expires_dt = new_exp
-
-    if user:
-        await users_repo.set_expiry(
-            tg_id,
-            expires_at=expires_dt.isoformat(),
-            is_active=True,
-            plan="monthly",
-            last_activated_at=activated_at,
-        )
+        if user:
+            await users_repo.set_expiry(
+                tg_id, expires_at=expires_dt.isoformat(),
+                is_active=True, plan="monthly", last_activated_at=activated_at,
+            )
 
     expires_str = expires_dt.strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
@@ -138,6 +130,26 @@ async def process_confirmed_platega_payment(
             manager = build_vpn_manager(db, settings, bot=bot)
             renewed_key = await keys_repo.get_by_id_for_user(renew_key_id, tg_id)
             key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
+
+            # Extend from the KEY's own current expiry, not from the global subscription.
+            key_expires_raw = (renewed_key or {}).get("expires_at")
+            if key_expires_raw:
+                try:
+                    key_base = max(parse_iso_utc(key_expires_raw), activated_dt)
+                except Exception:
+                    key_base = activated_dt
+            else:
+                key_base = activated_dt
+            expires_dt = add_months(key_base, tariff["months"])
+            expiry_ms = int(expires_dt.timestamp() * 1000)
+            expires_str = expires_dt.strftime("%d.%m.%Y")
+            days_remaining = max(0, (expires_dt - utc_now()).days)
+
+            if user:
+                await users_repo.set_expiry(
+                    tg_id, expires_at=expires_dt.isoformat(),
+                    is_active=True, plan="monthly", last_activated_at=activated_at,
+                )
             await manager.renew_user_access(tg_id, expiry_ms, key_id=renew_key_id, traffic_limit_gb=key_traffic_gb)
             await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
         except Exception:
@@ -187,7 +199,8 @@ async def process_confirmed_platega_payment(
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+                # Use the plan's own duration, not the global MAX used for users.expires_at.
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_exp.isoformat())
             except Exception:
                 logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:

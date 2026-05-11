@@ -120,42 +120,32 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
 
     if purchase_type == "renewal":
-        # Renewal: expiry comes from the extended global subscription.
-        active_sub = await subs_repo.get_active(tg_id)
-        if active_sub:
-            expires_dt = parse_iso_utc(active_sub["expires_at"])
-        else:
-            expires_dt = add_months(activated_dt, tariff["months"])
+        # expires_dt computed below after fetching the specific key
+        expires_dt = add_months(activated_dt, tariff["months"])  # safe placeholder
     else:
-        # New key: fresh independent expiry from NOW.
-        # users.expires_at must be MAX(current, new) so the watchdog doesn't
-        # deactivate the user when a short-term key expires while longer keys remain.
+        # New key: its OWN independent expiry from NOW (plan duration only).
+        # users.expires_at = MAX(new, current) so the watchdog doesn't deactivate
+        # the user when a short-term key expires while longer keys remain active.
         new_key_expires_dt = add_months(activated_dt, tariff["months"])
-        current_raw = (user or {}).get("expires_at")  # reuse already-fetched user
+        current_raw = (user or {}).get("expires_at")
         if current_raw:
             try:
-                current_dt = parse_iso_utc(current_raw)
-                expires_dt = max(new_key_expires_dt, current_dt)
+                expires_dt = max(new_key_expires_dt, parse_iso_utc(current_raw))
             except Exception:
                 expires_dt = new_key_expires_dt
         else:
             expires_dt = new_key_expires_dt
-
-    if user:
-        await users_repo.set_expiry(
-            tg_id,
-            expires_at=expires_dt.isoformat(),
-            is_active=True,
-            plan="monthly",
-            last_activated_at=activated_at,
-        )
+        if user:
+            await users_repo.set_expiry(
+                tg_id, expires_at=expires_dt.isoformat(),
+                is_active=True, plan="monthly", last_activated_at=activated_at,
+            )
 
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal":
-        # Renewal: extend subscription only, update XUI expiry for the specific key.
         try:
             key_id_int = _require_renew_key_id(renew_key_id)
         except ValueError:
@@ -165,9 +155,30 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 reply_markup=get_main_menu_keyboard(),
             )
             return
-        # Read the updated per-key traffic limit (accumulated in _process_payment).
+        # Read the key BEFORE computing new expiry — key.expires_at is the pre-renewal value.
         renewed_key = await keys_repo.get_by_id_for_user(key_id_int, tg_id)
         per_key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
+
+        # Compute true new expiry: extend from the KEY's own current expiry, not from
+        # the global subscription (which can be out of sync with this specific key).
+        key_expires_raw = (renewed_key or {}).get("expires_at")
+        if key_expires_raw:
+            try:
+                key_base = max(parse_iso_utc(key_expires_raw), activated_dt)
+            except Exception:
+                key_base = activated_dt
+        else:
+            key_base = activated_dt
+        expires_dt = add_months(key_base, tariff["months"])
+        expiry_ms = int(expires_dt.timestamp() * 1000)
+        expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+        days_remaining = max(0, (expires_dt - utc_now()).days)
+
+        if user:
+            await users_repo.set_expiry(
+                tg_id, expires_at=expires_dt.isoformat(),
+                is_active=True, plan="monthly", last_activated_at=activated_at,
+            )
         try:
             manager = build_vpn_manager(db, settings, bot=message.bot)
             await manager.renew_user_access(
@@ -229,7 +240,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+                # Use the plan's own duration, not the global MAX used for users.expires_at.
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_key_expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
             try:
