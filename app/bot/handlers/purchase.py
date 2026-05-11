@@ -236,8 +236,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 if renew_key_id is not None:
                     await keys_repo.add_traffic_limit(int(renew_key_id), int(payment["tg_id"]), base_limit)
             else:
-                # New key: independent subscription — do NOT chain off the existing one.
-                await users_repo.set_traffic_limit(int(payment["tg_id"]), base_limit)
+                # New key: accumulate rather than overwrite — user may have other keys.
+                await users_repo.add_traffic_limit(int(payment["tg_id"]), base_limit)
         return {
             "tg_id": int(payment["tg_id"]),
             "amount": int(payment["amount"]),
@@ -333,15 +333,6 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             action="create",
         )
         provisioned_key_id = int(au.get("key_id") or 0)
-        if provisioned_key_id:
-            try:
-                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
-            try:
-                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan["traffic_gb"]))
-            except Exception:
-                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
         return {
             "vpn_key": str(au.get("vpn_key") or ""),
             "key_sub_token": str(au.get("key_sub_token") or ""),
@@ -352,6 +343,16 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
+        provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        if provisioned_key_id:
+            try:
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+            try:
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan["traffic_gb"]))
+            except Exception:
+                logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
     except AccessEnsureError:
         logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
     except Exception:

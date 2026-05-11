@@ -23,15 +23,14 @@ logger = logging.getLogger(__name__)
 async def platega_webhook(request: web.Request) -> web.Response:
     settings = request.app["settings"]
 
-    # URL-based secret check (set PLATEGA_WEBHOOK_SECRET env var).
+    # URL-based secret check (PLATEGA_WEBHOOK_SECRET must be set; deny all when missing).
     expected_secret = getattr(settings, "platega_webhook_secret", "")
-    if expected_secret:
-        incoming_secret = request.query.get("secret", "")
-        if incoming_secret != expected_secret:
-            logger.warning(
-                "Platega webhook: invalid secret from ip=%s", request.remote
-            )
-            return web.json_response({"ok": False, "error": "forbidden"}, status=403)
+    incoming_secret = request.query.get("secret", "")
+    if not expected_secret or incoming_secret != expected_secret:
+        logger.warning(
+            "Platega webhook: invalid or missing secret from ip=%s", request.remote
+        )
+        return web.json_response({"ok": False, "error": "forbidden"}, status=403)
 
     try:
         body = await request.json()

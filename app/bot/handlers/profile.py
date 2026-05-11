@@ -326,6 +326,11 @@ async def _apply_promo(
     activated_at = utc_now().isoformat()
 
     async def _activate() -> dict:
+        # Re-check promo_used inside idempotency to guard against concurrent double-activation.
+        current_user = await users_repo.get_by_tg_id(tg_id)
+        if current_user and bool(current_user.get("promo_used")):
+            return {"expires_at": str(current_user.get("expires_at") or "")}
+
         subscription = await subs_repo.create_or_extend_days(tg_id=tg_id, days=days)
         expires_at = str(subscription.get("expires_at") or "")
         if not expires_at:
@@ -339,23 +344,30 @@ async def _apply_promo(
             promo_used=True,
             last_activated_at=activated_at,
         )
-        if updated:
-            return {"expires_at": expires_at}
+        if not updated:
+            await users_repo.get_or_create(tg_id)
+            sub_token_val = await users_repo.ensure_sub_token(tg_id)
+            created = await users_repo.create(
+                tg_id=tg_id,
+                vpn_key="",
+                sub_token=sub_token_val,
+                expires_at=expires_at,
+                is_active=True,
+                plan="promo",
+                last_activated_at=activated_at,
+            )
+            if not created:
+                raise RuntimeError("promo activation failed")
+            await users_repo.update_promo_used(tg_id, True)
 
-        await users_repo.get_or_create(tg_id)
-        sub_token = await users_repo.ensure_sub_token(tg_id)
-        created = await users_repo.create(
-            tg_id=tg_id,
-            vpn_key="",
-            sub_token=sub_token,
-            expires_at=expires_at,
-            is_active=True,
-            plan="promo",
-            last_activated_at=activated_at,
-        )
-        if not created:
-            raise RuntimeError("promo activation failed")
-        await users_repo.update_promo_used(tg_id, True)
+        # Increment usage inside idempotency so retries don't double-count.
+        usage = await promo_repo.increment_usage(code)
+        if usage:
+            max_uses = usage.get("max_uses")
+            used_count = int(usage.get("used_count") or 0)
+            if max_uses is not None and used_count >= int(max_uses):
+                await promo_repo.deactivate(code)
+
         return {"expires_at": expires_at}
 
     try:
@@ -366,38 +378,11 @@ async def _apply_promo(
         await reply("Promo activation failed, please try again later")
         return
 
-    usage = await promo_repo.increment_usage(code)
-    if usage:
-        max_uses = usage.get("max_uses")
-        used_count = int(usage.get("used_count") or 0)
-        if max_uses is not None and used_count >= int(max_uses):
-            await promo_repo.deactivate(code)
-
     await state.clear()
     expires_raw = str((result or {}).get("expires_at") or "")
     expires_dt = parse_iso_utc(expires_raw) if expires_raw else utc_now() + timedelta(days=days)
-
-    try:
-        access_user = await ensure_user_access(
-            tg_id=tg_id,
-            db=db,
-            settings=settings,
-            require_active=True,
-            force_new_key=(apply_mode == "new"),
-            action="create" if apply_mode == "new" else "existing",
-        )
-    except AccessEnsureError:
-        logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
-        if apply_mode == "active":
-            await reply(_promo_success_text(expires_dt, include_status=False) + "Подписка продлена.")
-        else:
-            await reply(
-                _promo_success_text(expires_dt)
-                + "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
-            )
-        return
-
     expiry_ms = int(expires_dt.timestamp() * 1000)
+
     if apply_mode == "active":
         try:
             manager = build_vpn_manager(db, settings)
@@ -410,12 +395,48 @@ async def _apply_promo(
                 await manager.update_user_expiry(tg_id, expiry_ms, key_id=int(key_id), traffic_limit_gb=key_traffic_gb)
         except Exception:
             logger.exception("Failed to update XUI expiry after promo tg_id=%s", tg_id)
-
-    if apply_mode == "active":
         await reply(_promo_success_text(expires_dt, include_status=False) + "Подписка продлена.")
         return
 
-    sub_token = str((access_user or {}).get("key_sub_token") or "")
+    # apply_mode == "new": provision VPN key wrapped in its own idempotency to prevent
+    # duplicate key creation if the callback fires twice (double-tap, Telegram retry).
+    vpn_idem_key = f"vpn-provision:promo:{tg_id}:{code.lower()}"
+    vpn_idem = IdempotencyService(IdempotencyRepository())
+
+    async def _provision_promo_vpn() -> dict:
+        au = await ensure_user_access(
+            tg_id=tg_id,
+            db=db,
+            settings=settings,
+            require_active=True,
+            force_new_key=True,
+            action="create",
+        )
+        return {
+            "vpn_key": str(au.get("vpn_key") or ""),
+            "key_sub_token": str(au.get("key_sub_token") or ""),
+            "key_id": int(au.get("key_id") or 0),
+        }
+
+    sub_token = ""
+    try:
+        vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_promo_vpn)
+        sub_token = str(vpn_result.get("key_sub_token") or "")
+    except AccessEnsureError:
+        logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
+        await reply(
+            _promo_success_text(expires_dt)
+            + "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+        )
+        return
+    except Exception:
+        logger.exception("Promo VPN provisioning idempotency failed tg_id=%s", tg_id)
+        await reply(
+            _promo_success_text(expires_dt)
+            + "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+        )
+        return
+
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
     if sub_url:
         await reply(

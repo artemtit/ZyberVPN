@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -89,12 +90,11 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     active_users = await users_repo.count_active()
     total_revenue = await payments_repo.total_revenue()
 
-    # Count total keys across all users (rough: list active tg_ids and sum)
+    # Count total keys across active users — parallelised to avoid sequential latency.
     active_ids = await users_repo.list_active_tg_ids()
-    total_keys = 0
-    for tid in active_ids[:100]:  # cap to avoid flooding Supabase
-        ks = await keys_repo.list_by_user(tid)
-        total_keys += len(ks)
+    capped = active_ids[:100]
+    key_lists = await asyncio.gather(*[keys_repo.list_by_user(tid) for tid in capped])
+    total_keys = sum(len(ks) for ks in key_lists)
     keys_label = f"{total_keys}+" if len(active_ids) > 100 else str(total_keys)
 
     await message.answer(
@@ -208,8 +208,15 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, db: Data
         try:
             await callback.bot.send_message(tg_id, text)
             sent += 1
-        except Exception:
-            failed += 1
+        except Exception as exc:
+            if "can't parse" in str(exc).lower():
+                try:
+                    await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
+                    sent += 1
+                except Exception:
+                    failed += 1
+            else:
+                failed += 1
         await asyncio.sleep(0.05)
 
     await callback.message.answer(f"✅ Рассылка завершена: {sent} отправлено, {failed} ошибок.")
@@ -254,6 +261,7 @@ async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
         await message.answer(f"⚠️ XUI отключение не удалось для {target_id}, но БД будет обновлена.")
 
     await users_repo.update_status(target_id, False)
+    await users_repo.set_banned(target_id, True)
     _BANNED_IDS.add(target_id)
     logger.warning("ADMIN BAN | admin=%s target=%s", message.from_user.id, target_id)
 
@@ -291,6 +299,7 @@ async def admin_unban(message: Message, db: Database, settings: Settings) -> Non
 
     # Re-enable account in DB — new key is NOT created automatically.
     await users_repo.update_status(target_id, True)
+    await users_repo.set_banned(target_id, False)
     _BANNED_IDS.discard(target_id)
     logger.warning("ADMIN UNBAN | admin=%s target=%s", message.from_user.id, target_id)
     await message.answer(
@@ -391,8 +400,15 @@ async def broadcastall_confirm(callback: CallbackQuery, state: FSMContext, db: D
         try:
             await callback.bot.send_message(tg_id, text)
             sent += 1
-        except Exception:
-            failed += 1
+        except Exception as exc:
+            if "can't parse" in str(exc).lower():
+                try:
+                    await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
+                    sent += 1
+                except Exception:
+                    failed += 1
+            else:
+                failed += 1
         await asyncio.sleep(0.05)
 
     await callback.message.answer(

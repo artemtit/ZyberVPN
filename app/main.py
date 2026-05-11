@@ -274,6 +274,16 @@ async def run() -> None:
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
 
+    # Restore banned-user set from DB so bans survive bot restarts.
+    try:
+        _ban_repo = UsersRepository(db)
+        banned_ids = await _ban_repo.list_banned_tg_ids()
+        BANNED_IDS.update(banned_ids)
+        if banned_ids:
+            logging.info("Loaded %d banned user IDs from DB", len(banned_ids))
+    except Exception:
+        logging.exception("Failed to load banned IDs from DB on startup")
+
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await dp.start_polling(bot)

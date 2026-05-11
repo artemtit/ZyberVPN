@@ -78,7 +78,7 @@ async def process_confirmed_platega_payment(
                     await keys_repo.add_traffic_limit(renew_key_id, tg_id, base_limit)
             else:
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-                await users_repo.set_traffic_limit(tg_id, base_limit)
+                await users_repo.add_traffic_limit(tg_id, base_limit)
         return {
             "tg_id": tg_id,
             "tariff_code": tariff_code,
@@ -103,7 +103,11 @@ async def process_confirmed_platega_payment(
 
     if purchase_type == "renewal" and renew_key_id is not None:
         active_sub = await subs_repo.get_active(tg_id)
-        expires_dt = parse_iso_utc(active_sub["expires_at"]) if active_sub else add_months(activated_dt, tariff["months"])
+        expires_dt = (
+            parse_iso_utc(active_sub["expires_at"])
+            if active_sub and active_sub.get("expires_at")
+            else add_months(activated_dt, tariff["months"])
+        )
     else:
         new_exp = add_months(activated_dt, tariff["months"])
         current_raw = (user or {}).get("expires_at")
@@ -169,16 +173,6 @@ async def process_confirmed_platega_payment(
             action="create",
         )
         provisioned_key_id = int(au.get("key_id") or 0)
-        if provisioned_key_id:
-            key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
-            try:
-                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
-            try:
-                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
-            except Exception:
-                logger.warning("Platega: failed to store key traffic tg_id=%s key_id=%s", tg_id, provisioned_key_id)
         return {
             "vpn_key": str(au.get("vpn_key") or ""),
             "key_sub_token": str(au.get("key_sub_token") or ""),
@@ -189,6 +183,17 @@ async def process_confirmed_platega_payment(
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
+        provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        if provisioned_key_id:
+            key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+            try:
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+            try:
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
+            except Exception:
+                logger.warning("Platega: failed to store key traffic tg_id=%s key_id=%s", tg_id, provisioned_key_id)
     except AccessEnsureError:
         logger.exception("Platega: key provisioning failed tg_id=%s", tg_id)
         await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")

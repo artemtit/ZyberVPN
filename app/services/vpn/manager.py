@@ -488,9 +488,14 @@ class VPNManager:
             row_updated = False
             for uuid in filter(None, [reality_uuid, ws_uuid]):
                 try:
+                    # WS client was created with totalGB=0 (unlimited in XUI) so XUI
+                    # does not independently enforce it; our 120 s loop handles combined
+                    # Reality+WS usage.  Pass None for WS so renewal never sets a limit
+                    # on the WS client, which would re-introduce the double-limit bug.
+                    is_ws = bool(ws_uuid) and uuid == ws_uuid
                     ok = await provider.update_client_expiry(
                         server, uuid, expiry_time_ms,
-                        total_gb=effective_traffic_limit_gb if effective_traffic_limit_gb > 0 else None,
+                        total_gb=None if is_ws else (effective_traffic_limit_gb if effective_traffic_limit_gb > 0 else None),
                     )
                     if ok:
                         updated = True

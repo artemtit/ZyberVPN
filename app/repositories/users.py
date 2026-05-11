@@ -410,6 +410,41 @@ class UsersRepository:
         except Exception:
             logger.exception("Supabase set_traffic_limit failed tg_id=%s", tg_id)
 
+    async def set_banned(self, tg_id: int, is_banned: bool) -> None:
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"is_banned": is_banned})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.set_banned",
+            )
+        except Exception:
+            logger.exception("Supabase set_banned failed tg_id=%s", tg_id)
+
+    async def list_banned_tg_ids(self) -> list[int]:
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select("tg_id")
+                    .eq("is_banned", True)
+                    .execute()
+                ),
+                operation="users.list_banned_tg_ids",
+            )
+            rows = response.data or []
+            return [int(r["tg_id"]) for r in rows if isinstance(r, dict) and r.get("tg_id") is not None]
+        except Exception:
+            logger.exception("Supabase list_banned_tg_ids failed")
+            return []
+
     async def add_traffic_limit(self, tg_id: int, amount_gb: int) -> None:
         """Atomically increment traffic_limit_gb to prevent lost updates on concurrent payments."""
         if not self._supabase:
