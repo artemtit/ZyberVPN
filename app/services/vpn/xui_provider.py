@@ -46,6 +46,10 @@ class XUIProvider(VPNProvider):
     def __init__(self, timeout_seconds: int = 5, retries: int = 3) -> None:
         self._timeout = ClientTimeout(total=timeout_seconds)
         self._retries = min(3, max(1, retries))
+        # Maps id(ClientSession) → CSRF token fetched during _login.
+        # Used to include X-CSRF-Token in all subsequent POST requests
+        # (3x-ui v3 requires it on all API endpoints, not only /login).
+        self._session_csrf: dict[int, str] = {}
 
     async def create_client(
         self,
@@ -260,6 +264,12 @@ class XUIProvider(VPNProvider):
         return ClientSession(timeout=self._timeout, cookie_jar=CookieJar(unsafe=True))
 
     async def _request_json(self, session: ClientSession, method: str, url: str, **kwargs) -> dict | list:
+        if method.lower() == "post":
+            csrf = self._session_csrf.get(id(session), "")
+            if csrf:
+                existing = dict(kwargs.pop("headers", {}))
+                existing.setdefault("X-CSRF-Token", csrf)
+                kwargs["headers"] = existing
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
             try:
@@ -284,6 +294,7 @@ class XUIProvider(VPNProvider):
         headers = {}
         if csrf_token:
             headers["X-CSRF-Token"] = csrf_token
+            self._session_csrf[id(session)] = csrf_token
 
         async with session.post(
             url,
