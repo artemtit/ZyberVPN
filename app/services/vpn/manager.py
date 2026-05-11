@@ -584,8 +584,13 @@ class VPNManager:
         all_servers = await self._servers_repo.list_all()
         counts = await self._user_vpn_repo.count_users_by_server()
         candidates = pick_server(all_servers, counts, self._settings.vpn_circuit_break_minutes)
+        active_count = sum(1 for s in all_servers if s.is_active)
         if not candidates:
-            raise VPNManagerError("No healthy VPN servers available")
+            if active_count == 0:
+                raise VPNManagerError("No active VPN servers configured — all servers are disabled")
+            raise VPNManagerError(
+                f"No healthy VPN servers available (active={active_count}, all unhealthy or at capacity)"
+            )
 
         provider = self._providers.get("xui")
         if provider is None:
@@ -598,6 +603,16 @@ class VPNManager:
         )
         last_error: Exception | None = None
         for server in candidates:
+            if not server.is_active:
+                logger.error(
+                    "GUARD: inactive server reached provisioning user_id=%s server_id=%s name=%s — skipping",
+                    user_id, server.id, server.name,
+                )
+                continue
+            logger.info(
+                "server assigned user_id=%s server_id=%s name=%s country=%s",
+                user_id, server.id, server.name, server.country,
+            )
             try:
                 result = await provider.create_client(user_id, server, limits, key_id=key_id)
                 await self._save_access(
