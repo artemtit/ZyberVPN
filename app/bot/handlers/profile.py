@@ -110,7 +110,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
             total_seconds = max(0, int(delta.total_seconds()))
             days_left = total_seconds // 86400
             hours_left = (total_seconds % 86400) // 3600
-            months_count = max(1, (days_left + 29) // 30)
+            months_count = max(1, days_left // 30)
         except Exception:
             pass
 
