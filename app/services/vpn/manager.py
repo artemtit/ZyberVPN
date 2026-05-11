@@ -212,6 +212,15 @@ class VPNManager:
             return
         healthy = 0
         for server in servers:
+            # Servers that were manually disabled (is_active=False, health_errors=0)
+            # must never be auto-enabled by the health loop. Only health failures
+            # (health_errors > 0) are eligible for auto-recovery.
+            if not server.is_active and server.health_errors == 0:
+                logger.info(
+                    "server_id=%s name=%s is manually disabled — skipping health check",
+                    server.id, server.name,
+                )
+                continue
             ok = await provider.is_healthy(server)
             new_errors = 0 if ok else server.health_errors + 1
             await self._servers_repo.update_health(
