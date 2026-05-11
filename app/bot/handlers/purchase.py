@@ -21,7 +21,9 @@ from app.services.payments import generate_payload
 from app.services.plans import get_plan_by_id, get_plan_by_tariff_code
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
-from app.utils.datetime import add_months, parse_iso_utc, utc_now
+from html import escape
+
+from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 
 try:
     from app.services.platega import PlategaClient, PlategaError
@@ -316,7 +318,16 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
         except Exception:
             logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
-        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Подписка продлена.", reply_markup=get_main_menu_keyboard())
+        expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+        days_remaining = max(0, (expires_dt - utc_now()).days)
+        key_label = f" ключа #{key_id_int}"
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            f"🔄 <b>Продление{key_label}</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            "📊 Статус: <b>Активна</b>"
+        )
+        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
         await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
         return
 
@@ -362,16 +373,31 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     await referral_service.accrue_bonus(user, int(processed["amount"]))
-    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
+    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
     if link and sub_url:
-        await callback.message.answer(
-            f"✅ Тестовая СБП-оплата проведена.\n\nСсылка:\n<code>{sub_url}</code>",
-            reply_markup=payment_success_keyboard(sub_url),
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            "📊 Статус: <b>Активна</b>\n\n"
+            "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{sub_url}</code>\n\n"
+            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
+            "или «Показать QR» для сканирования."
         )
+        await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url))
     else:
-        await callback.message.answer("✅ Тестовая СБП-оплата проведена. Ключ создаётся.", reply_markup=get_main_menu_keyboard())
+        text = (
+            "✅ <b>Оплата прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
+            "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+        )
+        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
     await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
-    await callback.answer("Тестовая СБП-оплата успешно проведена", show_alert=True)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "pay:stars")

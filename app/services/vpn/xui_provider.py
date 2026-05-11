@@ -687,13 +687,10 @@ class XUIProvider(VPNProvider):
         ]
         for url in candidates:
             try:
-                async with session.post(url, timeout=ClientTimeout(total=8)) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json(content_type=None)
-                    if isinstance(data, dict) and data.get("success") is True:
-                        logger.info("xui xray reloaded via API url=%s server_id=%s", url, server.id)
-                        return True
+                data = await self._request_json(session, "post", url)
+                if isinstance(data, dict) and data.get("success") is True:
+                    logger.info("xui xray reloaded via API url=%s server_id=%s", url, server.id)
+                    return True
             except Exception:
                 continue
         return False
