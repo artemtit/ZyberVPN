@@ -263,17 +263,46 @@ class XUIProvider(VPNProvider):
     async def _login(self, session: ClientSession, server: ServerInfo) -> None:
         url = f"{server.api_url}/login"
 
+        # 3x-ui v3 requires a CSRF token fetched from the login page before posting.
+        # Older versions return 200+JSON directly; v3 returns 403 without the token.
+        csrf_token = await self._get_csrf_token(session, server)
+
+        headers = {}
+        if csrf_token:
+            headers["X-CSRF-Token"] = csrf_token
+
         async with session.post(
             url,
             json={
                 "username": server.username,
                 "password": server.password,
             },
+            headers=headers,
         ) as resp:
-            payload = await resp.json()
+            if resp.status == 403 and not csrf_token:
+                raise XUIProviderError("Login rejected (403) — CSRF token missing or invalid")
+            payload = await resp.json(content_type=None)
 
         if isinstance(payload, dict) and payload.get("success") is False:
             raise XUIProviderError(str(payload.get("msg") or "login rejected"))
+
+    async def _get_csrf_token(self, session: ClientSession, server: ServerInfo) -> str:
+        """Fetch the CSRF token from the panel root page (3x-ui v3+).
+
+        Returns empty string for older versions that don't use CSRF.
+        """
+        try:
+            async with session.get(server.api_url, timeout=ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return ""
+                html = await resp.text(errors="ignore")
+            import re
+            m = re.search(r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', html)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return ""
 
     async def _get_inbound(self, session: ClientSession, server: ServerInfo) -> dict:
         url = f"{server.api_url}/panel/api/inbounds/list"
