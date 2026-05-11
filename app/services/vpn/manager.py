@@ -38,6 +38,13 @@ def pick_server(servers: list[ServerInfo], user_counts: dict[int, int], block_mi
     now = utc_now()
     candidates: list[ServerInfo] = []
     for server in active:
+        # Exclude servers at max capacity (max_users=0 means unlimited).
+        if server.max_users > 0 and user_counts.get(server.id, 0) >= server.max_users:
+            logger.info(
+                "server_id=%s excluded: at capacity %s/%s",
+                server.id, user_counts.get(server.id, 0), server.max_users,
+            )
+            continue
         if server.health_errors < 3:
             candidates.append(server)
             continue
@@ -206,6 +213,7 @@ class VPNManager:
         healthy = 0
         for server in servers:
             ok = await provider.is_healthy(server)
+            new_errors = 0 if ok else server.health_errors + 1
             await self._servers_repo.update_health(
                 server.id,
                 is_active=ok,
@@ -214,10 +222,38 @@ class VPNManager:
             )
             logger.info(
                 "server health result server_id=%s name=%s ok=%s health_errors=%s",
-                server.id, server.name, ok, 0 if ok else server.health_errors + 1,
+                server.id, server.name, ok, new_errors,
             )
             if ok:
                 healthy += 1
+            # Alert admin when a server first crosses the unhealthy threshold (errors==3).
+            if not ok and server.health_errors == 2 and self._bot is not None:
+                from app.config import load_settings
+                _settings = self._settings
+                for admin_id in (_settings.admin_ids or []):
+                    try:
+                        await self._bot.send_message(
+                            admin_id,
+                            f"🔴 <b>VPN сервер недоступен!</b>\n\n"
+                            f"Сервер: <b>{server.name}</b> ({server.country})\n"
+                            f"IP: <code>{server.host}</code>\n"
+                            f"Ошибок подряд: {new_errors}\n\n"
+                            f"Новые пользователи переключены на другие серверы.",
+                        )
+                    except Exception:
+                        pass
+            # Alert admin when server recovers.
+            if ok and server.health_errors >= 3 and self._bot is not None:
+                for admin_id in (self._settings.admin_ids or []):
+                    try:
+                        await self._bot.send_message(
+                            admin_id,
+                            f"🟢 <b>VPN сервер восстановлен</b>\n\n"
+                            f"Сервер: <b>{server.name}</b> ({server.country})\n"
+                            f"IP: <code>{server.host}</code>",
+                        )
+                    except Exception:
+                        pass
         logger.info("health check done healthy=%s unhealthy=%s total=%s", healthy, len(servers) - healthy, len(servers))
 
     async def get_metrics(self) -> dict:
@@ -404,6 +440,8 @@ class VPNManager:
     async def enforce_all_users(self) -> list[int]:
         """Check traffic limits for all ready (user_id, key_id) rows.
 
+        Runs checks concurrently (up to 8 at a time) to keep the 120 s loop
+        comfortably within budget even at 100+ users.
         Returns list of user_ids where at least one key was disabled.
         """
         try:
@@ -413,19 +451,25 @@ class VPNManager:
             return []
 
         logger.info("enforce_all_users: checking %s vpn rows", len(vpn_rows))
-        disabled_users: set[int] = set()
-        for row in vpn_rows:
-            user_id = row["user_id"]
+
+        sem = asyncio.Semaphore(8)
+
+        async def _check(row: dict) -> tuple[int, bool]:
+            user_id = int(row["user_id"])
             key_id = row.get("key_id")
-            try:
-                if await self.enforce_traffic_limit(user_id, key_id=key_id):
-                    disabled_users.add(user_id)
-            except Exception:
-                logger.exception(
-                    "enforce_traffic_limit unexpected error user_id=%s key_id=%s",
-                    user_id, key_id,
-                )
-        return list(disabled_users)
+            async with sem:
+                try:
+                    disabled = await self.enforce_traffic_limit(user_id, key_id=key_id)
+                    return user_id, disabled
+                except Exception:
+                    logger.exception(
+                        "enforce_traffic_limit unexpected error user_id=%s key_id=%s",
+                        user_id, key_id,
+                    )
+                    return user_id, False
+
+        results = await asyncio.gather(*[_check(row) for row in vpn_rows])
+        return list({uid for uid, disabled in results if disabled})
 
     async def renew_user_access(
         self,

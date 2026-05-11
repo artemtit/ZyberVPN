@@ -370,7 +370,7 @@ class UserVpnRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("user_vpn")
-                    .select("user_id,key_id")
+                    .select("user_id,key_id,server_id")
                     .eq("status", "ready")
                     .not_.is_("key_id", "null")
                     .execute()
@@ -389,7 +389,11 @@ class UserVpnRepository:
                 # Skip secondary server slots
                 if int(key_id) >= 9_000_000_000:
                     continue
-                result.append({"user_id": int(user_id), "key_id": int(key_id)})
+                result.append({
+                    "user_id": int(user_id),
+                    "key_id": int(key_id),
+                    "server_id": int(row.get("server_id") or 0),
+                })
             return result
         except Exception:
             logger.exception("list_ready_vpn_rows failed")

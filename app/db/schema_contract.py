@@ -19,4 +19,5 @@ SERVER_COLUMNS = [
     "last_health_check",
     "health_errors",
     "last_error",
+    # "max_users",  # add after running: ALTER TABLE servers ADD COLUMN IF NOT EXISTS max_users integer DEFAULT 0;
 ]

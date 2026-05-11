@@ -46,6 +46,7 @@ class ServerInfo:
     ws_host: str = ""
     last_health_check: datetime | None = None
     health_errors: int = 0
+    max_users: int = 0  # 0 = unlimited
 
 
 class VPNProvider(Protocol):

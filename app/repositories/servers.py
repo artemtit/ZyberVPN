@@ -144,4 +144,5 @@ class ServersRepository:
             ws_host=str(row.get("ws_host") or ""),
             last_health_check=last_check,
             health_errors=int(row.get("health_errors") or 0),
+            max_users=int(row.get("max_users") or 0),
         )

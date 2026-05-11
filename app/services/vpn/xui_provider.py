@@ -7,11 +7,25 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import time
+
 from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar
 
 from app.services.vpn.base import ClientLimits, CreateClientResult, ServerInfo, VPNProvider, VpnProfile
 
 logger = logging.getLogger(__name__)
+
+# Per-server reload lock + debounce: prevents concurrent Xray reload storms.
+# Without this, 5 simultaneous purchases trigger 5 reloads on the same server.
+_RELOAD_LOCKS: dict[int, asyncio.Lock] = {}
+_LAST_RELOAD_TS: dict[int, float] = {}
+_RELOAD_DEBOUNCE_S = 2.0  # skip reload if one completed within this window
+
+
+def _reload_lock(server_id: int) -> asyncio.Lock:
+    if server_id not in _RELOAD_LOCKS:
+        _RELOAD_LOCKS[server_id] = asyncio.Lock()
+    return _RELOAD_LOCKS[server_id]
 
 
 class XUIProviderError(RuntimeError):
@@ -632,10 +646,26 @@ class XUIProvider(VPNProvider):
         logger.info("xui client verified after retry server_id=%s uuid=%s", server.id, client_uuid)
 
     async def _reload_xray(self, session: ClientSession, server: ServerInfo) -> None:
-        """Reload xray runtime config via the 3x-ui panel API."""
-        if await self._try_api_reload(session, server):
-            await asyncio.sleep(1.5)
-            return
+        """Reload xray runtime config, debounced per server.
+
+        Concurrent callers for the same server serialize through a lock.
+        If a reload completed within _RELOAD_DEBOUNCE_S seconds, the reload
+        is skipped — the earlier reload already picked up the change.
+        """
+        lock = _reload_lock(server.id)
+        async with lock:
+            now = time.monotonic()
+            last = _LAST_RELOAD_TS.get(server.id, 0.0)
+            if now - last < _RELOAD_DEBOUNCE_S:
+                logger.debug(
+                    "xray reload skipped (debounce) server_id=%s elapsed=%.2fs",
+                    server.id, now - last,
+                )
+                return
+            if await self._try_api_reload(session, server):
+                _LAST_RELOAD_TS[server.id] = time.monotonic()
+                await asyncio.sleep(1.5)
+                return
         raise XUIProviderError(f"xray reload failed: API reload rejected server_id={server.id}")
 
     async def _try_api_reload(self, session: ClientSession, server: ServerInfo) -> bool:
