@@ -87,13 +87,15 @@ def email_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool = False) -> InlineKeyboardMarkup:
+def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool = False, show_test_pay: bool = False) -> InlineKeyboardMarkup:
     rows = []
     if platega_enabled:
         rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega")])
     if platega_crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
     rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars")])
+    if show_test_pay:
+        rows.append([InlineKeyboardButton(text="🧪 Тестовая оплата [Admin]", callback_data="pay:sbp")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

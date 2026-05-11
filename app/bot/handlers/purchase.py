@@ -142,9 +142,10 @@ async def input_email(message: Message, state: FSMContext, settings: Settings) -
         return
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    is_admin = message.from_user.id in settings.admin_ids
     await message.answer(
         f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
     )
 
 
@@ -159,9 +160,10 @@ async def skip_email(callback: CallbackQuery, state: FSMContext, settings: Setti
     await state.set_state(PurchaseState.waiting_payment)
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    is_admin = callback.from_user.id in settings.admin_ids
     await callback.message.edit_text(
         f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
     )
     await callback.answer()
 
@@ -171,8 +173,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     if callback.data != "pay:sbp":
         await callback.answer("Метод временно недоступен", show_alert=True)
         return
-    if not (settings.test_mode and callback.from_user.id in settings.admin_ids):
-        await callback.answer("СБП пока недоступен", show_alert=True)
+    if callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Только для администраторов", show_alert=True)
         return
 
     data = await state.get_data()
@@ -469,13 +471,14 @@ async def payment_select_back(callback: CallbackQuery, state: FSMContext, settin
 
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    is_admin = callback.from_user.id in settings.admin_ids
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.message.answer(
         f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on),
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
     )
     await callback.answer()
 
