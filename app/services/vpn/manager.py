@@ -383,9 +383,10 @@ class VPNManager:
             limit_bytes = xui_total_bytes
             traffic_limit_gb = xui_total_bytes // (1024 ** 3) or 1
         else:
-            # XUI client has no limit set — fall back to global users field.
-            user = await self._users_repo.get_by_tg_id(user_id) if self._users_repo else None
-            traffic_limit_gb = int((user or {}).get("traffic_limit_gb") or 60)
+            # XUI client has no limit set — use per-setting default.
+            # Do NOT fall back to users.traffic_limit_gb: it accumulates across
+            # all purchases and would conflate limits from different keys.
+            traffic_limit_gb = self._settings.vpn_total_gb
             limit_bytes = traffic_limit_gb * 1024 ** 3
 
         if bytes_used < limit_bytes:
@@ -570,16 +571,12 @@ class VPNManager:
                     )
         return updated
 
-    async def _user_traffic_limit_gb(self, user_id: int) -> int:
-        """Return user's traffic_limit_gb from DB; fall back to vpn_total_gb setting."""
-        if self._users_repo:
-            try:
-                user = await self._users_repo.get_by_tg_id(user_id)
-                gb = int((user or {}).get("traffic_limit_gb") or 0)
-                if gb > 0:
-                    return gb
-            except Exception:
-                pass
+    async def _user_traffic_limit_gb(self, user_id: int) -> int:  # noqa: ARG002
+        """Return per-key default traffic limit from settings.
+
+        Do NOT read users.traffic_limit_gb — it accumulates across all purchases
+        and would cause new keys to inherit the combined limit of all past keys.
+        """
         return self._settings.vpn_total_gb
 
     def _default_expiry_ms(self) -> int:

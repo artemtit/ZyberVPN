@@ -257,9 +257,16 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
+        provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        # If idempotency cache returned an empty sub_token (partial earlier run),
+        # fetch / generate it now so the success message always shows the connect URL.
+        if provisioned_key_id and not sub_token:
+            try:
+                sub_token = await keys_repo.ensure_sub_token(provisioned_key_id, tg_id)
+            except Exception:
+                logger.warning("sub_token fallback fetch failed key_id=%s tg_id=%s", provisioned_key_id, tg_id)
         # Update key metadata outside idempotency — both calls are idempotent SETs that
         # repair any previous run where the key was provisioned but metadata not written.
-        provisioned_key_id = int(vpn_result.get("key_id") or 0)
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:

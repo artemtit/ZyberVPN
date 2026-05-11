@@ -214,13 +214,29 @@ async def ensure_user_access(
             supabase_user["vpn_key"] = primary_key
 
         if primary_key:
-            await _safe_repo_call(
-                "keys.set_primary",
-                lambda: keys_repo.set_primary(tg_id, new_key_id),
-                fallback=None,
+            # Only promote this key to primary if no other key is already primary.
+            # A user's first key is always primary; subsequent keys are NOT, unless
+            # they explicitly use "Set as primary" in the key card.
+            existing_keys = await _safe_repo_call(
+                "keys.list_by_user.check_primary",
+                lambda: keys_repo.list_by_user(tg_id),
+                fallback=[],
                 tg_id=tg_id,
             )
-            logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
+            has_existing_primary = any(
+                k.get("is_primary") and int(k.get("id") or 0) != new_key_id
+                for k in existing_keys
+            )
+            if not has_existing_primary:
+                await _safe_repo_call(
+                    "keys.set_primary",
+                    lambda: keys_repo.set_primary(tg_id, new_key_id),
+                    fallback=None,
+                    tg_id=tg_id,
+                )
+                logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
+            else:
+                logger.info("VPN key created (not primary, primary already exists) tg_id=%s key_id=%s", tg_id, new_key_id)
 
         # Generate per-key sub_token so each key has an independent subscription URL.
         key_sub_token = ""

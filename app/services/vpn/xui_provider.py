@@ -99,6 +99,20 @@ class XUIProvider(VPNProvider):
                         session, server, final_reality_uuid,
                         lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
                     )
+                # Reset traffic stats so this key doesn't inherit usage from a previous key
+                # (e.g. after a DB reset where key IDs restart from 1).
+                try:
+                    reset_url = (
+                        f"{server.api_url}/panel/api/inbounds"
+                        f"/{server.inbound_id}/resetClientTraffic/{reality_email}"
+                    )
+                    await self._request_json(session, "post", reset_url)
+                    logger.info(
+                        "traffic reset for reused reality client email=%s server_id=%s",
+                        reality_email, server.id,
+                    )
+                except Exception:
+                    pass
 
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
@@ -131,6 +145,18 @@ class XUIProvider(VPNProvider):
                             session, server, final_ws_uuid,
                             lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
                         )
+                    try:
+                        reset_url = (
+                            f"{server.api_url}/panel/api/inbounds"
+                            f"/{server.inbound_id}/resetClientTraffic/{ws_email}"
+                        )
+                        await self._request_json(session, "post", reset_url)
+                        logger.info(
+                            "traffic reset for reused ws client email=%s server_id=%s",
+                            ws_email, server.id,
+                        )
+                    except Exception:
+                        pass
 
             await self._ensure_client_live(session, server, reality_email, final_reality_uuid)
 
@@ -635,7 +661,10 @@ class XUIProvider(VPNProvider):
         url = f"{server.api_url}/panel/api/inbounds/getClientTraffics/{email}"
         try:
             data = await self._request_json(session, "get", url)
-            if isinstance(data, dict) and data.get("success") and data.get("obj"):
+            # success=true means 3x-ui gRPC hot-add propagated the client to the
+            # running Xray instance. obj may be null for a brand-new client with
+            # zero traffic — that is NOT an indication the client is missing.
+            if isinstance(data, dict) and data.get("success") is True:
                 logger.info("client live via gRPC (no restart) email=%s server_id=%s", email, server.id)
                 return
         except Exception:

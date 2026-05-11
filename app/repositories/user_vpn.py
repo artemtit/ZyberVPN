@@ -71,6 +71,34 @@ class UserVpnRepository:
             logger.exception("list_user_vpns failed user_id=%s", user_id)
             return []
 
+    async def list_secondary_for_key(self, user_id: int, real_key_id: int) -> list[dict]:
+        """Return secondary-server user_vpn rows for a real key_id, ordered by key_id.
+
+        Secondary rows use synthetic key_ids: 9_000_000_000 + real_key_id * 10_000 + server_id.
+        """
+        if not self._supabase:
+            return []
+        base = 9_000_000_000
+        min_id = base + real_key_id * 10_000 + 1
+        max_id = base + (real_key_id + 1) * 10_000
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,key_id,created_at,updated_at")
+                    .eq("user_id", user_id)
+                    .gte("key_id", min_id)
+                    .lt("key_id", max_id)
+                    .order("key_id")
+                    .execute()
+                ),
+                operation="user_vpn.list_secondary_for_key",
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("list_secondary_for_key failed user_id=%s key_id=%s", user_id, real_key_id)
+            return []
+
     async def claim_creating(self, user_id: int, key_id: int | None = None) -> str:
         """Atomically claim the creation slot for (user_id, key_id).
 

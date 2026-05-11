@@ -84,23 +84,32 @@ class SubscriptionService:
         """Build subscription payload for a specific key_id (per-key subscription).
 
         key_id is always a real integer — null-slot is never passed here.
+        Includes configs from all servers (primary + secondary) in server-id order.
         """
         from app.repositories.user_vpn import UserVpnRepository
         from app.services.supabase import get_supabase_client
         _sb = get_supabase_client()
-        vpn_row = None
+        configs: list[str] = []
         if _sb:
             _uvr = UserVpnRepository.__new__(UserVpnRepository)
             _uvr._supabase = _sb
+            # Primary server row (server that holds the canonical config).
             vpn_row = await _uvr.get_user_vpn(tg_id, key_id)
-        configs: list[str] = []
-        if vpn_row:
-            reality = str(vpn_row.get("reality_config") or "").strip()
-            ws = str(vpn_row.get("ws_config") or "").strip()
-            if reality.startswith("vless://"):
-                configs.append(reality)
-            if ws.startswith("vless://") and ws != reality:
-                configs.append(ws)
+            if vpn_row:
+                reality = str(vpn_row.get("reality_config") or "").strip()
+                ws = str(vpn_row.get("ws_config") or "").strip()
+                if reality.startswith("vless://"):
+                    configs.append(reality)
+                if ws.startswith("vless://") and ws != reality:
+                    configs.append(ws)
+            # Secondary server rows (additional servers provisioned for this key).
+            for sec_row in await _uvr.list_secondary_for_key(tg_id, key_id):
+                reality = str(sec_row.get("reality_config") or "").strip()
+                ws = str(sec_row.get("ws_config") or "").strip()
+                if reality.startswith("vless://"):
+                    configs.append(reality)
+                if ws.startswith("vless://") and ws != reality:
+                    configs.append(ws)
         if not configs:
             raise LookupError("vpn access not found for key")
         links = [
@@ -116,7 +125,7 @@ class SubscriptionService:
             download_bytes = bytes_used
         except Exception:
             pass
-        traffic_limit_gb = int(key_row.get("traffic_limit_gb") or user.get("traffic_limit_gb") or 60)
+        traffic_limit_gb = int(key_row.get("traffic_limit_gb") or 60)
         expire_ts = 0
         try:
             expires_raw = key_row.get("expires_at") or user.get("expires_at")
