@@ -2,10 +2,15 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.services.plans import get_all_plans
 
 
-def payment_success_keyboard(sub_url: str) -> InlineKeyboardMarkup:
+def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMarkup:
+    connect_button = (
+        InlineKeyboardButton(text="📲 Подключить", callback_data=f"key_connect:{key_id}")
+        if key_id
+        else InlineKeyboardButton(text="📲 Подключить", url=sub_url)
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📲 Подключить", url=sub_url)],
+            [connect_button],
             [InlineKeyboardButton(text="📱 Показать QR-код", callback_data="payment_show_qr")],
         ]
     )
@@ -78,14 +83,6 @@ def tariffs_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def email_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➡️ Продолжить без почты", callback_data="email_skip")],
-            [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")],
-        ]
-    )
-
 
 def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool = False, show_test_pay: bool = False) -> InlineKeyboardMarkup:
     rows = []
@@ -106,6 +103,12 @@ def payment_back_keyboard(redirect_url: str, tariff_code: str = "", purchase_typ
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
         [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
+    ])
+
+
+def topup_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Вернуться к пополнению", callback_data="profile_topup")],
     ])
 
 
@@ -138,6 +141,10 @@ def subscription_info_keyboard() -> InlineKeyboardMarkup:
 def topup_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="⭐ 100 Stars → 100 RUB", callback_data="topup_stars:100")],
+            [InlineKeyboardButton(text="⭐ 300 Stars → 300 RUB", callback_data="topup_stars:300")],
+            [InlineKeyboardButton(text="⭐ 500 Stars → 500 RUB", callback_data="topup_stars:500")],
+            [InlineKeyboardButton(text="⭐ 1000 Stars → 1000 RUB", callback_data="topup_stars:1000")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
         ]
     )

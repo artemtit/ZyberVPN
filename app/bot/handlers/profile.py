@@ -17,6 +17,7 @@ from app.bot.keyboards.inline import (
     promo_keyboard,
     referral_keyboard,
     subscription_info_keyboard,
+    topup_back_keyboard,
     topup_keyboard,
 )
 from app.bot.keyboards.main import get_main_menu_keyboard
@@ -26,6 +27,7 @@ from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.keys import KeysRepository
+from app.repositories.payments import PaymentsRepository
 from app.repositories.promo import PromoRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
@@ -85,11 +87,11 @@ def _status_text(is_active: bool) -> str:
 async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     await state.clear()
     users_repo = UsersRepository(db)
-    local_user = await users_repo.get_or_create(callback.from_user.id)
-    supabase_user = await users_repo.get_by_tg_id(callback.from_user.id)
+    supabase_user = await users_repo.get_or_create(callback.from_user.id)
 
-    is_active = users_repo.is_user_active(supabase_user) if supabase_user else False
-    if supabase_user and not is_active:
+    full_user = await users_repo.get_by_tg_id(callback.from_user.id) or supabase_user
+    is_active = users_repo.is_user_active(full_user) if full_user else False
+    if full_user and not is_active:
         await users_repo.update_status(callback.from_user.id, False)
 
     username = callback.from_user.username or callback.from_user.full_name
@@ -98,7 +100,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
     keys_repo = KeysRepository(db)
     user_keys = await keys_repo.list_by_user(callback.from_user.id)
     primary_expiry_raw = user_keys[0].get("expires_at") if user_keys else None
-    expires_raw = primary_expiry_raw or (supabase_user or {}).get("expires_at")
+    expires_raw = primary_expiry_raw or (full_user or {}).get("expires_at")
 
     days_left = 0
     hours_left = 0
@@ -115,9 +117,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
             pass
 
     status_line = "Активна ✅" if is_active else "Не активна ❌"
-    subs_repo = SubscriptionsRepository(db)
-    active_sub = await subs_repo.get_active(callback.from_user.id)
-    earned_rub = int((supabase_user or {}).get("balance") or 0)
+    balance_rub = int((full_user or {}).get("balance") or 0)
 
     news_url = "https://t.me/ZyberVPN_News"
     support_url = "https://t.me/ZyberVPN_Support_bot"
@@ -129,9 +129,8 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
         f"⏳ Осталось: {days_left} д. {hours_left} ч.\n"
         f"📅 Приобретено месяцев: {months_count}\n\n"
         "💼 ФИНАНСЫ\n"
-        f"💳 Основной баланс: {local_user['balance']} RUB\n"
-        f"🤝 Рефералов: {invited}\n"
-        f"💰 Заработано: {earned_rub} RUB\n\n"
+        f"💳 Баланс: {balance_rub} RUB\n"
+        f"🤝 Рефералов: {invited}\n\n"
         f"📄 <a href=\"{news_url}\">Новости</a>\n"
         f"💬 <a href=\"{support_url}\">Поддержка</a>",
         reply_markup=profile_keyboard(),
@@ -169,21 +168,58 @@ async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
 
 @router.callback_query(F.data == "profile_topup")
 async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ProfileState.waiting_topup_amount)
+    await state.clear()
     await callback.message.edit_text(
         "💰 Пополнение баланса\n\n"
-        "Введите сумму пополнения в рублях:\n\n"
-        "🔹 Минимум: 10 RUB\n"
-        "🔹 Максимум: 100 000 RUB",
+        "Выберите сумму пополнения (1 Star = 1 RUB):",
         reply_markup=topup_keyboard(),
     )
     await callback.answer()
 
 
-@router.message(ProfileState.waiting_topup_amount)
-async def topup_input(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Пополнение временно недоступно.", reply_markup=get_main_menu_keyboard())
+@router.callback_query(F.data.startswith("topup_stars:"))
+async def topup_stars_pay(callback: CallbackQuery, db: Database) -> None:
+    raw = callback.data.split(":", 1)[1]
+    try:
+        stars_amount = int(raw)
+    except ValueError:
+        await callback.answer("Некорректная сумма", show_alert=True)
+        return
+    if stars_amount not in {100, 300, 500, 1000}:
+        await callback.answer("Некорректная сумма", show_alert=True)
+        return
+
+    from app.services.payments import generate_payload
+    from aiogram.types import LabeledPrice
+
+    users_repo = UsersRepository(db)
+    payments_repo = PaymentsRepository(db)
+    await users_repo.get_or_create(callback.from_user.id)
+    payload = generate_payload(callback.from_user.id, f"topup{stars_amount}")
+    idem_key = f"topup-create:{callback.from_user.id}:{stars_amount}:{payload}"
+    await payments_repo.create_pending(
+        tg_id=callback.from_user.id,
+        amount=stars_amount,
+        tariff_code=f"topup{stars_amount}",
+        email=None,
+        payload=payload,
+        idempotency_key=idem_key,
+        purchase_type="topup",
+    )
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer_invoice(
+        title="ZyberVPN — Пополнение баланса",
+        description=f"Пополнение баланса на {stars_amount} RUB",
+        payload=payload,
+        currency="XTR",
+        prices=[LabeledPrice(label=f"Баланс +{stars_amount} RUB", amount=stars_amount)],
+        provider_token="",
+        reply_markup=topup_back_keyboard(),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "profile_promo")

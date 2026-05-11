@@ -51,6 +51,7 @@ class Settings:
     xray_parser_max_bytes_per_cycle: int
     xray_parser_max_lines_per_cycle: int
     xray_device_window_hours: int
+    referral_friend_bonus_rub: int
     # Platega payment gateway (optional — leave empty to disable)
     platega_merchant_id: str
     platega_api_key: str
@@ -94,6 +95,7 @@ def load_settings() -> Settings:
         db_path=os.getenv("DB_PATH", "./data/vpn_bot.sqlite3"),
         support_url=os.getenv("SUPPORT_URL", "https://t.me/ZyberVPN_Support_bot"),
         referral_bonus_percent=int(os.getenv("REFERRAL_BONUS_PERCENT", "20")),
+        referral_friend_bonus_rub=int(os.getenv("REFERRAL_FRIEND_BONUS_RUB", "0")),
         public_base_url=public_base_url,
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),
         supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY", "").strip(),

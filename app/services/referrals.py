@@ -16,3 +16,11 @@ class ReferralService:
         if bonus > 0:
             await self.users_repo.add_balance(int(inviter_tg_id), bonus)
         return bonus
+
+    async def accrue_friend_bonus(self, buyer_user: dict, paid_count: int, friend_bonus_rub: int) -> int:
+        if not buyer_user.get("ref_tg_id"):
+            return 0
+        if paid_count != 1 or friend_bonus_rub <= 0:
+            return 0
+        await self.users_repo.add_balance(int(buyer_user["tg_id"]), friend_bonus_rub)
+        return friend_bonus_rub

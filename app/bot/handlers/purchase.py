@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, LabeledPrice, Message
+from aiogram.types import CallbackQuery, LabeledPrice
 import logging
 
-from app.bot.keyboards.inline import email_keyboard, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, stars_back_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, stars_back_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.config import Settings
@@ -81,25 +81,30 @@ async def buy_renew_key(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("tariff:"))
-async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
+async def choose_tariff(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     tariff_code = callback.data.split(":")[1]
     tariff = TARIFFS.get(tariff_code)
     if not tariff:
         await callback.answer("Тариф не найден", show_alert=True)
         return
-    await state.update_data(tariff_code=tariff_code)
-    await state.set_state(PurchaseState.waiting_email)
+    await state.update_data(tariff_code=tariff_code, email=None)
+    await state.set_state(PurchaseState.waiting_payment)
+    plan = get_plan_by_tariff_code(tariff_code)
+    if not plan:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+    platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
+    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    is_admin = callback.from_user.id in settings.admin_ids
     await callback.message.edit_text(
-        "📧 Ваш Email\n\n"
-        "Пожалуйста, введите адрес электронной почты. "
-        "На него будет отправлен чек после успешной оплаты.",
-        reply_markup=email_keyboard(),
+        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("buy_plan:"))
-async def choose_plan(callback: CallbackQuery, state: FSMContext) -> None:
+async def choose_plan(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     raw = callback.data.split(":", 1)[1]
     try:
         plan_id = int(raw)
@@ -111,54 +116,7 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Тариф не найден", show_alert=True)
         return
 
-    await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"])
-    await state.set_state(PurchaseState.waiting_email)
-    await callback.message.edit_text(
-        "✅ Вы выбрали: "
-        f"{plan['name']} ({plan['traffic_gb']} ГБ, {plan['price_rub']}₽)\n\n"
-        "📧 Ваш Email\n\n"
-        "Пожалуйста, введите адрес электронной почты. "
-        "На него будет отправлен чек после успешной оплаты.",
-        reply_markup=email_keyboard(),
-    )
-    await callback.answer()
-
-
-@router.message(PurchaseState.waiting_email)
-async def input_email(message: Message, state: FSMContext, settings: Settings) -> None:
-    email = (message.text or "").strip()
-    if "@" not in email or "." not in email:
-        await message.answer(
-            "Введите корректный email или нажмите кнопку «Продолжить без почты».",
-            reply_markup=get_main_menu_keyboard(),
-        )
-        return
-    await state.update_data(email=email)
-    await message.answer(f"✅ Email сохранен: {email}", reply_markup=get_main_menu_keyboard())
-    await state.set_state(PurchaseState.waiting_payment)
-    data = await state.get_data()
-    plan = _selected_plan(data)
-    if not plan:
-        await state.clear()
-        await message.answer("Сначала выберите тариф.", reply_markup=get_main_menu_keyboard())
-        return
-    platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
-    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
-    is_admin = message.from_user.id in settings.admin_ids
-    await message.answer(
-        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
-    )
-
-
-@router.callback_query(F.data == "email_skip")
-async def skip_email(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
-    data = await state.get_data()
-    plan = _selected_plan(data)
-    if not plan:
-        await callback.answer("Сначала выберите тариф", show_alert=True)
-        return
-    await state.update_data(email=None)
+    await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"], email=None)
     await state.set_state(PurchaseState.waiting_payment)
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
@@ -347,6 +305,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
 
     link = ""
     sub_token = ""
+    provisioned_key_id = 0
     vpn_idem_key = f"vpn-provision:{payload}"
     vpn_idem = IdempotencyService(IdempotencyRepository())
 
@@ -388,6 +347,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     await referral_service.accrue_bonus(user, int(processed["amount"]))
+    paid_count = await payments_repo.count_paid(tg_id)
+    friend_bonus = await referral_service.accrue_friend_bonus(user, paid_count, settings.referral_friend_bonus_rub)
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
     sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
@@ -397,12 +358,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             "📦 <b>Подписка активирована</b>\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{sub_url}</code>\n\n"
-            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
+            "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
             "или «Показать QR» для сканирования."
         )
-        await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url))
+        await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
@@ -412,6 +371,8 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         )
         await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
     await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+    if friend_bonus > 0:
+        await callback.message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())
     await callback.answer()
 
 
@@ -471,10 +432,6 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
         currency="XTR",
         prices=[LabeledPrice(label=plan["name"], amount=int(plan["price_stars"]))],
         provider_token="",
-    )
-    # Invoice messages don't support custom keyboards — send a separate back button.
-    await callback.message.answer(
-        "Для отмены или выбора другого способа оплаты:",
         reply_markup=stars_back_keyboard(
             tariff_code=str(tariff_code),
             purchase_type=str(purchase_type),

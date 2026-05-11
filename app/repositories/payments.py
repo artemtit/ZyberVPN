@@ -24,7 +24,7 @@ class PaymentsRepository:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
         existing = await self.get_by_idempotency_key(idempotency_key)
-        if existing:
+        if existing and existing.get("status") != "paid":
             return existing
         body: dict = {
             "tg_id": tg_id,
@@ -84,6 +84,15 @@ class PaymentsRepository:
         if rows:
             return rows[0]
         return await self.get_by_payload(payload)
+
+    async def count_paid(self, tg_id: int) -> int:
+        if not self._supabase:
+            return 0
+        response = await execute_with_retry(
+            lambda: self._supabase.table("payments").select("id", count="exact").eq("tg_id", tg_id).eq("status", "paid").execute(),
+            operation="payments.count_paid",
+        )
+        return response.count or 0
 
     async def total_revenue(self) -> int:
         if not self._supabase:

@@ -57,6 +57,28 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     idem_key = f"payment-success:{payment_info.invoice_payload}"
     logger.info("Payment callback received payload=%s tg_id=%s", payment_info.invoice_payload, payment.get("tg_id"))
 
+    # Handle balance top-up separately — no VPN provisioning needed.
+    if payment.get("purchase_type") == "topup":
+        stars_amount = int(payment.get("amount") or 0)
+        if stars_amount > 0:
+            try:
+                await payments_repo.mark_paid(
+                    payload=payment_info.invoice_payload,
+                    telegram_charge_id=payment_info.telegram_payment_charge_id,
+                )
+                await users_repo.add_balance(int(payment["tg_id"]), stars_amount)
+            except Exception:
+                logger.exception("Failed to process topup tg_id=%s", payment.get("tg_id"))
+                await message.answer("Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.", reply_markup=get_main_menu_keyboard())
+                return
+        await message.answer(
+            f"✅ <b>Баланс пополнен!</b>\n\n"
+            f"💳 Зачислено: <b>{stars_amount} RUB</b>",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        return
+
     async def _process_payment() -> dict:
         purchase_type = str(payment.get("purchase_type") or "new")
         renew_key_id = _require_renew_key_id(payment.get("renew_key_id")) if purchase_type == "renewal" else None
@@ -211,6 +233,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     # webhook retries don't create duplicate keys.
     link = ""
     sub_token = ""
+    provisioned_key_id = 0
     vpn_idem_key = f"vpn-provision:{payment_info.invoice_payload}"
     vpn_idem = IdempotencyService(IdempotencyRepository())
 
@@ -265,12 +288,10 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             "📦 <b>Подписка активирована</b>\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{sub_url}</code>\n\n"
-            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
+            "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
             "или «Показать QR» для сканирования."
         )
-        await message.answer(text, reply_markup=payment_success_keyboard(sub_url))
+        await message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
@@ -282,9 +303,11 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
     bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
+    paid_count = await payments_repo.count_paid(tg_id)
+    friend_bonus = await referral_service.accrue_friend_bonus(user, paid_count, settings.referral_friend_bonus_rub)
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
-    if bonus > 0:
-        await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
+    if friend_bonus > 0:
+        await message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())
 
 
 @router.callback_query(F.data == "payment_show_qr")
