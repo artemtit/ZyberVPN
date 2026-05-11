@@ -132,8 +132,7 @@ class XUIProvider(VPNProvider):
                             lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
                         )
 
-            await self._reload_xray(session, server)
-            await self._verify_client_visible(session, server, final_reality_uuid)
+            await self._ensure_client_live(session, server, reality_email, final_reality_uuid)
 
             profiles = self._build_profiles(server, ctx, final_reality_uuid, final_ws_uuid, user_id)
             return CreateClientResult(
@@ -622,6 +621,28 @@ class XUIProvider(VPNProvider):
             ws_path=ws_path,
             ws_supported=ws_supported,
         )
+
+    async def _ensure_client_live(
+        self, session: ClientSession, server: ServerInfo, email: str, client_uuid: str
+    ) -> None:
+        """Verify client is live in Xray runtime without restart.
+
+        3x-ui v3 automatically propagates addClient changes to the running Xray
+        instance via gRPC (HandlerService). getClientTraffics returns a valid obj
+        immediately if the client is in the Xray runtime — no restart needed.
+        Falls back to full reload only if the gRPC hot-add didn't take effect.
+        """
+        url = f"{server.api_url}/panel/api/inbounds/getClientTraffics/{email}"
+        try:
+            data = await self._request_json(session, "get", url)
+            if isinstance(data, dict) and data.get("success") and data.get("obj"):
+                logger.info("client live via gRPC (no restart) email=%s server_id=%s", email, server.id)
+                return
+        except Exception:
+            pass
+        logger.info("client not in runtime, falling back to reload email=%s server_id=%s", email, server.id)
+        await self._reload_xray(session, server)
+        await self._verify_client_visible(session, server, client_uuid)
 
     async def _verify_client_visible(
         self, session: ClientSession, server: ServerInfo, client_uuid: str
