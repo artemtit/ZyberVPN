@@ -8,10 +8,11 @@ def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMar
         if key_id
         else InlineKeyboardButton(text="📲 Подключить", url=sub_url)
     )
+    qr_callback = f"key_qr:{key_id}" if key_id else "payment_show_qr"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [connect_button],
-            [InlineKeyboardButton(text="📱 Показать QR-код", callback_data="payment_show_qr")],
+            [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=qr_callback)],
         ]
     )
 

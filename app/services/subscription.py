@@ -90,26 +90,28 @@ class SubscriptionService:
         from app.services.supabase import get_supabase_client
         _sb = get_supabase_client()
         configs: list[str] = []
+        seen: set[str] = set()
+
+        def append_row_configs(row: dict) -> None:
+            if (row.get("status") or "ready") != "ready":
+                return
+            reality = str(row.get("reality_config") or "").strip()
+            ws = str(row.get("ws_config") or "").strip()
+            for config in (reality, ws):
+                if config.startswith("vless://") and config not in seen:
+                    seen.add(config)
+                    configs.append(config)
+
         if _sb:
             _uvr = UserVpnRepository.__new__(UserVpnRepository)
             _uvr._supabase = _sb
             # Primary server row (server that holds the canonical config).
             vpn_row = await _uvr.get_user_vpn(tg_id, key_id)
             if vpn_row:
-                reality = str(vpn_row.get("reality_config") or "").strip()
-                ws = str(vpn_row.get("ws_config") or "").strip()
-                if reality.startswith("vless://"):
-                    configs.append(reality)
-                if ws.startswith("vless://") and ws != reality:
-                    configs.append(ws)
+                append_row_configs(vpn_row)
             # Secondary server rows (additional servers provisioned for this key).
             for sec_row in await _uvr.list_secondary_for_key(tg_id, key_id):
-                reality = str(sec_row.get("reality_config") or "").strip()
-                ws = str(sec_row.get("ws_config") or "").strip()
-                if reality.startswith("vless://"):
-                    configs.append(reality)
-                if ws.startswith("vless://") and ws != reality:
-                    configs.append(ws)
+                append_row_configs(sec_row)
         if not configs:
             raise LookupError("vpn access not found for key")
         links = [

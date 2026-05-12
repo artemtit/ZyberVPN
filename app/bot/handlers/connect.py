@@ -15,6 +15,7 @@ from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
+from app.utils.datetime import parse_iso_utc, utc_now
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -66,6 +67,57 @@ def _app_name(callback_data: str) -> str | None:
 @router.callback_query(F.data.startswith("key_connect:"))
 async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     tg_id = callback.from_user.id
+    requested_key_id = 0
+    try:
+        requested_key_id = int(callback.data.split(":", 1)[1])
+    except Exception:
+        requested_key_id = 0
+
+    if requested_key_id > 0:
+        users_repo = UsersRepository(db)
+        user = await users_repo.get_by_tg_id(tg_id)
+        if not user or not users_repo.is_user_active(user):
+            await callback.answer("Подписка истекла", show_alert=True)
+            return
+
+        keys_repo = KeysRepository(db)
+        key_row = await keys_repo.get_by_id_for_user(requested_key_id, tg_id)
+        if not key_row:
+            await callback.answer("Ключ не найден", show_alert=True)
+            return
+        key_expires = key_row.get("expires_at")
+        if key_expires:
+            try:
+                if parse_iso_utc(key_expires) <= utc_now():
+                    await callback.answer("Ключ истёк", show_alert=True)
+                    return
+            except Exception:
+                await callback.answer("Ключ истёк", show_alert=True)
+                return
+
+        vpn_key = str(key_row.get("key") or "")
+        if not vpn_key.startswith("vless://"):
+            await callback.answer("Не удалось получить VPN-ключ. Попробуйте позже.", show_alert=True)
+            return
+        key_sub_token = str(key_row.get("sub_token") or "")
+        if not key_sub_token:
+            try:
+                key_sub_token = await keys_repo.ensure_sub_token(requested_key_id, tg_id)
+            except Exception:
+                logger.exception("Failed to build subscription URL for tg_id=%s key_id=%s", tg_id, requested_key_id)
+        sub_url = f"{settings.public_base_url}/sub/{key_sub_token}" if key_sub_token and settings.public_base_url else ""
+
+        await state.clear()
+        await state.set_state(ConnectFlowState.choosing_device)
+        await state.update_data(vpn_key=vpn_key, sub_url=sub_url, vpn_configs=[vpn_key])
+
+        await callback.message.edit_text(
+            "Подключение к ZyberVPN\n\nВыберите устройство:",
+            reply_markup=connect_devices_keyboard(),
+        )
+        await callback.answer()
+        return
+
     try:
         access_user = await ensure_user_access(tg_id=tg_id, db=db, settings=settings, require_active=True)
     except AccessEnsureError as error:

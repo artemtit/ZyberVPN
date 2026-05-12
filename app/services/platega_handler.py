@@ -31,6 +31,32 @@ from app.utils.datetime import add_months, parse_iso_utc, utc_now
 logger = logging.getLogger(__name__)
 
 
+async def _repair_provision_result(
+    keys_repo: KeysRepository,
+    tg_id: int,
+    link: str,
+    key_id: int,
+    sub_token: str,
+) -> tuple[str, int, str]:
+    key_row = None
+    if key_id > 0:
+        key_row = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    if not key_row and link:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        key_row = next((k for k in user_keys if str(k.get("key") or "") == link), None)
+    if not key_row:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        valid_keys = [k for k in user_keys if str(k.get("key") or "").startswith("vless://")]
+        key_row = valid_keys[-1] if valid_keys else None
+    if key_row:
+        key_id = int(key_row.get("id") or key_id or 0)
+        link = link or str(key_row.get("key") or "")
+        sub_token = sub_token or str(key_row.get("sub_token") or "")
+    if key_id > 0 and not sub_token:
+        sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
+    return link, key_id, sub_token
+
+
 async def process_confirmed_platega_payment(
     transaction_id: str,
     bot: Bot,
@@ -172,6 +198,7 @@ async def process_confirmed_platega_payment(
     # webhook retries don't create duplicate keys.
     link = ""
     sub_token = ""
+    provisioned_key_id = 0
     vpn_idem_key = f"vpn-provision:{transaction_id}"
     vpn_idem = IdempotencyService(IdempotencyRepository())
 
@@ -196,6 +223,9 @@ async def process_confirmed_platega_payment(
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
         provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        link, provisioned_key_id, sub_token = await _repair_provision_result(
+            keys_repo, tg_id, str(link or ""), provisioned_key_id, str(sub_token or "")
+        )
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
@@ -216,18 +246,18 @@ async def process_confirmed_platega_payment(
         await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
         return
 
-    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
-    if link and sub_url:
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    if sub_url:
         text = (
             "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"
             "📦 <b>Подписка активирована</b>\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>\n\n"
             "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{sub_url}</code>\n\n"
+            f"<code>{escape(sub_url)}</code>\n\n"
             "Нажмите «Подключить» чтобы открыть в VPN-клиенте."
         )
-        await _send(bot, tg_id, text, keyboard=payment_success_keyboard(sub_url))
+        await _send(bot, tg_id, text, keyboard=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
             "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"

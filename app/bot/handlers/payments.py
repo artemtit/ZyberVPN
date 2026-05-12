@@ -35,6 +35,32 @@ def _require_renew_key_id(raw: object) -> int:
     return key_id
 
 
+async def _repair_provision_result(
+    keys_repo: KeysRepository,
+    tg_id: int,
+    link: str,
+    key_id: int,
+    sub_token: str,
+) -> tuple[str, int, str]:
+    key_row = None
+    if key_id > 0:
+        key_row = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    if not key_row and link:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        key_row = next((k for k in user_keys if str(k.get("key") or "") == link), None)
+    if not key_row:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        valid_keys = [k for k in user_keys if str(k.get("key") or "").startswith("vless://")]
+        key_row = valid_keys[-1] if valid_keys else None
+    if key_row:
+        key_id = int(key_row.get("id") or key_id or 0)
+        link = link or str(key_row.get("key") or "")
+        sub_token = sub_token or str(key_row.get("sub_token") or "")
+    if key_id > 0 and not sub_token:
+        sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
+    return link, key_id, sub_token
+
+
 @router.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
     await pre_checkout_query.answer(ok=True)
@@ -258,13 +284,11 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
         provisioned_key_id = int(vpn_result.get("key_id") or 0)
-        # If idempotency cache returned an empty sub_token (partial earlier run),
-        # fetch / generate it now so the success message always shows the connect URL.
-        if provisioned_key_id and not sub_token:
-            try:
-                sub_token = await keys_repo.ensure_sub_token(provisioned_key_id, tg_id)
-            except Exception:
-                logger.warning("sub_token fallback fetch failed key_id=%s tg_id=%s", provisioned_key_id, tg_id)
+        # Repair cached/partial idempotency results so the success message always
+        # points to the newly purchased key.
+        link, provisioned_key_id, sub_token = await _repair_provision_result(
+            keys_repo, tg_id, str(link or ""), provisioned_key_id, str(sub_token or "")
+        )
         # Update key metadata outside idempotency — both calls are idempotent SETs that
         # repair any previous run where the key was provisioned but metadata not written.
         if provisioned_key_id:
@@ -287,14 +311,16 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
         return
 
-    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
 
-    if link and sub_url:
+    if sub_url:
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
             "📦 <b>Подписка активирована</b>\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>\n\n"
+            "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{escape(sub_url)}</code>\n\n"
             "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
             "или «Показать QR» для сканирования."
         )

@@ -455,9 +455,13 @@ async def _apply_promo(
         }
 
     sub_token = ""
+    provisioned_key_id = 0
     try:
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_promo_vpn)
         sub_token = str(vpn_result.get("key_sub_token") or "")
+        provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        if provisioned_key_id and not sub_token:
+            sub_token = await KeysRepository(db).ensure_sub_token(provisioned_key_id, tg_id)
     except AccessEnsureError:
         logger.exception("Promo access bootstrap failed for tg_id=%s", tg_id)
         await reply(
@@ -481,7 +485,7 @@ async def _apply_promo(
             f"<code>{sub_url}</code>\n\n"
             "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
             "или «Показать QR» для сканирования.",
-            reply_markup=payment_success_keyboard(sub_url),
+            reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id),
         )
     else:
         await reply(

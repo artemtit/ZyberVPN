@@ -204,15 +204,6 @@ async def ensure_user_access(
                 tg_id=tg_id,
             )
 
-        current_key = str((supabase_user or {}).get("vpn_key") or "")
-        if primary_key and current_key != primary_key:
-            updated_key = await _safe_repo_call(
-                "users.update_key", lambda: users_repo.update_key(tg_id, primary_key), fallback=None, tg_id=tg_id
-            )
-            if not updated_key:
-                raise AccessEnsureError("Failed to persist vpn_key")
-            supabase_user["vpn_key"] = primary_key
-
         if primary_key:
             # Only promote this key to primary if no other key is already primary.
             # A user's first key is always primary; subsequent keys are NOT, unless
@@ -234,6 +225,14 @@ async def ensure_user_access(
                     fallback=None,
                     tg_id=tg_id,
                 )
+                current_key = str((supabase_user or {}).get("vpn_key") or "")
+                if current_key != primary_key:
+                    updated_key = await _safe_repo_call(
+                        "users.update_key", lambda: users_repo.update_key(tg_id, primary_key), fallback=None, tg_id=tg_id
+                    )
+                    if not updated_key:
+                        raise AccessEnsureError("Failed to persist vpn_key")
+                    supabase_user["vpn_key"] = primary_key
                 logger.info("VPN key created and set primary tg_id=%s key_id=%s", tg_id, new_key_id)
             else:
                 logger.info("VPN key created (not primary, primary already exists) tg_id=%s key_id=%s", tg_id, new_key_id)

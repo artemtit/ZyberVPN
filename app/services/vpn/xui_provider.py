@@ -656,7 +656,8 @@ class XUIProvider(VPNProvider):
         3x-ui v3 automatically propagates addClient changes to the running Xray
         instance via gRPC (HandlerService). getClientTraffics returns a valid obj
         immediately if the client is in the Xray runtime — no restart needed.
-        Falls back to full reload only if the gRPC hot-add didn't take effect.
+        Empty/invalid traffic responses are treated as inconclusive, not as a
+        failure that requires restarting Xray.
         """
         url = f"{server.api_url}/panel/api/inbounds/getClientTraffics/{email}"
         try:
@@ -667,11 +668,11 @@ class XUIProvider(VPNProvider):
             if isinstance(data, dict) and data.get("success") is True:
                 logger.info("client live via gRPC (no restart) email=%s server_id=%s", email, server.id)
                 return
+            logger.info("client live check inconclusive (no restart) email=%s server_id=%s", email, server.id)
+            return
         except Exception:
-            pass
-        logger.info("client not in runtime, falling back to reload email=%s server_id=%s", email, server.id)
-        await self._reload_xray(session, server)
-        await self._verify_client_visible(session, server, client_uuid)
+            logger.info("client live check failed (no restart) email=%s server_id=%s", email, server.id)
+            return
 
     async def _verify_client_visible(
         self, session: ClientSession, server: ServerInfo, client_uuid: str

@@ -57,6 +57,32 @@ def _selected_plan(data: dict) -> dict | None:
     return None
 
 
+async def _repair_provision_result(
+    keys_repo: KeysRepository,
+    tg_id: int,
+    link: str,
+    key_id: int,
+    sub_token: str,
+) -> tuple[str, int, str]:
+    key_row = None
+    if key_id > 0:
+        key_row = await keys_repo.get_by_id_for_user(key_id, tg_id)
+    if not key_row and link:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        key_row = next((k for k in user_keys if str(k.get("key") or "") == link), None)
+    if not key_row:
+        user_keys = await keys_repo.list_by_user(tg_id)
+        valid_keys = [k for k in user_keys if str(k.get("key") or "").startswith("vless://")]
+        key_row = valid_keys[-1] if valid_keys else None
+    if key_row:
+        key_id = int(key_row.get("id") or key_id or 0)
+        link = link or str(key_row.get("key") or "")
+        sub_token = sub_token or str(key_row.get("sub_token") or "")
+    if key_id > 0 and not sub_token:
+        sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
+    return link, key_id, sub_token
+
+
 @router.callback_query(F.data == "buy_open")
 async def buy_new_key(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -330,6 +356,9 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
         provisioned_key_id = int(vpn_result.get("key_id") or 0)
+        link, provisioned_key_id, sub_token = await _repair_provision_result(
+            keys_repo, tg_id, str(link or ""), provisioned_key_id, str(sub_token or "")
+        )
         if provisioned_key_id:
             try:
                 # Use the plan's own duration, not the global MAX used for users.expires_at.
@@ -351,13 +380,15 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     friend_bonus = await referral_service.accrue_friend_bonus(user, paid_count, settings.referral_friend_bonus_rub)
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
-    sub_url = f"{settings.public_base_url}/sub/{escape(sub_token)}" if sub_token and settings.public_base_url else ""
-    if link and sub_url:
+    sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    if sub_url:
         text = (
             "✅ <b>Оплата прошла успешно!</b>\n\n"
             "📦 <b>Подписка активирована</b>\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
             "📊 Статус: <b>Активна</b>\n\n"
+            "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{escape(sub_url)}</code>\n\n"
             "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
             "или «Показать QR» для сканирования."
         )

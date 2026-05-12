@@ -539,7 +539,6 @@ class VPNManager:
                 continue
             reality_uuid = str(vpn.get("reality_uuid") or "").strip()
             ws_uuid = str(vpn.get("ws_uuid") or "").strip()
-            row_updated = False
             for uuid in filter(None, [reality_uuid, ws_uuid]):
                 try:
                     # WS client was created with totalGB=0 (unlimited in XUI) so XUI
@@ -553,22 +552,12 @@ class VPNManager:
                     )
                     if ok:
                         updated = True
-                        row_updated = True
                         logger.info(
                             "XUI expiry updated user_id=%s uuid=%s expiry_ms=%s total_gb=%s",
                             user_id, uuid, expiry_time_ms, effective_traffic_limit_gb or "unchanged",
                         )
                 except Exception:
                     logger.exception("update_client_expiry failed user_id=%s uuid=%s", user_id, uuid)
-            if row_updated:
-                row_key_id = vpn.get("key_id")
-                try:
-                    await provider.reset_client_traffic(server, user_id, key_id=row_key_id)
-                except Exception:
-                    logger.warning(
-                        "traffic reset failed user_id=%s server_id=%s key_id=%s",
-                        user_id, server_id, row_key_id,
-                    )
         return updated
 
     async def _user_traffic_limit_gb(self, user_id: int) -> int:  # noqa: ARG002
