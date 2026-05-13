@@ -19,5 +19,5 @@ SERVER_COLUMNS = [
     "last_health_check",
     "health_errors",
     "last_error",
-    "max_users",
+    # "max_users",  # uncomment after running migrations/2026_05_servers_max_users.sql
 ]
