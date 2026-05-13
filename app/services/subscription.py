@@ -27,10 +27,10 @@ _COUNTRY_DISPLAY: dict[str, tuple[str, str]] = {
 
 
 def _server_display_name(link: str) -> str:
-    """Derive a display name from the existing link fragment.
+    """Derive a display name from the existing link fragment (fallback only).
 
     Fragment format: ``ZyberVPN-{COUNTRY}-{TYPE}-{user_id}``
-    Returns e.g. ``🇳🇱ZyberVPN | Netherlands``
+    Returns e.g. ``🇳🇱ZyberVPN | Нидерланды``
     """
     fragment = urlparse(link).fragment
     parts = fragment.split("-")
@@ -39,6 +39,12 @@ def _server_display_name(link: str) -> str:
         flag, country_name = _COUNTRY_DISPLAY.get(country_code, ("", country_code))
         return f"{flag}ZyberVPN | {country_name}"
     return "ZyberVPN"
+
+
+def _display_name_for_country(country_code: str) -> str:
+    """Build display name from a known ISO-2 country code (authoritative source)."""
+    flag, country_name = _COUNTRY_DISPLAY.get(country_code.upper(), ("", country_code.upper()))
+    return f"{flag}ZyberVPN | {country_name}"
 
 
 def _apply_display_name(link: str, name: str) -> str:
@@ -91,18 +97,21 @@ class SubscriptionService:
         from app.repositories.user_vpn import UserVpnRepository
         from app.services.supabase import get_supabase_client
         _sb = get_supabase_client()
-        configs: list[str] = []
+        # Track (config, server_id) so display name uses the real server country,
+        # not the potentially stale country code embedded in the stored URL fragment.
+        config_server_pairs: list[tuple[str, int]] = []
         seen: set[str] = set()
 
         def append_row_configs(row: dict) -> None:
             if (row.get("status") or "ready") != "ready":
                 return
+            server_id = int(row.get("server_id") or 0)
             reality = str(row.get("reality_config") or "").strip()
             ws = str(row.get("ws_config") or "").strip()
             for config in (reality, ws):
                 if config.startswith("vless://") and config not in seen:
                     seen.add(config)
-                    configs.append(config)
+                    config_server_pairs.append((config, server_id))
 
         if _sb:
             _uvr = UserVpnRepository.__new__(UserVpnRepository)
@@ -114,13 +123,25 @@ class SubscriptionService:
             # Secondary server rows (additional servers provisioned for this key).
             for sec_row in await _uvr.list_secondary_for_key(tg_id, key_id):
                 append_row_configs(sec_row)
-        if not configs:
+        if not config_server_pairs:
             raise LookupError("vpn access not found for key")
-        links = [
-            _apply_display_name(line.strip(), _server_display_name(line.strip()))
-            for line in configs
-            if str(line).strip().startswith("vless://")
-        ]
+
+        # Build server_id → country lookup from live server data.
+        server_country: dict[int, str] = {}
+        try:
+            servers = await self._vpn_manager._servers_repo.list_all()
+            server_country = {s.id: s.country for s in servers if s.country}
+        except Exception:
+            pass
+
+        links = []
+        for config, server_id in config_server_pairs:
+            config = config.strip()
+            if not config.startswith("vless://"):
+                continue
+            country = server_country.get(server_id, "")
+            name = _display_name_for_country(country) if country else _server_display_name(config)
+            links.append(_apply_display_name(config, name))
         if not links:
             raise LookupError("vpn access not found for key")
 
