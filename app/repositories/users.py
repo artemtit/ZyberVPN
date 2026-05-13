@@ -408,6 +408,17 @@ class UsersRepository:
             operation="users.add_balance",
         )
 
+    async def deduct_balance(self, tg_id: int, amount: int) -> None:
+        """Atomically deduct amount from balance. Amount must be > 0."""
+        if not self._supabase or amount <= 0:
+            return
+        await execute_with_retry(
+            lambda: self._supabase.rpc(
+                "increment_user_balance", {"p_tg_id": tg_id, "p_amount": -amount}
+            ).execute(),
+            operation="users.deduct_balance",
+        )
+
     async def set_traffic_limit(self, tg_id: int, traffic_limit_gb: int) -> None:
         if not self._supabase:
             return

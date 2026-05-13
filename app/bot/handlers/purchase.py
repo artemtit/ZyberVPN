@@ -107,7 +107,7 @@ async def buy_renew_key(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("tariff:"))
-async def choose_tariff(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+async def choose_tariff(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     tariff_code = callback.data.split(":")[1]
     tariff = TARIFFS.get(tariff_code)
     if not tariff:
@@ -122,15 +122,22 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext, settings: Se
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     is_admin = callback.from_user.id in settings.admin_ids
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    balance = int((user or {}).get("balance") or 0)
+    price = int(plan["price_rub"])
     await callback.message.edit_text(
-        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
+        f"💰 К оплате: {float(price):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(
+            platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
+            show_test_pay=is_admin, balance=balance, price_rub=price,
+        ),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("buy_plan:"))
-async def choose_plan(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     raw = callback.data.split(":", 1)[1]
     try:
         plan_id = int(raw)
@@ -147,9 +154,16 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, settings: Sett
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     is_admin = callback.from_user.id in settings.admin_ids
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    balance = int((user or {}).get("balance") or 0)
+    price = int(plan["price_rub"])
     await callback.message.edit_text(
-        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
+        f"💰 К оплате: {float(price):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(
+            platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
+            show_test_pay=is_admin, balance=balance, price_rub=price,
+        ),
     )
     await callback.answer()
 
@@ -407,6 +421,183 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     await callback.answer()
 
 
+@router.callback_query(F.data == "pay:balance")
+async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    data = await state.get_data()
+    plan = _selected_plan(data)
+    if not plan:
+        await callback.answer("Сначала выберите тариф", show_alert=True)
+        return
+
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    balance = int((user or {}).get("balance") or 0)
+    price = int(plan["price_rub"])
+
+    if balance <= 0:
+        await callback.answer("На балансе нет средств", show_alert=True)
+        return
+
+    purchase_type = str(data.get("purchase_type") or "new")
+    renew_key_id = data.get("renew_key_id")
+
+    if balance < price:
+        # Partial balance: pay the remainder via Platega.
+        await state.update_data(balance_applied=balance)
+        await _pay_via_platega(
+            callback, state, db, settings,
+            payment_method=2, method_label="СБП / QR",
+            balance_applied=balance,
+        )
+        return
+
+    # Full balance purchase — no external payment needed.
+    payments_repo = PaymentsRepository(db)
+    subs_repo = SubscriptionsRepository(db)
+    keys_repo = KeysRepository(db)
+    idem = IdempotencyService(IdempotencyRepository())
+    tariff_code = str(data.get("tariff_code") or plan["tariff_code"])
+
+    try:
+        if purchase_type == "renewal":
+            renew_key_id = _require_renew_key_id(renew_key_id)
+        await users_repo.get_or_create(callback.from_user.id)
+        payload = generate_payload(callback.from_user.id, tariff_code)
+        idem_key = f"balance-payment:{callback.from_user.id}:{tariff_code}:{purchase_type}:{renew_key_id}"
+        payment = await payments_repo.create_pending(
+            tg_id=callback.from_user.id,
+            amount=price,
+            tariff_code=tariff_code,
+            email=None,
+            payload=payload,
+            idempotency_key=idem_key,
+            purchase_type=purchase_type,
+            renew_key_id=int(renew_key_id) if renew_key_id is not None else None,
+        )
+        payload = str(payment.get("payload") or payload)
+        await state.clear()
+    except Exception:
+        logger.exception("Balance payment init failed tg_id=%s", callback.from_user.id)
+        await callback.answer("Ошибка. Попробуйте позже.", show_alert=True)
+        return
+
+    async def _process_balance_payment() -> dict:
+        if payment.get("status") != "paid":
+            await payments_repo.mark_paid(payload=payload, telegram_charge_id="balance")
+            base_limit = int(plan["traffic_gb"])
+            if purchase_type == "renewal":
+                months = max(1, int(plan["duration_days"]) // 30)
+                await subs_repo.create_or_extend(int(payment["tg_id"]), months=months)
+                await users_repo.add_traffic_limit(int(payment["tg_id"]), base_limit)
+                if renew_key_id is not None:
+                    await keys_repo.add_traffic_limit(int(renew_key_id), int(payment["tg_id"]), base_limit)
+            else:
+                await users_repo.add_traffic_limit(int(payment["tg_id"]), base_limit)
+        return {
+            "tg_id": int(payment["tg_id"]),
+            "amount": price,
+            "purchase_type": purchase_type,
+            "renew_key_id": renew_key_id,
+        }
+
+    try:
+        processed = await idem.execute("payment_success", f"payment-success:{payload}", _process_balance_payment)
+    except Exception:
+        logger.exception("Balance payment processing failed tg_id=%s", callback.from_user.id)
+        await callback.answer("Ошибка обработки. Попробуйте позже.", show_alert=True)
+        return
+
+    # Deduct balance only after payment is marked paid.
+    await users_repo.deduct_balance(callback.from_user.id, price)
+
+    tg_id = int(processed["tg_id"])
+    purchase_type = str(processed.get("purchase_type") or "new")
+    renew_key_id = processed.get("renew_key_id")
+    user = await users_repo.get_by_tg_id(tg_id)
+    activated_dt = utc_now()
+    plan_months = max(1, int(plan["duration_days"]) // 30)
+
+    if purchase_type == "renewal" and renew_key_id is not None:
+        key_row = await keys_repo.get_by_id_for_user(int(renew_key_id), tg_id)
+        key_expires_raw = (key_row or {}).get("expires_at")
+        key_base = max(parse_iso_utc(key_expires_raw), activated_dt) if key_expires_raw else activated_dt
+        expires_dt = add_months(key_base, plan_months)
+        await keys_repo.update_expires_at(int(renew_key_id), tg_id, expires_dt.isoformat())
+        try:
+            manager = build_vpn_manager(db, settings, bot=callback.bot)
+            await manager.renew_user_access(tg_id, int(expires_dt.timestamp() * 1000), key_id=int(renew_key_id))
+        except Exception:
+            logger.exception("Balance renewal: XUI update failed tg_id=%s", tg_id)
+    else:
+        expires_dt = add_months(activated_dt, plan_months)
+
+    await users_repo.set_expiry(
+        tg_id,
+        expires_at=expires_dt.isoformat(),
+        is_active=True,
+        plan="monthly",
+        last_activated_at=activated_dt.isoformat(),
+    )
+
+    sub_url = ""
+    provisioned_key_id = 0
+    if purchase_type != "renewal":
+        vpn_idem_key = f"vpn-provision:{payload}"
+        vpn_idem = IdempotencyService(IdempotencyRepository())
+        async def _provision_vpn() -> dict:
+            au = await ensure_user_access(
+                tg_id=tg_id, db=db, settings=settings,
+                require_active=True, force_new_key=True, action="create",
+                traffic_limit_gb=int(plan.get("traffic_gb", plan_months * 60)),
+            )
+            return {
+                "vpn_key": str(au.get("vpn_key") or ""),
+                "key_sub_token": str(au.get("key_sub_token") or ""),
+                "key_id": int(au.get("key_id") or 0),
+            }
+        try:
+            vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
+            link = vpn_result.get("vpn_key", "")
+            sub_token = vpn_result.get("key_sub_token", "")
+            provisioned_key_id = int(vpn_result.get("key_id") or 0)
+            link, provisioned_key_id, sub_token = await _repair_provision_result(
+                keys_repo, tg_id, link, provisioned_key_id, sub_token
+            )
+            if provisioned_key_id:
+                await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
+                await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan.get("traffic_gb", plan_months * 60)))
+            sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+        except Exception:
+            logger.exception("Balance purchase: VPN provisioning failed tg_id=%s", tg_id)
+
+    expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+    days_remaining = max(0, (expires_dt - utc_now()).days)
+    balance_after = max(0, balance - price)
+
+    if sub_url:
+        text = (
+            "✅ <b>Оплата с баланса прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            f"💰 Списано с баланса: <b>{price} руб.</b> (остаток: {balance_after} руб.)\n"
+            "📊 Статус: <b>Активна</b>\n\n"
+            "🔗 <b>Ссылка для подключения:</b>\n"
+            f"<code>{escape(sub_url)}</code>"
+        )
+        await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
+    else:
+        text = (
+            "✅ <b>Оплата с баланса прошла успешно!</b>\n\n"
+            "📦 <b>Подписка активирована</b>\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            f"💰 Списано с баланса: <b>{price} руб.</b>\n"
+            "📊 Статус: <b>Активна</b>"
+        )
+        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
+    await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+    await callback.answer()
+
+
 @router.callback_query(F.data == "pay:stars")
 async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
     data = await state.get_data()
@@ -519,6 +710,7 @@ async def _pay_via_platega(
     settings: Settings,
     payment_method: int,
     method_label: str,
+    balance_applied: int = 0,
 ) -> None:
     """Shared logic for Platega SBP and Crypto payment buttons."""
     merchant_id = getattr(settings, "platega_merchant_id", "")
@@ -563,8 +755,10 @@ async def _pay_via_platega(
             return_url=return_url,
             failed_url=return_url,
         )
+        full_price = int(plan["price_rub"])
+        platega_amount = max(1, full_price - balance_applied)
         result = await client.create_payment(
-            amount=int(plan["price_rub"]),
+            amount=platega_amount,
             description=f"ZyberVPN — {plan['name']}",
             internal_payload=idem_key,
             payment_method=payment_method,
@@ -574,7 +768,7 @@ async def _pay_via_platega(
 
         await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=int(plan["price_rub"]),
+            amount=full_price,  # store full price; balance_applied = full_price - platega_amount
             tariff_code=tariff_code,
             email=email,
             payload=transaction_id,

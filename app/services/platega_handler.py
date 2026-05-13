@@ -198,8 +198,17 @@ async def process_confirmed_platega_payment(
         )
         await _send(bot, tg_id, text)
         await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
+        stored_amount = int(payment.get("amount") or 0)
+        charged_amount = int(processed.get("amount") or 0)
+        balance_applied = stored_amount - charged_amount
+        if balance_applied > 0:
+            try:
+                await users_repo.deduct_balance(tg_id, balance_applied)
+                await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+            except Exception:
+                logger.exception("platega_handler renewal: deduct_balance failed tg_id=%s", tg_id)
         referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-        bonus = await referral_service.accrue_bonus(user, int(processed.get("amount") or 0))
+        bonus = await referral_service.accrue_bonus(user, charged_amount)
         if bonus > 0:
             await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
         return
@@ -278,8 +287,20 @@ async def process_confirmed_platega_payment(
         await _send(bot, tg_id, text)
 
     await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
+
+    # If balance was applied (payment.amount > charged amount), deduct it now.
+    stored_amount = int(payment.get("amount") or 0)
+    charged_amount = int(processed.get("amount") or 0)
+    balance_applied = stored_amount - charged_amount
+    if balance_applied > 0:
+        try:
+            await users_repo.deduct_balance(tg_id, balance_applied)
+            await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+        except Exception:
+            logger.exception("platega_handler: deduct_balance failed tg_id=%s amount=%s", tg_id, balance_applied)
+
     referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-    bonus = await referral_service.accrue_bonus(user, int(processed.get("amount") or 0))
+    bonus = await referral_service.accrue_bonus(user, charged_amount)
     if bonus > 0:
         await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
 

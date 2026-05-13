@@ -85,8 +85,22 @@ def tariffs_keyboard() -> InlineKeyboardMarkup:
 
 
 
-def payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool = False, show_test_pay: bool = False) -> InlineKeyboardMarkup:
+def payment_keyboard(
+    platega_enabled: bool = False,
+    platega_crypto_enabled: bool = False,
+    show_test_pay: bool = False,
+    balance: int = 0,
+    price_rub: int = 0,
+) -> InlineKeyboardMarkup:
     rows = []
+    if balance > 0:
+        if price_rub > 0 and balance >= price_rub:
+            label = f"💰 Оплатить с баланса (бесплатно, −{price_rub} руб.)"
+        elif price_rub > 0:
+            label = f"💰 Баланс: −{balance} руб. (доплатить {price_rub - balance} руб.)"
+        else:
+            label = f"💰 Оплатить с баланса ({balance} руб.)"
+        rows.append([InlineKeyboardButton(text=label, callback_data="pay:balance")])
     if platega_enabled:
         rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega")])
     if platega_crypto_enabled:
