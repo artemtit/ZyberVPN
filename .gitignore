@@ -215,3 +215,4 @@ CLAUDE.md
 .claude/settings.local.json
 deploy.py
 settings.local.json
+BUGS.md
