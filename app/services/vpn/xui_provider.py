@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -99,20 +100,6 @@ class XUIProvider(VPNProvider):
                         session, server, final_reality_uuid,
                         lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
                     )
-                # Reset traffic stats so this key doesn't inherit usage from a previous key
-                # (e.g. after a DB reset where key IDs restart from 1).
-                try:
-                    reset_url = (
-                        f"{server.api_url}/panel/api/inbounds"
-                        f"/{server.inbound_id}/resetClientTraffic/{reality_email}"
-                    )
-                    await self._request_json(session, "post", reset_url)
-                    logger.info(
-                        "traffic reset for reused reality client email=%s server_id=%s",
-                        reality_email, server.id,
-                    )
-                except Exception:
-                    pass
 
             final_ws_uuid: str | None = None
             if ctx.ws_supported:
@@ -145,18 +132,6 @@ class XUIProvider(VPNProvider):
                             session, server, final_ws_uuid,
                             lambda c: (c.__setitem__("enable", True), c.__setitem__("expiryTime", int(limits.expiry_time))),
                         )
-                    try:
-                        reset_url = (
-                            f"{server.api_url}/panel/api/inbounds"
-                            f"/{server.inbound_id}/resetClientTraffic/{ws_email}"
-                        )
-                        await self._request_json(session, "post", reset_url)
-                        logger.info(
-                            "traffic reset for reused ws client email=%s server_id=%s",
-                            ws_email, server.id,
-                        )
-                    except Exception:
-                        pass
 
             await self._ensure_client_live(session, server, reality_email, final_reality_uuid)
 
@@ -285,8 +260,14 @@ class XUIProvider(VPNProvider):
         if parsed.scheme == "http" and host not in {"127.0.0.1", "localhost"}:
             raise XUIProviderError("Insecure XUI api_url over HTTP is blocked; use localhost tunnel")
 
-    def _session(self) -> ClientSession:
-        return ClientSession(timeout=self._timeout, cookie_jar=CookieJar(unsafe=True))
+    @asynccontextmanager
+    async def _session(self):
+        session = ClientSession(timeout=self._timeout, cookie_jar=CookieJar(unsafe=True))
+        try:
+            yield session
+        finally:
+            self._session_csrf.pop(id(session), None)
+            await session.close()
 
     async def _request_json(self, session: ClientSession, method: str, url: str, **kwargs) -> dict | list:
         if method.lower() == "post":

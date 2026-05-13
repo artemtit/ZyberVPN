@@ -86,17 +86,24 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     # Handle balance top-up separately — no VPN provisioning needed.
     if payment.get("purchase_type") == "topup":
         stars_amount = int(payment.get("amount") or 0)
-        if stars_amount > 0:
-            try:
+        topup_idem_key = f"payment-success:{payment_info.invoice_payload}"
+
+        async def _process_topup() -> dict:
+            if payment.get("status") != "paid":
                 await payments_repo.mark_paid(
                     payload=payment_info.invoice_payload,
                     telegram_charge_id=payment_info.telegram_payment_charge_id,
                 )
-                await users_repo.add_balance(int(payment["tg_id"]), stars_amount)
-            except Exception:
-                logger.exception("Failed to process topup tg_id=%s", payment.get("tg_id"))
-                await message.answer("Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.", reply_markup=get_main_menu_keyboard())
-                return
+                if stars_amount > 0:
+                    await users_repo.add_balance(int(payment["tg_id"]), stars_amount)
+            return {"tg_id": int(payment["tg_id"]), "stars_amount": stars_amount}
+
+        try:
+            await idem.execute("topup_success", topup_idem_key, _process_topup)
+        except Exception:
+            logger.exception("Failed to process topup tg_id=%s", payment.get("tg_id"))
+            await message.answer("Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.", reply_markup=get_main_menu_keyboard())
+            return
         await message.answer(
             f"✅ <b>Баланс пополнен!</b>\n\n"
             f"💳 Зачислено: <b>{stars_amount} RUB</b>",
@@ -223,8 +230,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         days_remaining = max(0, (expires_dt - utc_now()).days)
 
         if user:
+            # users.expires_at = max(current, new key expiry) so renewing a short key
+            # never reduces the global watchdog expiry when longer keys are still active.
+            current_user_expires_raw = (user or {}).get("expires_at")
+            if current_user_expires_raw:
+                try:
+                    user_expires_dt = max(expires_dt, parse_iso_utc(current_user_expires_raw))
+                except Exception:
+                    user_expires_dt = expires_dt
+            else:
+                user_expires_dt = expires_dt
             await users_repo.set_expiry(
-                tg_id, expires_at=expires_dt.isoformat(),
+                tg_id, expires_at=user_expires_dt.isoformat(),
                 is_active=True, plan="monthly", last_activated_at=activated_at,
             )
         try:

@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import weakref
-from datetime import timedelta
 from typing import Optional
 
 from app.db.database import Database
 from app.services.supabase import execute_with_retry, get_supabase_client
-from app.utils.datetime import add_months, parse_iso_utc, utc_now
+from app.utils.datetime import utc_now
 
 logger = logging.getLogger(__name__)
-_SUB_LOCKS: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 class SubscriptionsRepository:
@@ -58,71 +54,39 @@ class SubscriptionsRepository:
     async def create_or_extend(self, tg_id: int, months: int) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        lock = _SUB_LOCKS.get(tg_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _SUB_LOCKS[tg_id] = lock
-        async with lock:
-            latest = await self.get_active(tg_id)
-            start_from = utc_now()
-            if latest:
-                start_from = parse_iso_utc(latest["expires_at"])
-                expires_at = add_months(start_from, months).isoformat()
-                # Single atomic UPDATE on the existing row — avoids the expire+insert
-                # two-step where a crash between both leaves the user with no subscription.
-                response = await execute_with_retry(
-                    lambda: self._supabase.table("subscriptions")
-                        .update({"expires_at": expires_at})
-                        .eq("id", latest["id"])
-                        .execute(),
-                    operation="subscriptions.extend_existing",
-                )
-                rows = response.data or []
-                if rows:
-                    logger.info("Subscription extended tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
-                    return rows[0]
-            expires_at = add_months(start_from, months).isoformat()
-            response = await execute_with_retry(
-                lambda: self._supabase.table("subscriptions").insert({"tg_id": tg_id, "expires_at": expires_at, "status": "active"}).execute(),
-                operation="subscriptions.create_or_extend",
-            )
-            rows = response.data or []
-            if not rows:
-                raise RuntimeError("Failed to create subscription")
-            logger.info("Subscription created tg_id=%s months=%s expires_at=%s", tg_id, months, expires_at)
-            return rows[0]
+        response = await execute_with_retry(
+            lambda: self._supabase.rpc(
+                "extend_subscription_months",
+                {"p_tg_id": tg_id, "p_months": months},
+            ).execute(),
+            operation="subscriptions.create_or_extend",
+        )
+        row = self._rpc_row(response.data)
+        if not row:
+            raise RuntimeError("Failed to create or extend subscription")
+        logger.info("Subscription create/extend tg_id=%s months=%s expires_at=%s", tg_id, months, row.get("expires_at"))
+        return row
 
     async def create_or_extend_days(self, tg_id: int, days: int) -> dict:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        lock = _SUB_LOCKS.get(tg_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _SUB_LOCKS[tg_id] = lock
-        async with lock:
-            latest = await self.get_active(tg_id)
-            start_from = utc_now()
-            if latest:
-                start_from = parse_iso_utc(latest["expires_at"])
-                expires_at = (start_from + timedelta(days=days)).isoformat()
-                response = await execute_with_retry(
-                    lambda: self._supabase.table("subscriptions")
-                        .update({"expires_at": expires_at})
-                        .eq("id", latest["id"])
-                        .execute(),
-                    operation="subscriptions.extend_existing_days",
-                )
-                rows = response.data or []
-                if rows:
-                    logger.info("Subscription extended tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
-                    return rows[0]
-            expires_at = (start_from + timedelta(days=days)).isoformat()
-            response = await execute_with_retry(
-                lambda: self._supabase.table("subscriptions").insert({"tg_id": tg_id, "expires_at": expires_at, "status": "active"}).execute(),
-                operation="subscriptions.create_or_extend_days",
-            )
-            rows = response.data or []
-            if not rows:
-                raise RuntimeError("Failed to create subscription")
-            logger.info("Subscription created tg_id=%s days=%s expires_at=%s", tg_id, days, expires_at)
-            return rows[0]
+        response = await execute_with_retry(
+            lambda: self._supabase.rpc(
+                "extend_subscription_days",
+                {"p_tg_id": tg_id, "p_days": days},
+            ).execute(),
+            operation="subscriptions.create_or_extend_days",
+        )
+        row = self._rpc_row(response.data)
+        if not row:
+            raise RuntimeError("Failed to create or extend subscription")
+        logger.info("Subscription create/extend tg_id=%s days=%s expires_at=%s", tg_id, days, row.get("expires_at"))
+        return row
+
+    @staticmethod
+    def _rpc_row(data: object) -> dict:
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+        return {}

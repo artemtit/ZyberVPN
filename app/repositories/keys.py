@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.db.database import Database
 from app.services.supabase import execute_with_retry, get_supabase_client
+from app.utils.datetime import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token,disabled_at")
                 .eq("tg_id", tg_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -50,7 +51,7 @@ class KeysRepository:
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token")
+                .select("id,tg_id,key,comment,is_primary,expires_at,created_at,traffic_limit_gb,sub_token,disabled_at")
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .limit(1)
@@ -105,32 +106,15 @@ class KeysRepository:
         )
 
     async def set_primary(self, tg_id: int, key_id: int) -> None:
-        """Mark key_id as primary and clear is_primary on all other keys for tg_id.
-
-        Set the new primary FIRST so there is always exactly one primary key visible
-        to concurrent readers, even between the two UPDATE statements.
-        """
+        """Atomically mark key_id as primary and clear other primaries for tg_id."""
         if not self._supabase:
             return
         await execute_with_retry(
-            lambda: (
-                self._supabase.table("keys")
-                .update({"is_primary": True})
-                .eq("id", key_id)
-                .eq("tg_id", tg_id)
-                .execute()
-            ),
-            operation="keys.set_primary.set",
-        )
-        await execute_with_retry(
-            lambda: (
-                self._supabase.table("keys")
-                .update({"is_primary": False})
-                .eq("tg_id", tg_id)
-                .neq("id", key_id)
-                .execute()
-            ),
-            operation="keys.set_primary.clear",
+            lambda: self._supabase.rpc(
+                "set_primary_key",
+                {"p_tg_id": tg_id, "p_key_id": key_id},
+            ).execute(),
+            operation="keys.set_primary",
         )
 
     async def update_key_text(self, key_id: int, tg_id: int, key: str) -> None:
@@ -153,7 +137,7 @@ class KeysRepository:
         await execute_with_retry(
             lambda: (
                 self._supabase.table("keys")
-                .update({"expires_at": expires_at})
+                .update({"expires_at": expires_at, "disabled_at": None})
                 .eq("id", key_id)
                 .eq("tg_id", tg_id)
                 .execute()
@@ -161,6 +145,61 @@ class KeysRepository:
             operation="keys.update_expires_at",
         )
 
+    async def list_expired_enabled_keys(self, limit: int = 300) -> list[dict]:
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("keys")
+                    .select("id,tg_id,key,expires_at,disabled_at")
+                    .lt("expires_at", utc_now().isoformat())
+                    .is_("disabled_at", "null")
+                    .order("expires_at", desc=False)
+                    .limit(limit)
+                    .execute()
+                ),
+                operation="keys.list_expired_enabled_keys",
+            )
+            return list(response.data or [])
+        except Exception:
+            logger.exception("keys.list_expired_enabled_keys failed")
+            return []
+
+    async def mark_disabled(self, key_id: int, tg_id: int) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"disabled_at": utc_now().isoformat()})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.mark_disabled",
+        )
+
+    async def clear_disabled(self, key_id: int, tg_id: int) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .update({"disabled_at": None})
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.clear_disabled",
+        )
+
+    async def get_traffic_limit_gb(self, key_id: int, tg_id: int) -> int | None:
+        key_row = await self.get_by_id_for_user(key_id, tg_id)
+        if not key_row:
+            return None
+        value = int((key_row or {}).get("traffic_limit_gb") or 0)
+        return value if value > 0 else None
 
     async def ensure_sub_token(self, key_id: int, tg_id: int) -> str:
         """Return existing sub_token for this key, or generate and store a new one."""
@@ -208,7 +247,7 @@ class KeysRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("keys")
-                    .select("id,tg_id,key,comment,is_primary,expires_at,created_at,sub_token,traffic_limit_gb")
+                    .select("id,tg_id,key,comment,is_primary,expires_at,created_at,sub_token,traffic_limit_gb,disabled_at")
                     .eq("sub_token", token)
                     .limit(1)
                     .execute()

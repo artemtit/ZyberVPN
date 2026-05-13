@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.config import Settings
+from app.repositories.keys import KeysRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.vpn_devices import VpnDevicesRepository
@@ -73,6 +74,7 @@ class VPNManager:
         vpn_devices_repo: VpnDevicesRepository | None,
         settings: Settings,
         users_repo: UsersRepository | None = None,
+        keys_repo: KeysRepository | None = None,
         bot: Bot | None = None,
     ) -> None:
         self._providers = providers
@@ -81,6 +83,7 @@ class VPNManager:
         self._vpn_devices_repo = vpn_devices_repo
         self._settings = settings
         self._users_repo = users_repo
+        self._keys_repo = keys_repo
         self._bot = bot
 
     async def create_user_access(
@@ -88,6 +91,7 @@ class VPNManager:
         user_id: int,
         expiry_time: int | None = None,
         key_id: int | None = None,
+        traffic_limit_gb: int | None = None,
     ) -> list[str]:
         """Provision a fresh VPN client for (user_id, key_id).
 
@@ -142,7 +146,7 @@ class VPNManager:
 
         logger.info("VPN creation claimed user_id=%s key_id=%s claim=%s", user_id, key_id, claim)
         try:
-            return await self._create_on_best_server(user_id, expiry_time, key_id)
+            return await self._create_on_best_server(user_id, expiry_time, key_id, traffic_limit_gb=traffic_limit_gb)
         except Exception:
             await self._user_vpn_repo.set_failed(user_id, key_id)
             raise
@@ -180,8 +184,9 @@ class VPNManager:
         return configs
 
     async def disable_user_access(self, user_id: int) -> None:
-        rows = await self._user_vpn_repo.list_user_vpns(user_id)
-        rows = [r for r in rows if int(r.get("server_id") or 0) > 0]
+        # Fetch all rows including secondary server slots (key_id >= 9_000_000_000).
+        all_rows = await self._user_vpn_repo.list_all_for_user(user_id)
+        rows = [r for r in all_rows if int(r.get("server_id") or 0) > 0]
         if not rows:
             return
         servers = await self._servers_repo.list_all()
@@ -199,8 +204,11 @@ class VPNManager:
             for uuid in [reality_uuid, ws_uuid]:
                 if not uuid:
                     continue
-                await provider.disable_client(server, uuid)
-                logger.info("VPN client disabled user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
+                try:
+                    await provider.disable_client(server, uuid)
+                    logger.info("VPN client disabled user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
+                except Exception:
+                    logger.exception("disable_client failed user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
             key_id = row.get("key_id")
             await self._user_vpn_repo.delete(user_id, key_id)
             logger.info("VPN user_vpn row deleted user_id=%s key_id=%s", user_id, key_id)
@@ -383,10 +391,16 @@ class VPNManager:
             limit_bytes = xui_total_bytes
             traffic_limit_gb = xui_total_bytes // (1024 ** 3) or 1
         else:
-            # XUI client has no limit set — use per-setting default.
-            # Do NOT fall back to users.traffic_limit_gb: it accumulates across
-            # all purchases and would conflate limits from different keys.
-            traffic_limit_gb = self._settings.vpn_total_gb
+            # XUI client has no per-client limit. Check the keys table first,
+            # then fall back to the settings default. Never use users.traffic_limit_gb
+            # because it accumulates across all purchases and conflates key limits.
+            per_key_gb: int | None = None
+            if self._keys_repo is not None and key_id is not None:
+                try:
+                    per_key_gb = await self._keys_repo.get_traffic_limit_gb(key_id, user_id)
+                except Exception:
+                    logger.warning("enforce_traffic_limit: keys_repo lookup failed user_id=%s key_id=%s", user_id, key_id)
+            traffic_limit_gb = per_key_gb if per_key_gb and per_key_gb > 0 else self._settings.vpn_total_gb
             limit_bytes = traffic_limit_gb * 1024 ** 3
 
         if bytes_used < limit_bytes:
@@ -515,8 +529,9 @@ class VPNManager:
         if key_id is None:
             raise VPNManagerError("key_id is required for expiry update")
         logger.debug("ACCESS FLOW | user_id=%s key_id=%s action=renew", user_id, key_id)
-        rows = [await self._user_vpn_repo.get_user_vpn(user_id, key_id)]
-        rows = [r for r in rows if r and r.get("key_id") is not None]
+        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        rows = [r for r in ([primary_row] + secondary_rows) if r and r.get("server_id")]
 
         if not rows:
             return False
@@ -573,7 +588,8 @@ class VPNManager:
         return int(expires.timestamp() * 1000)
 
     async def _create_on_best_server(
-        self, user_id: int, expiry_time: int | None, key_id: int | None = None
+        self, user_id: int, expiry_time: int | None, key_id: int | None = None,
+        traffic_limit_gb: int | None = None,
     ) -> list[str]:
         await self._servers_repo.bootstrap_from_env_if_empty(self._settings)
         all_servers = await self._servers_repo.list_all()
@@ -591,9 +607,14 @@ class VPNManager:
         if provider is None:
             raise VPNManagerError("VPN provider is not configured")
 
+        effective_gb = (
+            traffic_limit_gb
+            if traffic_limit_gb and traffic_limit_gb > 0
+            else await self._user_traffic_limit_gb(user_id)
+        )
         limits = ClientLimits(
             limit_ip=self._settings.vpn_limit_ip,
-            total_gb=await self._user_traffic_limit_gb(user_id),
+            total_gb=effective_gb,
             expiry_time=expiry_time if expiry_time is not None else self._default_expiry_ms(),
         )
         last_error: Exception | None = None

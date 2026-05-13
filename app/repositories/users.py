@@ -37,7 +37,7 @@ class UsersRepository:
                 lambda: (
                     self._supabase.table("users")
                     .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
                     )
                     .eq("tg_id", tg_id)
                     .limit(1)
@@ -153,7 +153,7 @@ class UsersRepository:
                 lambda: (
                     self._supabase.table("users")
                     .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
                     )
                     .eq("sub_token", token)
                     .limit(1)

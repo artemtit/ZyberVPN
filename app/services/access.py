@@ -55,6 +55,7 @@ def build_vpn_manager(db: Database, settings: Settings, bot: Bot | None = None) 
     servers_repo = ServersRepository(db)
     user_vpn_repo = UserVpnRepository(db)
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
     vpn_devices_repo = VpnDevicesRepository(db)
     providers = {"xui": XUIProvider()}
     return VPNManager(
@@ -64,6 +65,7 @@ def build_vpn_manager(db: Database, settings: Settings, bot: Bot | None = None) 
         vpn_devices_repo=vpn_devices_repo,
         settings=settings,
         users_repo=users_repo,
+        keys_repo=keys_repo,
         bot=bot,
     )
 
@@ -91,6 +93,7 @@ async def ensure_user_access(
     idempotency_key: str | None = None,  # kept for API compatibility; no longer used
     force_new_key: bool = False,
     action: str | None = None,
+    traffic_limit_gb: int | None = None,
 ) -> dict:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
@@ -184,7 +187,12 @@ async def ensure_user_access(
         logger.info("VPN key slot pre-allocated tg_id=%s key_id=%s", tg_id, new_key_id)
 
         try:
-            vpn_configs = await manager.create_user_access(tg_id, expiry_time=expiry_ms, key_id=new_key_id)
+            vpn_configs = await manager.create_user_access(
+                tg_id,
+                expiry_time=expiry_ms,
+                key_id=new_key_id,
+                traffic_limit_gb=traffic_limit_gb,
+            )
         except VPNManagerError as error:
             logger.error("VPN creation failed tg_id=%s key_id=%s error=%s", tg_id, new_key_id, error)
             raise AccessEnsureError(str(error)) from error

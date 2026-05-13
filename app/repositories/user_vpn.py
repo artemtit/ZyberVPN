@@ -71,6 +71,26 @@ class UserVpnRepository:
             logger.exception("list_user_vpns failed user_id=%s", user_id)
             return []
 
+    async def list_all_for_user(self, user_id: int) -> list[dict]:
+        """Return every user_vpn row for user_id, including secondary synthetic rows."""
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("user_vpn")
+                    .select("user_id,server_id,status,reality_uuid,ws_uuid,reality_config,ws_config,key_id,created_at,updated_at")
+                    .eq("user_id", user_id)
+                    .order("key_id")
+                    .execute()
+                ),
+                operation="user_vpn.list_all_for_user",
+            )
+            return [r for r in (response.data or []) if isinstance(r, dict)]
+        except Exception:
+            logger.exception("list_all_for_user failed user_id=%s", user_id)
+            return []
+
     async def list_secondary_for_key(self, user_id: int, real_key_id: int) -> list[dict]:
         """Return secondary-server user_vpn rows for a real key_id, ordered by key_id.
 
@@ -123,11 +143,6 @@ class UserVpnRepository:
             return str(response.data or "creating")
         except Exception:
             logger.exception("claim_creating RPC failed user_id=%s key_id=%s", user_id, key_id)
-            if key_id is not None:
-                # Older deployments may still have the legacy one-argument RPC.
-                # Keyed create can continue because set_ready performs an exact
-                # key_id upsert after provisioning.
-                return "claimed"
             return "creating"
 
     async def set_ready(

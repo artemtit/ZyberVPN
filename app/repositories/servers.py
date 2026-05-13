@@ -42,22 +42,17 @@ class ServersRepository:
     async def update_health(self, server_id: int, is_active: bool, ok: bool, error_text: str | None) -> None:
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
-        now = utc_now().isoformat()
-        current_response = await execute_with_retry(
-            lambda: self._supabase.table("servers").select("health_errors").eq("id", server_id).limit(1).execute(),
-            operation="servers.update_health.read",
-        )
-        current_rows = current_response.data or []
-        current_errors = int((current_rows[0] or {}).get("health_errors") or 0) if current_rows else 0
-        payload = {
-            "is_active": is_active,
-            "last_health_check": now,
-            "last_error": error_text or "",
-            "health_errors": 0 if ok else current_errors + 1,
-        }
         await execute_with_retry(
-            lambda: self._supabase.table("servers").update(payload).eq("id", server_id).execute(),
-            operation="servers.update_health.write",
+            lambda: self._supabase.rpc(
+                "update_server_health",
+                {
+                    "p_server_id": server_id,
+                    "p_is_active": is_active,
+                    "p_ok": ok,
+                    "p_error_text": error_text,
+                },
+            ).execute(),
+            operation="servers.update_health",
         )
 
     async def bootstrap_from_env_if_empty(self, settings: Settings) -> None:

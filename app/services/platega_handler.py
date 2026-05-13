@@ -172,8 +172,18 @@ async def process_confirmed_platega_payment(
             days_remaining = max(0, (expires_dt - utc_now()).days)
 
             if user:
+                # users.expires_at = max(current, new key expiry) so renewing a short key
+                # never reduces the global watchdog expiry when longer keys are still active.
+                current_user_expires_raw = (user or {}).get("expires_at")
+                if current_user_expires_raw:
+                    try:
+                        user_expires_dt = max(expires_dt, parse_iso_utc(current_user_expires_raw))
+                    except Exception:
+                        user_expires_dt = expires_dt
+                else:
+                    user_expires_dt = expires_dt
                 await users_repo.set_expiry(
-                    tg_id, expires_at=expires_dt.isoformat(),
+                    tg_id, expires_at=user_expires_dt.isoformat(),
                     is_active=True, plan="monthly", last_activated_at=activated_at,
                 )
             await manager.renew_user_access(tg_id, expiry_ms, key_id=renew_key_id, traffic_limit_gb=key_traffic_gb)

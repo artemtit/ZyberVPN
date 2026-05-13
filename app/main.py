@@ -27,6 +27,7 @@ from app.bot.handlers.admin import router as admin_router, _BANNED_IDS as BANNED
 from app.bot.handlers import setup_routers
 from app.config import load_settings
 from app.db.database import Database
+from app.repositories.keys import KeysRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
@@ -183,6 +184,41 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
+async def _per_key_expiry_loop(db: Database, settings, interval_seconds: int = 120) -> None:
+    """Disable individual expired keys without touching other active keys for the same user.
+
+    Unlike _disable_expired_access_loop (which acts on users.expires_at and kills all
+    of a user's access), this loop acts on keys.expires_at and disables only that key's
+    XUI client(s).  It then stamps keys.disabled_at so the key is not re-processed.
+    """
+    keys_repo = KeysRepository(db)
+    manager = build_vpn_manager(db, settings)
+    while True:
+        try:
+            expired_keys = await keys_repo.list_expired_enabled_keys(limit=300)
+        except Exception:
+            logging.exception("per_key_expiry_loop: failed to list expired keys")
+            await asyncio.sleep(interval_seconds)
+            continue
+
+        for key_row in expired_keys:
+            tg_id = int(key_row.get("tg_id") or 0)
+            key_id = int(key_row.get("id") or 0)
+            if not tg_id or not key_id:
+                continue
+            try:
+                # Disable this key's primary and secondary XUI clients.
+                await manager.update_user_expiry(tg_id, expiry_time_ms=0, key_id=key_id)
+            except Exception:
+                logging.exception("per_key_expiry_loop: update_user_expiry failed tg_id=%s key_id=%s", tg_id, key_id)
+            try:
+                await keys_repo.mark_disabled(key_id, tg_id)
+            except Exception:
+                logging.exception("per_key_expiry_loop: mark_disabled failed tg_id=%s key_id=%s", tg_id, key_id)
+
+        await asyncio.sleep(interval_seconds)
+
+
 async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
     users_repo = UsersRepository(db)
     while True:
@@ -272,6 +308,7 @@ async def run() -> None:
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
+    per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
 
     # Restore banned-user set from DB so bans survive bot restarts.
@@ -295,6 +332,7 @@ async def run() -> None:
             healthcheck_task,
             disable_expired_task,
             enforce_traffic_task,
+            per_key_expiry_task,
             expiry_notification_task,
         ):
             task.cancel()
