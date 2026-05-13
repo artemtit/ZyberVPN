@@ -679,6 +679,28 @@ class VPNManager:
                 try:
                     existing_uuid = await provider.get_client(server, user_id, key_id=key_id)
                     if existing_uuid:
+                        # Client exists in XUI — still ensure the secondary DB row exists.
+                        # Without this, sync_secondary_servers_for_key loops forever when
+                        # the client was provisioned before secondary-row tracking was added.
+                        try:
+                            profiles = await provider.get_client_config(user_id, server, existing_uuid)
+                            await self._save_additional_server_access(
+                                user_id=user_id,
+                                key_id=self._secondary_key_id(key_id, server.id),
+                                server_id=server.id,
+                                reality_uuid=existing_uuid,
+                                ws_uuid=None,
+                                profiles=profiles,
+                            )
+                            logger.info(
+                                "secondary VPN row saved (existing client) user_id=%s server_id=%s",
+                                user_id, server.id,
+                            )
+                        except Exception as save_err:
+                            logger.warning(
+                                "secondary row save failed (existing client) user_id=%s server_id=%s error=%s",
+                                user_id, server.id, save_err,
+                            )
                         continue
                     result = await provider.add_client(server, user_id, reality_uuid, expiry_time, key_id=key_id)
                     await self._save_additional_server_access(
