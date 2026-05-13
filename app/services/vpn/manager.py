@@ -837,3 +837,49 @@ class VPNManager:
         if ws.startswith("vless://") and ws != reality:
             output.append(ws)
         return output
+
+    async def sync_secondary_servers_for_key(self, user_id: int, key_id: int) -> None:
+        """Provision user on any active servers where they don't yet have a client for this key.
+
+        Called in background on subscription requests so existing users automatically
+        receive new servers (e.g. PL) without re-purchasing.
+        """
+        vpn_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        if not vpn_row:
+            return
+        primary_server_id = int(vpn_row.get("server_id") or 0)
+        reality_uuid = str(vpn_row.get("reality_uuid") or "").strip()
+        if not primary_server_id or not reality_uuid:
+            return
+
+        all_servers = await self._servers_repo.list_all()
+        active_secondary = [s for s in all_servers if s.is_active and s.id != primary_server_id]
+        if not active_secondary:
+            return
+
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        provisioned_ids = {int(r.get("server_id") or 0) for r in secondary_rows}
+        missing = [s for s in active_secondary if s.id not in provisioned_ids]
+        if not missing:
+            return
+
+        expiry_ms = self._default_expiry_ms()
+        if self._keys_repo is not None:
+            try:
+                key_row = await self._keys_repo.get_by_id_for_user(key_id, user_id)
+                if key_row and key_row.get("expires_at"):
+                    expiry_ms = int(parse_iso_utc(key_row["expires_at"]).timestamp() * 1000)
+            except Exception:
+                pass
+
+        logger.info(
+            "sync_secondary: user_id=%s key_id=%s provisioning on %d missing server(s): %s",
+            user_id, key_id, len(missing), [s.name for s in missing],
+        )
+        await self._provision_on_other_servers(
+            user_id=user_id,
+            primary_server_id=primary_server_id,
+            reality_uuid=reality_uuid,
+            expiry_time=expiry_ms,
+            key_id=key_id,
+        )

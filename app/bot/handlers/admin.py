@@ -71,6 +71,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/ban &lt;tg_id&gt; — заблокировать пользователя\n"
         "/unban &lt;tg_id&gt; — разблокировать пользователя\n"
         "/servers — список серверов\n"
+        "/sync_servers — добавить все ключи на новые серверы\n"
         "/broadcast &lt;текст&gt; — рассылка активным пользователям\n"
         "/broadcastall &lt;текст&gt; — рассылка ВСЕМ пользователям",
     )
@@ -448,3 +449,40 @@ async def broadcastall_cancel(callback: CallbackQuery, state: FSMContext, settin
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("❌ Рассылка отменена.")
     await callback.answer()
+
+
+# ──────────────────────────────────────────
+# /sync_servers — provision all existing keys on missing servers
+# ──────────────────────────────────────────
+@router.message(Command("sync_servers"))
+async def admin_sync_servers(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    await message.answer("🔄 Запускаю синхронизацию серверов для всех ключей...")
+    manager = build_vpn_manager(db, settings)
+    keys_repo = KeysRepository(db)
+    users_repo = UsersRepository(db)
+
+    active_ids = await users_repo.list_active_tg_ids()
+    ok = skipped = failed = 0
+    for tg_id in active_ids:
+        try:
+            keys = await keys_repo.list_by_user(tg_id)
+            for key_row in keys:
+                key_id = key_row.get("id")
+                if not key_id:
+                    continue
+                try:
+                    await manager.sync_secondary_servers_for_key(tg_id, int(key_id))
+                    ok += 1
+                except Exception:
+                    failed += 1
+        except Exception:
+            skipped += 1
+
+    await message.answer(
+        f"✅ Синхронизация завершена.\n"
+        f"Обработано ключей: <b>{ok}</b>\n"
+        f"Ошибок: <b>{failed}</b>\n"
+        f"Пропущено пользователей: <b>{skipped}</b>"
+    )

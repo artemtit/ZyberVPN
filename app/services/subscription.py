@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from urllib.parse import urlparse, urlunparse
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 # ISO-2 country code → (flag emoji, display name)
 _COUNTRY_DISPLAY: dict[str, tuple[str, str]] = {
     "NL": ("🇳🇱", "Нидерланды"),
+    "PL": ("🇵🇱", "Польша"),
     "DE": ("🇩🇪", "Германия"),
     "US": ("🇺🇸", "США"),
     "GB": ("🇬🇧", "Великобритания"),
@@ -121,6 +123,16 @@ class SubscriptionService:
         ]
         if not links:
             raise LookupError("vpn access not found for key")
+
+        # Provision any active servers the user is missing — runs in background so
+        # this request stays fast; the new server appears on the next subscription poll.
+        try:
+            asyncio.create_task(
+                self._vpn_manager.sync_secondary_servers_for_key(tg_id, int(key_id))
+            )
+        except Exception:
+            pass
+
         download_bytes = 0
         try:
             bytes_used, _ = await self._vpn_manager.get_client_stats(tg_id, key_id=key_id)
