@@ -53,9 +53,10 @@ def _apply_display_name(link: str, name: str) -> str:
 
 
 class SubscriptionService:
-    def __init__(self, users_repo: UsersRepository, vpn_manager) -> None:
+    def __init__(self, users_repo: UsersRepository, vpn_manager, bot_username: str = "ZyberVPNBot") -> None:
         self._users_repo = users_repo
         self._vpn_manager = vpn_manager
+        self._bot_username = bot_username
 
     async def get_payload_by_token(self, token: str) -> dict:
         """Resolve subscription strictly by keys.sub_token.
@@ -85,8 +86,37 @@ class SubscriptionService:
         # If keys.expires_at is not set, the key has no expiry (treat as valid).
         key_expires = key_row.get("expires_at")
         if key_expires and self._is_expired(key_expires):
-            raise PermissionError("subscription inactive")
+            return self._build_expired_payload(key_row)
         return await self._build_key_payload(tg_id, int(key_id), user, key_row)
+
+    def _build_expired_payload(self, key_row: dict) -> dict:
+        """Return a subscription payload with informational non-connectable entries.
+
+        VPN clients (Sing-box, V2Ray, Clash) display the fragment (#name) as the
+        server label. We use RFC 5737 documentation addresses (192.0.2.x) which are
+        guaranteed non-routable, so the user cannot accidentally connect through them.
+        """
+        _dummy = "vless://00000000-0000-0000-0000-000000000000@192.0.2.1"
+        servers = [
+            f"{_dummy}:1?type=tcp&security=none#⏳ Подписка истекла",
+            f"{_dummy}:2?type=tcp&security=none#Купите новую в боте",
+            f"{_dummy}:3?type=tcp&security=none#https://t.me/{self._bot_username}",
+        ]
+        expire_ts = 0
+        try:
+            expires_raw = key_row.get("expires_at")
+            if expires_raw:
+                expire_ts = int(parse_iso_utc(expires_raw).timestamp())
+        except Exception:
+            pass
+        return {
+            "remarks": "ZyberVPN",
+            "upload": 0,
+            "download": 0,
+            "total": 0,
+            "expire": expire_ts,
+            "servers": servers,
+        }
 
     async def _build_key_payload(self, tg_id: int, key_id: int, user: dict, key_row: dict) -> dict:
         """Build subscription payload for a specific key_id (per-key subscription).
@@ -227,4 +257,8 @@ class SubscriptionService:
 def build_subscription_service(db, settings) -> SubscriptionService:
     users_repo = UsersRepository(db)
     vpn_manager = build_vpn_manager(db, settings)
-    return SubscriptionService(users_repo=users_repo, vpn_manager=vpn_manager)
+    return SubscriptionService(
+        users_repo=users_repo,
+        vpn_manager=vpn_manager,
+        bot_username=settings.bot_username,
+    )
