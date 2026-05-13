@@ -17,6 +17,7 @@ from app.repositories.keys import KeysRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.subscriptions import SubscriptionsRepository
+from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
@@ -85,10 +86,16 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
     keys_repo = KeysRepository(db)
+    servers_repo = ServersRepository(db)
+    user_vpn_repo = UserVpnRepository(db)
 
-    total_users = await users_repo.count_all()
-    active_users = await users_repo.count_active()
-    total_revenue = await payments_repo.total_revenue()
+    total_users, active_users, new_24h, total_revenue, server_counts = await asyncio.gather(
+        users_repo.count_all(),
+        users_repo.count_active(),
+        users_repo.count_new_last_24h(),
+        payments_repo.total_revenue(),
+        user_vpn_repo.count_users_by_server(),
+    )
 
     # Count total keys across active users — parallelised to avoid sequential latency.
     active_ids = await users_repo.list_active_tg_ids()
@@ -97,12 +104,21 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     total_keys = sum(len(ks) for ks in key_lists)
     keys_label = f"{total_keys}+" if len(active_ids) > 100 else str(total_keys)
 
+    servers = await servers_repo.list_all()
+    server_lines = ""
+    for srv in servers:
+        status = "🟢" if srv.is_active else "🔴"
+        load = server_counts.get(srv.id, 0)
+        server_lines += f"  {status} {srv.name} ({srv.country}): {load} юзеров\n"
+
     await message.answer(
         "📊 <b>Статистика проекта</b>\n\n"
         f"👥 Всего пользователей: <b>{total_users}</b>\n"
         f"✅ Активных подписчиков: <b>{active_users}</b>\n"
+        f"🆕 Новых за 24ч: <b>{new_24h}</b>\n"
         f"🔑 Ключей (активные юзеры): <b>{keys_label}</b>\n"
-        f"💰 Общий доход: <b>{total_revenue} RUB</b>",
+        f"💰 Общий доход: <b>{total_revenue} RUB</b>\n\n"
+        f"🖥 <b>Серверы:</b>\n{server_lines}",
     )
 
 
@@ -253,16 +269,23 @@ async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
         return
 
     # Disable all VPN clients in XUI
+    xui_ok = False
     try:
         manager = build_vpn_manager(db, settings)
         await manager.disable_user_access(target_id)
+        xui_ok = True
     except Exception:
         logger.exception("admin_ban: disable_user_access failed tg_id=%s", target_id)
-        await message.answer(f"⚠️ XUI отключение не удалось для {target_id}, но БД будет обновлена.")
+        await message.answer(
+            f"⚠️ XUI отключение не удалось для {target_id}. "
+            "Пользователь заблокирован в БД, но VPN может продолжать работать. "
+            "Отключите вручную через XUI-панель."
+        )
 
     await users_repo.update_status(target_id, False)
     await users_repo.set_banned(target_id, True)
-    _BANNED_IDS.add(target_id)
+    if xui_ok:
+        _BANNED_IDS.add(target_id)
     logger.warning("ADMIN BAN | admin=%s target=%s", message.from_user.id, target_id)
 
     # Notify the banned user.
@@ -324,7 +347,6 @@ async def admin_servers(message: Message, db: Database, settings: Settings) -> N
         await message.answer("ℹ️ Серверов не найдено.")
         return
 
-    from app.repositories.user_vpn import UserVpnRepository
     user_vpn_repo = UserVpnRepository(db)
     counts = await user_vpn_repo.count_users_by_server()
 

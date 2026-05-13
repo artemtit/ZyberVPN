@@ -357,6 +357,20 @@ class UsersRepository:
         )
         return len(response.data or [])
 
+    async def count_new_last_24h(self) -> int:
+        if not self._supabase:
+            return 0
+        cutoff = (utc_now() - timedelta(hours=24)).isoformat()
+        try:
+            response = await execute_with_retry(
+                lambda: self._supabase.table("users").select("tg_id").gte("created_at", cutoff).execute(),
+                operation="users.count_new_last_24h",
+            )
+            return len(response.data or [])
+        except Exception:
+            logger.exception("Supabase count_new_last_24h failed")
+            return 0
+
     async def list_all_tg_ids(self) -> list[int]:
         """Return tg_ids of every user (including inactive / no subscription)."""
         if not self._supabase:

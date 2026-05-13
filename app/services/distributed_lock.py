@@ -35,7 +35,7 @@ class DistributedLockManager:
             logger.error("Redis URL configured but redis.asyncio unavailable")
 
     @asynccontextmanager
-    async def lock(self, key: str, ttl_seconds: int = 30, wait_timeout: float = 8.0):
+    async def lock(self, key: str, ttl_seconds: int = 90, wait_timeout: float = 8.0):
         if self._redis:
             async with self._redis_lock(key, ttl_seconds, wait_timeout):
                 yield
@@ -87,6 +87,8 @@ class DistributedLockManager:
         try:
             await asyncio.wait_for(local_lock.acquire(), timeout=wait_timeout)
         except asyncio.TimeoutError:
+            if not local_lock.locked():
+                self._local_locks.pop(key, None)
             raise TimeoutError(f"Local lock timeout: {key}")
 
         try:

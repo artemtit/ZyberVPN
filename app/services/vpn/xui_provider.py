@@ -13,6 +13,7 @@ import time
 from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar
 
 from app.services.vpn.base import ClientLimits, CreateClientResult, ServerInfo, VPNProvider, VpnProfile
+from app.utils.security import sanitize_log_data
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +435,8 @@ class XUIProvider(VPNProvider):
         }
         data = await self._request_json(session, "post", url, data=payload)
         if not isinstance(data, dict) or data.get("success") is not True:
-            raise XUIProviderError(f"addClient returned error: {data}")
+            safe = sanitize_log_data(data) if isinstance(data, dict) else data
+            raise XUIProviderError(f"addClient returned error: {safe}")
 
     async def _update_client_uuid(
         self,

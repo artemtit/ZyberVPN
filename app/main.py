@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -219,6 +220,33 @@ async def _per_key_expiry_loop(db: Database, settings, interval_seconds: int = 1
         await asyncio.sleep(interval_seconds)
 
 
+async def _disk_alert_loop(bot: Bot, settings, threshold_pct: int = 85, interval_seconds: int = 3600) -> None:
+    alerted = False
+    while True:
+        try:
+            usage = shutil.disk_usage("/")
+            used_pct = usage.used * 100 // usage.total
+            if used_pct >= threshold_pct:
+                if not alerted:
+                    msg = (
+                        f"⚠️ <b>Диск заполнен на {used_pct}%</b>\n"
+                        f"Использовано: {usage.used // (1024**3)} ГБ / {usage.total // (1024**3)} ГБ\n"
+                        "Очистите логи или расширьте диск."
+                    )
+                    for admin_id in settings.admin_ids:
+                        try:
+                            await bot.send_message(admin_id, msg)
+                        except Exception:
+                            pass
+                    logging.warning("Disk usage critical: %d%%", used_pct)
+                    alerted = True
+            else:
+                alerted = False
+        except Exception:
+            logging.exception("Disk alert loop failed")
+        await asyncio.sleep(interval_seconds)
+
+
 async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
     users_repo = UsersRepository(db)
     while True:
@@ -310,6 +338,7 @@ async def run() -> None:
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
     per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
+    disk_alert_task = asyncio.create_task(_disk_alert_loop(bot, settings))
 
     # Restore banned-user set from DB so bans survive bot restarts.
     try:
@@ -334,6 +363,7 @@ async def run() -> None:
             enforce_traffic_task,
             per_key_expiry_task,
             expiry_notification_task,
+            disk_alert_task,
         ):
             task.cancel()
             try:
