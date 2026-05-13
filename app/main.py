@@ -185,7 +185,7 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
-async def _per_key_expiry_loop(db: Database, settings, interval_seconds: int = 120) -> None:
+async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, interval_seconds: int = 120) -> None:
     """Disable individual expired keys without touching other active keys for the same user.
 
     Unlike _disable_expired_access_loop (which acts on users.expires_at and kills all
@@ -208,7 +208,6 @@ async def _per_key_expiry_loop(db: Database, settings, interval_seconds: int = 1
             if not tg_id or not key_id:
                 continue
             try:
-                # Disable this key's primary and secondary XUI clients.
                 await manager.update_user_expiry(tg_id, expiry_time_ms=0, key_id=key_id)
             except Exception:
                 logging.exception("per_key_expiry_loop: update_user_expiry failed tg_id=%s key_id=%s", tg_id, key_id)
@@ -216,6 +215,20 @@ async def _per_key_expiry_loop(db: Database, settings, interval_seconds: int = 1
                 await keys_repo.mark_disabled(key_id, tg_id)
             except Exception:
                 logging.exception("per_key_expiry_loop: mark_disabled failed tg_id=%s key_id=%s", tg_id, key_id)
+            if bot is not None:
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        "⏰ <b>Ваш VPN-ключ заблокирован: истёк срок действия.</b>\n\n"
+                        "Для продления нажмите кнопку ниже.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                        ),
+                    )
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.warning("per_key_expiry_loop: notify failed tg_id=%s key_id=%s", tg_id, key_id)
 
         await asyncio.sleep(interval_seconds)
 
@@ -336,7 +349,7 @@ async def run() -> None:
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
-    per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings))
+    per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings, bot=bot))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
     disk_alert_task = asyncio.create_task(_disk_alert_loop(bot, settings))
 

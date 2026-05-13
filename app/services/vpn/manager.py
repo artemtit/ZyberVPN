@@ -439,6 +439,29 @@ class VPNManager:
                         )
                         all_disabled = False
 
+        # Disable clients on secondary servers (e.g. PL when primary is NL, or vice versa).
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        for sec_row in secondary_rows:
+            sec_server_id = int(sec_row.get("server_id") or 0)
+            sec_server = next((s for s in servers if s.id == sec_server_id), None)
+            if not sec_server:
+                continue
+            for uuid in filter(None, [
+                str(sec_row.get("reality_uuid") or "").strip(),
+                str(sec_row.get("ws_uuid") or "").strip(),
+            ]):
+                try:
+                    await provider.disable_client(sec_server, uuid)
+                    logger.info(
+                        "secondary client disabled user_id=%s key_id=%s server_id=%s uuid=%s",
+                        user_id, key_id, sec_server_id, uuid,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "secondary disable_client failed user_id=%s server_id=%s error=%s",
+                        user_id, sec_server_id, error,
+                    )
+
         if all_disabled:
             await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
             if self._bot is not None:
