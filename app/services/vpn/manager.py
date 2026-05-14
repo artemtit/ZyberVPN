@@ -183,6 +183,46 @@ class VPNManager:
             logger.info("VPN subscription returned configs user_id=%s count=%s", user_id, len(configs))
         return configs
 
+    async def disable_key_access(self, user_id: int, key_id: int) -> None:
+        """Disable XUI clients for one specific key (primary + secondary servers) and delete its DB rows."""
+        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        rows = [r for r in ([primary_row] + list(secondary_rows)) if r and int(r.get("server_id") or 0) > 0]
+        if not rows:
+            return
+        servers = await self._servers_repo.list_all()
+        provider = self._providers.get("xui")
+        if provider is None:
+            return
+        for row in rows:
+            server_id = int(row.get("server_id") or 0)
+            row_key_id = row.get("key_id")
+            server = next((s for s in servers if s.id == server_id), None)
+            if not server:
+                logger.warning(
+                    "disable_key_access: server not found user_id=%s server_id=%s — deleting row",
+                    user_id, server_id,
+                )
+                await self._user_vpn_repo.delete(user_id, row_key_id)
+                continue
+            for uuid in filter(None, [
+                str(row.get("reality_uuid") or "").strip(),
+                str(row.get("ws_uuid") or "").strip(),
+            ]):
+                try:
+                    await provider.disable_client(server, uuid)
+                    logger.info(
+                        "disable_key_access: client disabled user_id=%s server_id=%s uuid=%s",
+                        user_id, server.id, uuid,
+                    )
+                except Exception:
+                    logger.exception(
+                        "disable_key_access: disable_client failed user_id=%s server_id=%s uuid=%s",
+                        user_id, server.id, uuid,
+                    )
+            await self._user_vpn_repo.delete(user_id, row_key_id)
+            logger.info("disable_key_access: row deleted user_id=%s key_id=%s", user_id, row_key_id)
+
     async def disable_user_access(self, user_id: int) -> None:
         # Fetch all rows including secondary server slots (key_id >= 9_000_000_000).
         all_rows = await self._user_vpn_repo.list_all_for_user(user_id)

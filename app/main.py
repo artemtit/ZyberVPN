@@ -132,17 +132,6 @@ def _build_dispatcher(settings) -> Dispatcher:
     return Dispatcher(storage=MemoryStorage())
 
 
-async def _subscription_watchdog_loop(db: Database, interval_seconds: int = 3600) -> None:
-    users_repo = UsersRepository(db)
-    while True:
-        try:
-            updated = await users_repo.deactivate_expired_users()
-            if updated:
-                logging.info("Subscription watchdog deactivated %s expired users", updated)
-        except Exception:
-            logging.exception("Subscription watchdog failed")
-        await asyncio.sleep(interval_seconds)
-
 
 async def _vpn_healthcheck_loop(db: Database, settings) -> None:
     manager = build_vpn_manager(db, settings)
@@ -284,9 +273,9 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
             if not tg_id or not key_id:
                 continue
             try:
-                await manager.update_user_expiry(tg_id, expiry_time_ms=0, key_id=key_id)
+                await manager.disable_key_access(tg_id, key_id)
             except Exception:
-                logging.exception("per_key_expiry_loop: update_user_expiry failed tg_id=%s key_id=%s", tg_id, key_id)
+                logging.exception("per_key_expiry_loop: disable_key_access failed tg_id=%s key_id=%s", tg_id, key_id)
             try:
                 await keys_repo.mark_disabled(key_id, tg_id)
             except Exception:
@@ -421,7 +410,6 @@ async def run() -> None:
     web_runner = await _start_health_server(db, settings)
     # Expose bot to the aiohttp app so the webhook handler can send Telegram messages.
     web_runner.app["bot"] = bot
-    subscription_watchdog_task = asyncio.create_task(_subscription_watchdog_loop(db))
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
@@ -447,7 +435,6 @@ async def run() -> None:
         logging.info("Polling cancelled")
     finally:
         for task in (
-            subscription_watchdog_task,
             healthcheck_task,
             disable_expired_task,
             enforce_traffic_task,
