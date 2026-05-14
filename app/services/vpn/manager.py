@@ -195,9 +195,11 @@ class VPNManager:
             return
         for row in rows:
             server_id = int(row.get("server_id") or 0)
+            key_id = row.get("key_id")
             server = next((item for item in servers if item.id == server_id), None)
             if not server:
-                logger.warning("VPN server not found user_id=%s server_id=%s — skipping disable", user_id, server_id)
+                logger.warning("VPN server not found user_id=%s server_id=%s — deleting DB row", user_id, server_id)
+                await self._user_vpn_repo.delete(user_id, key_id)
                 continue
             reality_uuid = str(row.get("reality_uuid") or "").strip()
             ws_uuid = str(row.get("ws_uuid") or "").strip()
@@ -209,7 +211,6 @@ class VPNManager:
                     logger.info("VPN client disabled user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
                 except Exception:
                     logger.exception("disable_client failed user_id=%s server_id=%s uuid=%s", user_id, server.id, uuid)
-            key_id = row.get("key_id")
             await self._user_vpn_repo.delete(user_id, key_id)
             logger.info("VPN user_vpn row deleted user_id=%s key_id=%s", user_id, key_id)
 
@@ -579,14 +580,9 @@ class VPNManager:
             ws_uuid = str(vpn.get("ws_uuid") or "").strip()
             for uuid in filter(None, [reality_uuid, ws_uuid]):
                 try:
-                    # WS client was created with totalGB=0 (unlimited in XUI) so XUI
-                    # does not independently enforce it; our 120 s loop handles combined
-                    # Reality+WS usage.  Pass None for WS so renewal never sets a limit
-                    # on the WS client, which would re-introduce the double-limit bug.
-                    is_ws = bool(ws_uuid) and uuid == ws_uuid
                     ok = await provider.update_client_expiry(
                         server, uuid, expiry_time_ms,
-                        total_gb=None if is_ws else (effective_traffic_limit_gb if effective_traffic_limit_gb > 0 else None),
+                        total_gb=effective_traffic_limit_gb if effective_traffic_limit_gb > 0 else None,
                     )
                     if ok:
                         updated = True
@@ -663,6 +659,7 @@ class VPNManager:
                     reality_uuid=result.reality_uuid,
                     expiry_time=limits.expiry_time,
                     key_id=key_id,
+                    traffic_limit_gb=effective_gb,
                 )
                 await self._servers_repo.update_health(server.id, is_active=True, ok=True, error_text=None)
                 logger.info("VPN client created user_id=%s server_id=%s key_id=%s", user_id, server.id, key_id)
@@ -690,6 +687,7 @@ class VPNManager:
         reality_uuid: str,
         expiry_time: int,
         key_id: int | None,
+        traffic_limit_gb: int = 0,
     ) -> None:
         provider = self._providers.get("xui")
         if not isinstance(provider, XUIProvider):
@@ -725,7 +723,8 @@ class VPNManager:
                                 user_id, server.id, save_err,
                             )
                         continue
-                    result = await provider.add_client(server, user_id, reality_uuid, expiry_time, key_id=key_id)
+                    effective_sec_gb = traffic_limit_gb if traffic_limit_gb > 0 else self._settings.vpn_total_gb
+                    result = await provider.add_client(server, user_id, reality_uuid, expiry_time, key_id=key_id, total_gb=effective_sec_gb)
                     await self._save_additional_server_access(
                         user_id=user_id,
                         key_id=self._secondary_key_id(key_id, server.id),
@@ -909,11 +908,14 @@ class VPNManager:
             return
 
         expiry_ms = self._default_expiry_ms()
+        traffic_limit_gb = 0
         if self._keys_repo is not None:
             try:
                 key_row = await self._keys_repo.get_by_id_for_user(key_id, user_id)
-                if key_row and key_row.get("expires_at"):
-                    expiry_ms = int(parse_iso_utc(key_row["expires_at"]).timestamp() * 1000)
+                if key_row:
+                    if key_row.get("expires_at"):
+                        expiry_ms = int(parse_iso_utc(key_row["expires_at"]).timestamp() * 1000)
+                    traffic_limit_gb = int(key_row.get("traffic_limit_gb") or 0)
             except Exception:
                 pass
 
@@ -927,4 +929,5 @@ class VPNManager:
             reality_uuid=reality_uuid,
             expiry_time=expiry_ms,
             key_id=key_id,
+            traffic_limit_gb=traffic_limit_gb,
         )

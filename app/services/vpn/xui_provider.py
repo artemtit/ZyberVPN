@@ -96,7 +96,7 @@ class XUIProvider(VPNProvider):
                 # Setting a per-client limit in XUI would give the user 2× the intended allowance.
                 ws_limits = ClientLimits(
                     limit_ip=limits.limit_ip,
-                    total_gb=0,
+                    total_gb=limits.total_gb,
                     expiry_time=limits.expiry_time,
                 )
                 if existing_ws and ws_uuid and existing_ws != ws_uuid:
@@ -205,9 +205,10 @@ class XUIProvider(VPNProvider):
             return self._find_existing_client_uuid(inbound, reality_email)
 
     async def add_client(
-        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int, key_id: int | None = None
+        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int,
+        key_id: int | None = None, total_gb: int = 0,
     ) -> CreateClientResult:
-        limits = ClientLimits(expiry_time=expiry_time)
+        limits = ClientLimits(expiry_time=expiry_time, total_gb=total_gb)
         return await self.create_client(
             user_id=user_id,
             server=server,

@@ -73,5 +73,6 @@ class VPNProvider(Protocol):
     async def get_client(self, server: ServerInfo, user_id: int, key_id: int | None = None) -> str | None: ...
 
     async def add_client(
-        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int, key_id: int | None = None
+        self, server: ServerInfo, user_id: int, reality_uuid: str, expiry_time: int,
+        key_id: int | None = None, total_gb: int = 0,
     ) -> CreateClientResult: ...
