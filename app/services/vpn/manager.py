@@ -922,6 +922,133 @@ class VPNManager:
             output.append(ws)
         return output
 
+    async def restore_user_keys(
+        self,
+        user_id: int,
+        key_rows: list[dict],
+        expiry_time_ms: int,
+    ) -> tuple[int, int]:
+        """Restore user_vpn rows and re-enable XUI clients after a ban wipe.
+
+        key_rows: list of rows from the keys table (must have id, key, traffic_limit_gb).
+        Returns (ok_count, failed_count).
+        """
+        import re
+
+        servers = await self._servers_repo.list_all()
+        active_servers = [s for s in servers if s.is_active]
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider) or not active_servers:
+            return 0, len(key_rows)
+
+        ok = failed = 0
+        for key_row in key_rows:
+            key_id = int(key_row.get("id") or 0)
+            if not key_id:
+                continue
+            vless_url = str(key_row.get("key") or "")
+            traffic_gb = int(key_row.get("traffic_limit_gb") or 0)
+            if traffic_gb <= 0:
+                traffic_gb = self._settings.vpn_total_gb
+
+            # Parse UUID and host from stored vless:// URL.
+            uuid_match = re.match(r"vless://([0-9a-f-]{36})@([^:]+):", vless_url)
+            parsed_uuid = uuid_match.group(1) if uuid_match else None
+            parsed_host = uuid_match.group(2) if uuid_match else None
+
+            # Prefer the server whose host matches the stored URL; fall back to first active.
+            target_server = next(
+                (s for s in active_servers if parsed_host and s.host == parsed_host),
+                active_servers[0],
+            )
+
+            limits = ClientLimits(
+                limit_ip=self._settings.vpn_limit_ip,
+                total_gb=traffic_gb,
+                expiry_time=expiry_time_ms,
+            )
+            try:
+                result = await provider.create_client(
+                    user_id=user_id,
+                    server=target_server,
+                    limits=limits,
+                    reality_uuid=parsed_uuid,
+                    key_id=key_id,
+                )
+                await self._save_access(
+                    user_id, result.server_id, result.reality_uuid,
+                    result.ws_uuid, result.profiles, key_id,
+                )
+                logger.info(
+                    "restore_user_keys: key restored user_id=%s key_id=%s server_id=%s",
+                    user_id, key_id, target_server.id,
+                )
+                ok += 1
+            except Exception:
+                logger.exception(
+                    "restore_user_keys: failed user_id=%s key_id=%s", user_id, key_id
+                )
+                failed += 1
+        return ok, failed
+
+    async def reenable_key_access(
+        self,
+        user_id: int,
+        key_id: int,
+        expiry_time_ms: int,
+        traffic_limit_gb: int = 0,
+    ) -> bool:
+        """Re-enable a key's XUI clients. Updates expiry+enable; re-creates if missing.
+
+        Returns True if at least one client was successfully updated or re-created.
+        """
+        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        if not primary_row:
+            return False
+
+        await self._user_vpn_repo.set_status(user_id, "ready", key_id=key_id)
+
+        updated = await self.update_user_expiry(
+            user_id, expiry_time_ms, key_id=key_id, traffic_limit_gb=traffic_limit_gb
+        )
+        if updated:
+            return True
+
+        # Client not found in XUI — re-create from stored UUIDs.
+        server_id = int(primary_row.get("server_id") or 0)
+        reality_uuid = str(primary_row.get("reality_uuid") or "").strip()
+        ws_uuid = str(primary_row.get("ws_uuid") or "").strip() or None
+        if server_id <= 0 or not reality_uuid:
+            return False
+
+        servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server or not server.is_active:
+            return False
+
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return False
+
+        effective_gb = traffic_limit_gb if traffic_limit_gb > 0 else self._settings.vpn_total_gb
+        limits = ClientLimits(
+            limit_ip=self._settings.vpn_limit_ip,
+            total_gb=effective_gb,
+            expiry_time=expiry_time_ms,
+        )
+        result = await provider.create_client(
+            user_id=user_id,
+            server=server,
+            limits=limits,
+            reality_uuid=reality_uuid,
+            ws_uuid=ws_uuid,
+            key_id=key_id,
+        )
+        await self._save_access(
+            user_id, result.server_id, result.reality_uuid, result.ws_uuid, result.profiles, key_id
+        )
+        return True
+
     async def sync_secondary_servers_for_key(self, user_id: int, key_id: int) -> None:
         """Provision user on any active servers where they don't yet have a client for this key.
 

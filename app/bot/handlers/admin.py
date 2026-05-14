@@ -21,6 +21,7 @@ from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager
 from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
+from datetime import timedelta
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/user &lt;tg_id&gt; — профиль пользователя\n"
         "/ban &lt;tg_id&gt; — заблокировать пользователя\n"
         "/unban &lt;tg_id&gt; — разблокировать пользователя\n"
+        "/reenable_key &lt;tg_id&gt; [key_id] — переактивировать ключ(и)\n"
+        "/restore_keys &lt;tg_id&gt; — восстановить ключи после бана\n"
         "/servers — список серверов\n"
         "/sync_servers — добавить все ключи на новые серверы\n"
         "/broadcast &lt;текст&gt; — рассылка активным пользователям\n"
@@ -449,6 +452,134 @@ async def broadcastall_cancel(callback: CallbackQuery, state: FSMContext, settin
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("❌ Рассылка отменена.")
     await callback.answer()
+
+
+# ──────────────────────────────────────────
+# /restore_keys <tg_id>  — after a ban wipe
+# ──────────────────────────────────────────
+@router.message(Command("restore_keys"))
+async def admin_restore_keys(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    target_id = _parse_tg_id(message.text or "", "restore_keys")
+    if not target_id:
+        await message.answer("Использование: /restore_keys &lt;tg_id&gt;")
+        return
+
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+
+    all_keys = await keys_repo.list_by_user(target_id)
+    if not all_keys:
+        await message.answer("❌ Ключи в таблице keys не найдены — нечего восстанавливать.")
+        return
+
+    expiry_dt = utc_now() + timedelta(days=30)
+    expiry_ms = int(expiry_dt.timestamp() * 1000)
+    expiry_iso = expiry_dt.isoformat()
+
+    # Update keys table: extend expiry, clear disabled_at.
+    for key_row in all_keys:
+        key_id = int(key_row.get("id") or 0)
+        if key_id:
+            await keys_repo.update_expires_at(key_id, target_id, expiry_iso)
+
+    manager = build_vpn_manager(db, settings)
+    ok, failed = await manager.restore_user_keys(target_id, all_keys, expiry_ms)
+
+    # Re-activate user account.
+    await users_repo.update_status(target_id, True)
+    await users_repo.set_banned(target_id, False)
+
+    status = "✅" if ok > 0 else "❌"
+    await message.answer(
+        f"{status} Восстановление завершено.\n"
+        f"Ключей восстановлено: <b>{ok}</b> | Ошибок: <b>{failed}</b>\n"
+        f"Подписка до: <b>{expiry_dt.strftime('%d.%m.%Y')}</b>\n"
+        f"Пользователь разбанен и активирован."
+    )
+
+
+# ──────────────────────────────────────────
+# /reenable_key <tg_id> [key_id]
+# ──────────────────────────────────────────
+@router.message(Command("reenable_key"))
+async def admin_reenable_key(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("Использование: /reenable_key &lt;tg_id&gt; [key_id]")
+        return
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Неверный tg_id.")
+        return
+    filter_key_id: int | None = None
+    if len(parts) >= 3:
+        try:
+            filter_key_id = int(parts[2])
+        except ValueError:
+            await message.answer("❌ Неверный key_id.")
+            return
+
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+
+    all_keys = await keys_repo.list_by_user(target_id)
+    if filter_key_id is not None:
+        all_keys = [k for k in all_keys if int(k.get("id") or 0) == filter_key_id]
+    if not all_keys:
+        await message.answer("❌ Ключи не найдены.")
+        return
+
+    expiry_dt = utc_now() + timedelta(days=30)
+    expiry_ms = int(expiry_dt.timestamp() * 1000)
+    expiry_iso = expiry_dt.isoformat()
+
+    manager = build_vpn_manager(db, settings)
+    ok = failed = 0
+    for key_row in all_keys:
+        key_id = int(key_row.get("id") or 0)
+        if not key_id:
+            continue
+        traffic_gb = int(key_row.get("traffic_limit_gb") or 0)
+        if traffic_gb <= 0:
+            traffic_gb = settings.vpn_total_gb
+        try:
+            await keys_repo.update_expires_at(key_id, target_id, expiry_iso)
+            if traffic_gb != int(key_row.get("traffic_limit_gb") or 0):
+                await keys_repo.update_traffic_limit(key_id, target_id, traffic_gb)
+            result = await manager.reenable_key_access(target_id, key_id, expiry_ms, traffic_gb)
+            if result:
+                ok += 1
+            else:
+                failed += 1
+                logger.warning("reenable_key_access returned False user_id=%s key_id=%s", target_id, key_id)
+        except Exception:
+            logger.exception("reenable_key failed user_id=%s key_id=%s", target_id, key_id)
+            failed += 1
+
+    if not bool(user.get("is_active")):
+        await users_repo.update_status(target_id, True)
+
+    status = "✅" if ok > 0 else "❌"
+    await message.answer(
+        f"{status} Ключи переактивированы.\n"
+        f"Успешно: <b>{ok}</b> | Ошибок: <b>{failed}</b>\n"
+        f"Подписка до: <b>{expiry_dt.strftime('%d.%m.%Y')}</b>"
+    )
 
 
 # ──────────────────────────────────────────
