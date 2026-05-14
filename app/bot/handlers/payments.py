@@ -266,8 +266,17 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         await message.answer(text, reply_markup=get_main_menu_keyboard())
         await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
 
-        referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-        bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
+        referral_idem = IdempotencyService(IdempotencyRepository())
+        async def _accrue_ref_renewal() -> dict:
+            svc = ReferralService(users_repo, settings.referral_bonus_percent)
+            b = await svc.accrue_bonus(user, int(processed["amount"]))
+            return {"bonus": b}
+        try:
+            ref_res = await referral_idem.execute("referral_bonus", f"referral-bonus:{idem_key}", _accrue_ref_renewal)
+            bonus = int(ref_res.get("bonus") or 0)
+        except Exception:
+            logger.exception("Referral bonus failed payload=%s", payment_info.invoice_payload)
+            bonus = 0
         if bonus > 0:
             await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
         return
@@ -351,10 +360,19 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         )
         await message.answer(text, reply_markup=get_main_menu_keyboard())
 
-    referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-    bonus = await referral_service.accrue_bonus(user, int(processed["amount"]))
-    paid_count = await payments_repo.count_paid(tg_id)
-    friend_bonus = await referral_service.accrue_friend_bonus(user, paid_count, settings.referral_friend_bonus_rub)
+    referral_idem = IdempotencyService(IdempotencyRepository())
+    async def _accrue_referral() -> dict:
+        svc = ReferralService(users_repo, settings.referral_bonus_percent)
+        b = await svc.accrue_bonus(user, int(processed["amount"]))
+        pc = await payments_repo.count_paid(tg_id)
+        fb = await svc.accrue_friend_bonus(user, pc, settings.referral_friend_bonus_rub)
+        return {"friend_bonus": fb}
+    try:
+        referral_result = await referral_idem.execute("referral_bonus", f"referral-bonus:{idem_key}", _accrue_referral)
+        friend_bonus = int(referral_result.get("friend_bonus") or 0)
+    except Exception:
+        logger.exception("Referral bonus failed payload=%s", payment_info.invoice_payload)
+        friend_bonus = 0
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if friend_bonus > 0:
         await message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())

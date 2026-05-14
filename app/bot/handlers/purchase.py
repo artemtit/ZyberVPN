@@ -388,10 +388,19 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     except Exception:
         logger.exception("VPN provisioning idempotency failed tg_id=%s", tg_id)
 
-    referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-    await referral_service.accrue_bonus(user, int(processed["amount"]))
-    paid_count = await payments_repo.count_paid(tg_id)
-    friend_bonus = await referral_service.accrue_friend_bonus(user, paid_count, settings.referral_friend_bonus_rub)
+    referral_idem = IdempotencyService(IdempotencyRepository())
+    async def _accrue_referral() -> dict:
+        svc = ReferralService(users_repo, settings.referral_bonus_percent)
+        b = await svc.accrue_bonus(user, int(processed["amount"]))
+        pc = await payments_repo.count_paid(tg_id)
+        fb = await svc.accrue_friend_bonus(user, pc, settings.referral_friend_bonus_rub)
+        return {"friend_bonus": fb}
+    try:
+        referral_result = await referral_idem.execute("referral_bonus", f"referral-bonus:{payload}", _accrue_referral)
+        friend_bonus = int(referral_result.get("friend_bonus") or 0)
+    except Exception:
+        logger.exception("Test SBP referral bonus failed payload=%s", payload)
+        friend_bonus = 0
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
@@ -484,6 +493,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
     async def _process_balance_payment() -> dict:
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="balance")
+            await users_repo.deduct_balance(int(payment["tg_id"]), price)
             base_limit = int(plan["traffic_gb"])
             if purchase_type == "renewal":
                 months = max(1, int(plan["duration_days"]) // 30)
@@ -506,9 +516,6 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
         logger.exception("Balance payment processing failed tg_id=%s", callback.from_user.id)
         await callback.answer("Ошибка обработки. Попробуйте позже.", show_alert=True)
         return
-
-    # Deduct balance only after payment is marked paid.
-    await users_repo.deduct_balance(callback.from_user.id, price)
 
     tg_id = int(processed["tg_id"])
     purchase_type = str(processed.get("purchase_type") or "new")

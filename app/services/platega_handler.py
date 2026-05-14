@@ -78,6 +78,9 @@ async def process_confirmed_platega_payment(
     if not payment:
         logger.error("Platega webhook: payment not found transaction_id=%s", transaction_id)
         return
+    if payment.get("status") == "paid":
+        logger.info("Platega: payment already processed, skipping transaction_id=%s", transaction_id)
+        return
 
     tg_id = int(payment["tg_id"])
     purchase_type = str(payment.get("purchase_type") or "new")
@@ -90,6 +93,7 @@ async def process_confirmed_platega_payment(
     idem_key = f"platega-payment-success:{transaction_id}"
 
     async def _process() -> dict:
+        balance_applied = 0
         if payment.get("status") != "paid":
             await payments_repo.mark_paid(
                 payload=transaction_id,
@@ -105,10 +109,15 @@ async def process_confirmed_platega_payment(
             else:
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
                 await users_repo.add_traffic_limit(tg_id, base_limit)
+            # Balance deduction inside idempotency — runs at most once per payment.
+            # balance_applied will be non-zero once platega_amount is tracked separately.
+            if balance_applied > 0:
+                await users_repo.deduct_balance(tg_id, balance_applied)
         return {
             "tg_id": tg_id,
             "tariff_code": tariff_code,
             "amount": int(payment.get("amount") or 0),
+            "balance_applied": balance_applied,
             "purchase_type": purchase_type,
             "renew_key_id": renew_key_id,
         }
@@ -198,17 +207,20 @@ async def process_confirmed_platega_payment(
         )
         await _send(bot, tg_id, text)
         await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
-        stored_amount = int(payment.get("amount") or 0)
-        charged_amount = int(processed.get("amount") or 0)
-        balance_applied = stored_amount - charged_amount
+        balance_applied = int(processed.get("balance_applied") or 0)
         if balance_applied > 0:
-            try:
-                await users_repo.deduct_balance(tg_id, balance_applied)
-                await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
-            except Exception:
-                logger.exception("platega_handler renewal: deduct_balance failed tg_id=%s", tg_id)
-        referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-        bonus = await referral_service.accrue_bonus(user, charged_amount)
+            await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+        referral_idem = IdempotencyService(IdempotencyRepository())
+        async def _accrue_ref_bonus() -> dict:
+            svc = ReferralService(users_repo, settings.referral_bonus_percent)
+            b = await svc.accrue_bonus(user, int(processed.get("amount") or 0))
+            return {"bonus": b}
+        try:
+            ref_res = await referral_idem.execute("referral_bonus", f"referral-bonus:{idem_key}", _accrue_ref_bonus)
+            bonus = int(ref_res.get("bonus") or 0)
+        except Exception:
+            logger.exception("Platega: referral bonus failed transaction_id=%s", transaction_id)
+            bonus = 0
         if bonus > 0:
             await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
         return
@@ -288,19 +300,21 @@ async def process_confirmed_platega_payment(
 
     await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
 
-    # If balance was applied (payment.amount > charged amount), deduct it now.
-    stored_amount = int(payment.get("amount") or 0)
-    charged_amount = int(processed.get("amount") or 0)
-    balance_applied = stored_amount - charged_amount
+    balance_applied = int(processed.get("balance_applied") or 0)
     if balance_applied > 0:
-        try:
-            await users_repo.deduct_balance(tg_id, balance_applied)
-            await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
-        except Exception:
-            logger.exception("platega_handler: deduct_balance failed tg_id=%s amount=%s", tg_id, balance_applied)
+        await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
 
-    referral_service = ReferralService(users_repo, settings.referral_bonus_percent)
-    bonus = await referral_service.accrue_bonus(user, charged_amount)
+    referral_idem = IdempotencyService(IdempotencyRepository())
+    async def _accrue_ref_bonus() -> dict:
+        svc = ReferralService(users_repo, settings.referral_bonus_percent)
+        b = await svc.accrue_bonus(user, int(processed.get("amount") or 0))
+        return {"bonus": b}
+    try:
+        ref_res = await referral_idem.execute("referral_bonus", f"referral-bonus:{idem_key}", _accrue_ref_bonus)
+        bonus = int(ref_res.get("bonus") or 0)
+    except Exception:
+        logger.exception("Platega: referral bonus failed transaction_id=%s", transaction_id)
+        bonus = 0
     if bonus > 0:
         await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
 
