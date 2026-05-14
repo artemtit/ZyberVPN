@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from app.db.database import Database
 from app.services.supabase import execute_with_retry, get_supabase_client
+from app.utils.datetime import utc_now
+
+logger = logging.getLogger(__name__)
+
+# Statuses where money has been confirmed received — count toward revenue/referral quotas.
+_PAID_STATUSES = ("paid", "provisioning", "active")
 
 
 class PaymentsRepository:
@@ -75,7 +82,7 @@ class PaymentsRepository:
                 self._supabase.table("payments")
                 .update({"status": "paid", "telegram_payment_charge_id": telegram_charge_id})
                 .eq("payload", payload)
-                .neq("status", "paid")
+                .eq("status", "pending")
                 .execute()
             ),
             operation="payments.mark_paid",
@@ -85,11 +92,103 @@ class PaymentsRepository:
             return rows[0]
         return await self.get_by_payload(payload)
 
+    async def mark_provisioning(self, payload: str) -> None:
+        """Transition paid → provisioning once VPN creation starts."""
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("payments")
+                .update({"status": "provisioning"})
+                .eq("payload", payload)
+                .eq("status", "paid")
+                .execute()
+            ),
+            operation="payments.mark_provisioning",
+        )
+
+    async def mark_active(self, payload: str) -> None:
+        """Transition provisioning → active once VPN is confirmed live."""
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("payments")
+                .update({"status": "active"})
+                .eq("payload", payload)
+                .in_("status", ["provisioning", "paid"])
+                .execute()
+            ),
+            operation="payments.mark_active",
+        )
+
+    async def mark_failed(self, payload: str, reason: str = "") -> None:
+        """Mark a payment as provisioning-failed. Money was received; no refund implied."""
+        if not self._supabase:
+            return
+        logger.error("event=PROV_FAILED payload=%s reason=%s", payload, reason[:200])
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("payments")
+                .update({"status": "failed"})
+                .eq("payload", payload)
+                .in_("status", ["provisioning", "paid"])
+                .execute()
+            ),
+            operation="payments.mark_failed",
+        )
+
+    async def list_stuck_payments(
+        self, prov_age_minutes: int = 15, paid_age_minutes: int = 60
+    ) -> list[dict]:
+        """Return payments stuck in 'provisioning' (> prov_age_minutes) or
+        'paid' (> paid_age_minutes, meaning provisioning never started)."""
+        if not self._supabase:
+            return []
+        from datetime import timedelta
+        now = utc_now()
+        prov_cutoff = (now - timedelta(minutes=prov_age_minutes)).isoformat()
+        paid_cutoff = (now - timedelta(minutes=paid_age_minutes)).isoformat()
+        fields = "id,tg_id,payload,tariff_code,purchase_type,renew_key_id,status,created_at"
+        try:
+            r1 = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select(fields)
+                    .eq("status", "provisioning")
+                    .lt("created_at", prov_cutoff)
+                    .limit(50)
+                    .execute()
+                ),
+                operation="payments.list_stuck_provisioning",
+            )
+            r2 = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select(fields)
+                    .eq("status", "paid")
+                    .lt("created_at", paid_cutoff)
+                    .limit(50)
+                    .execute()
+                ),
+                operation="payments.list_stuck_paid",
+            )
+            return list(r1.data or []) + list(r2.data or [])
+        except Exception:
+            logger.exception("list_stuck_payments failed")
+            return []
+
     async def count_paid(self, tg_id: int) -> int:
         if not self._supabase:
             return 0
         response = await execute_with_retry(
-            lambda: self._supabase.table("payments").select("id", count="exact").eq("tg_id", tg_id).eq("status", "paid").execute(),
+            lambda: (
+                self._supabase.table("payments")
+                .select("id", count="exact")
+                .eq("tg_id", tg_id)
+                .in_("status", list(_PAID_STATUSES))
+                .execute()
+            ),
             operation="payments.count_paid",
         )
         return response.count or 0
@@ -98,7 +197,12 @@ class PaymentsRepository:
         if not self._supabase:
             return 0
         response = await execute_with_retry(
-            lambda: self._supabase.table("payments").select("amount").eq("status", "paid").execute(),
+            lambda: (
+                self._supabase.table("payments")
+                .select("amount")
+                .in_("status", list(_PAID_STATUSES))
+                .execute()
+            ),
             operation="payments.total_revenue",
         )
         rows = response.data or []

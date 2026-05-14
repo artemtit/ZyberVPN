@@ -89,7 +89,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         topup_idem_key = f"payment-success:{payment_info.invoice_payload}"
 
         async def _process_topup() -> dict:
-            if payment.get("status") != "paid":
+            if payment.get("status") not in ("paid", "provisioning", "active"):
                 await payments_repo.mark_paid(
                     payload=payment_info.invoice_payload,
                     telegram_charge_id=payment_info.telegram_payment_charge_id,
@@ -120,7 +120,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             if not key_row:
                 raise RuntimeError(f"renewal key not found tg_id={payment['tg_id']} key_id={renew_key_id}")
 
-        if payment.get("status") != "paid":
+        if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(
                 payload=payment_info.invoice_payload,
                 telegram_charge_id=payment_info.telegram_payment_charge_id,
@@ -229,9 +229,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
         days_remaining = max(0, (expires_dt - utc_now()).days)
 
+        # users.expires_at — update immediately (watchdog safety net); safe to do before XUI.
         if user:
-            # users.expires_at = max(current, new key expiry) so renewing a short key
-            # never reduces the global watchdog expiry when longer keys are still active.
             current_user_expires_raw = (user or {}).get("expires_at")
             if current_user_expires_raw:
                 try:
@@ -244,17 +243,27 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 tg_id, expires_at=user_expires_dt.isoformat(),
                 is_active=True, plan="monthly", last_activated_at=activated_at,
             )
+
+        # XUI first — only update keys.expires_at in DB after XUI succeeds.
+        await payments_repo.mark_provisioning(payment_info.invoice_payload)
+        xui_ok = False
         try:
             manager = build_vpn_manager(db, settings, bot=message.bot)
             await manager.renew_user_access(
                 tg_id, expiry_ms, key_id=key_id_int, traffic_limit_gb=per_key_traffic_gb
             )
+            xui_ok = True
         except Exception:
-            logger.exception("Failed to update XUI expiry after renewal tg_id=%s key_id=%s", tg_id, renew_key_id)
-        try:
-            await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
-        except Exception:
-            logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
+            logger.exception(
+                "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s payload=%s",
+                tg_id, key_id_int, payment_info.invoice_payload,
+            )
+        if xui_ok:
+            try:
+                await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
+            await payments_repo.mark_active(payment_info.invoice_payload)
 
         key_label = f" ключа #{key_id_int}"
         text = (
@@ -305,22 +314,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             "key_id": provisioned_key_id,
         }
 
+    await payments_repo.mark_provisioning(payment_info.invoice_payload)
     try:
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
         sub_token = vpn_result.get("key_sub_token", "")
         provisioned_key_id = int(vpn_result.get("key_id") or 0)
-        # Repair cached/partial idempotency results so the success message always
-        # points to the newly purchased key.
         link, provisioned_key_id, sub_token = await _repair_provision_result(
             keys_repo, tg_id, str(link or ""), provisioned_key_id, str(sub_token or "")
         )
-        # Update key metadata outside idempotency — both calls are idempotent SETs that
-        # repair any previous run where the key was provisioned but metadata not written.
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                # Use the plan's own duration, not the global MAX used for users.expires_at.
                 await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_key_expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
@@ -328,12 +333,19 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
             except Exception:
                 logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        await payments_repo.mark_active(payment_info.invoice_payload)
     except AccessEnsureError:
-        logger.exception("Failed to bootstrap access after payment for tg_id=%s", tg_id)
+        logger.exception(
+            "event=PROV_FAILED tg_id=%s payload=%s error=access_ensure",
+            tg_id, payment_info.invoice_payload,
+        )
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
         return
     except Exception:
-        logger.exception("VPN provisioning idempotency failed tg_id=%s", tg_id)
+        logger.exception(
+            "event=PROV_FAILED tg_id=%s payload=%s error=vpn_provision",
+            tg_id, payment_info.invoice_payload,
+        )
         await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
         return
 

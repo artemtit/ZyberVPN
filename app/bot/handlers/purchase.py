@@ -225,7 +225,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         return
 
     async def _process_payment() -> dict:
-        if payment.get("status") != "paid":
+        if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="test-sbp")
             base_limit = int(plan["traffic_gb"])
             if purchase_type == "renewal":
@@ -365,6 +365,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             "key_id": provisioned_key_id,
         }
 
+    await payments_repo.mark_provisioning(payload)
     try:
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
@@ -375,7 +376,6 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         )
         if provisioned_key_id:
             try:
-                # Use the plan's own duration, not the global MAX used for users.expires_at.
                 await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_key_expires_dt.isoformat())
             except Exception:
                 logger.warning("Failed to store per-key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
@@ -383,10 +383,11 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
                 await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan["traffic_gb"]))
             except Exception:
                 logger.warning("Failed to store per-key traffic limit tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        await payments_repo.mark_active(payload)
     except AccessEnsureError:
-        logger.exception("Failed to bootstrap access after test SBP payment for tg_id=%s", tg_id)
+        logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=access_ensure", tg_id, payload)
     except Exception:
-        logger.exception("VPN provisioning idempotency failed tg_id=%s", tg_id)
+        logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=vpn_provision", tg_id, payload)
 
     referral_idem = IdempotencyService(IdempotencyRepository())
     async def _accrue_referral() -> dict:
@@ -491,7 +492,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
         return
 
     async def _process_balance_payment() -> dict:
-        if payment.get("status") != "paid":
+        if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="balance")
             await users_repo.deduct_balance(int(payment["tg_id"]), price)
             base_limit = int(plan["traffic_gb"])
@@ -562,6 +563,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
                 "key_sub_token": str(au.get("key_sub_token") or ""),
                 "key_id": int(au.get("key_id") or 0),
             }
+        await payments_repo.mark_provisioning(payload)
         try:
             vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
             link = vpn_result.get("vpn_key", "")
@@ -574,8 +576,9 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
                 await keys_repo.update_expires_at(provisioned_key_id, tg_id, expires_dt.isoformat())
                 await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, int(plan.get("traffic_gb", plan_months * 60)))
             sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+            await payments_repo.mark_active(payload)
         except Exception:
-            logger.exception("Balance purchase: VPN provisioning failed tg_id=%s", tg_id)
+            logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=balance_provision", tg_id, payload)
 
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)

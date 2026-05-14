@@ -166,6 +166,82 @@ async def _enforce_traffic_loop(db: Database, settings, bot, interval_seconds: i
         await asyncio.sleep(interval_seconds)
 
 
+async def _provisioning_reconciliation_loop(db: Database, settings, interval_seconds: int = 600) -> None:
+    """Detect and heal payments stuck in 'provisioning' or 'paid' state.
+
+    Every 10 minutes:
+    - provisioning > 15 min → VPN creation hung or crashed
+    - paid > 60 min         → provisioning was never started
+    For each stuck payment: if the user already has a ready user_vpn row the
+    payment status simply wasn't updated → mark active.  Otherwise log the
+    structured event so support can investigate / reconciliation retries next run.
+    After 2 hours in a stuck state, mark as failed so the payment is not silently
+    ignored forever.
+    """
+    from app.repositories.payments import PaymentsRepository
+    from app.repositories.user_vpn import UserVpnRepository
+    from datetime import timedelta
+    from app.utils.datetime import utc_now, parse_iso_utc
+
+    payments_repo = PaymentsRepository(db)
+    user_vpn_repo = UserVpnRepository(db)
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            stuck = await payments_repo.list_stuck_payments(prov_age_minutes=15, paid_age_minutes=60)
+            if not stuck:
+                continue
+            logging.info("event=RECON_START stuck_count=%s", len(stuck))
+
+            for payment in stuck:
+                tg_id = int(payment.get("tg_id") or 0)
+                payload = str(payment.get("payload") or "")
+                status = str(payment.get("status") or "")
+                created_at_raw = str(payment.get("created_at") or "")
+                if not tg_id or not payload:
+                    continue
+
+                # If the payment has been stuck for > 2 hours, give up and mark failed.
+                if created_at_raw:
+                    try:
+                        age_minutes = (utc_now() - parse_iso_utc(created_at_raw)).total_seconds() / 60
+                    except Exception:
+                        age_minutes = 0
+                    if age_minutes > 120:
+                        await payments_repo.mark_failed(payload, "reconciliation_timeout_2h")
+                        logging.error(
+                            "event=PROV_TIMEOUT_FAILED payload=%s tg_id=%s status=%s age_minutes=%.0f",
+                            payload, tg_id, status, age_minutes,
+                        )
+                        continue
+
+                # Check if user already has a ready VPN (provisioning succeeded but
+                # mark_active was never called due to crash).
+                vpn_rows = await user_vpn_repo.list_user_vpns(tg_id)
+                has_ready = any(r.get("status") == "ready" for r in vpn_rows)
+
+                if has_ready:
+                    await payments_repo.mark_active(payload)
+                    logging.info(
+                        "event=PROV_RESOLVED payload=%s tg_id=%s status_was=%s",
+                        payload, tg_id, status,
+                    )
+                    continue
+
+                # No ready VPN found — log for admin visibility.
+                logging.error(
+                    "event=PROV_STUCK payload=%s tg_id=%s status=%s "
+                    "tariff=%s purchase_type=%s renew_key_id=%s",
+                    payload, tg_id, status,
+                    payment.get("tariff_code"),
+                    payment.get("purchase_type"),
+                    payment.get("renew_key_id"),
+                )
+        except Exception:
+            logging.exception("Provisioning reconciliation loop failed")
+
+
 async def _disable_expired_access_loop(db: Database, settings, interval_seconds: int = 120) -> None:
     users_repo = UsersRepository(db)
     manager = build_vpn_manager(db, settings)
@@ -352,6 +428,7 @@ async def run() -> None:
     per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings, bot=bot))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
     disk_alert_task = asyncio.create_task(_disk_alert_loop(bot, settings))
+    reconciliation_task = asyncio.create_task(_provisioning_reconciliation_loop(db, settings))
 
     # Restore banned-user set from DB so bans survive bot restarts.
     try:
@@ -377,6 +454,7 @@ async def run() -> None:
             per_key_expiry_task,
             expiry_notification_task,
             disk_alert_task,
+            reconciliation_task,
         ):
             task.cancel()
             try:

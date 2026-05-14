@@ -67,8 +67,8 @@ async def platega_webhook(request: web.Request) -> web.Response:
     db = request.app["db"]
     try:
         existing = await PaymentsRepository(db).get_by_payload(transaction_id)
-        if existing and existing.get("status") == "paid":
-            logger.info("Platega webhook: already paid, skipping transaction_id=%s", transaction_id)
+        if existing and existing.get("status") in ("paid", "provisioning", "active"):
+            logger.info("Platega webhook: already paid/provisioning/active, skipping transaction_id=%s", transaction_id)
             return web.json_response({"ok": True})
     except Exception:
         logger.warning("Platega webhook: early-guard DB check failed transaction_id=%s", transaction_id)

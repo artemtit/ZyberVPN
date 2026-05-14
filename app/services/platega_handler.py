@@ -78,8 +78,8 @@ async def process_confirmed_platega_payment(
     if not payment:
         logger.error("Platega webhook: payment not found transaction_id=%s", transaction_id)
         return
-    if payment.get("status") == "paid":
-        logger.info("Platega: payment already processed, skipping transaction_id=%s", transaction_id)
+    if payment.get("status") in ("provisioning", "active"):
+        logger.info("Platega: payment already processing/active, skipping transaction_id=%s", transaction_id)
         return
 
     tg_id = int(payment["tg_id"])
@@ -94,7 +94,7 @@ async def process_confirmed_platega_payment(
 
     async def _process() -> dict:
         balance_applied = 0
-        if payment.get("status") != "paid":
+        if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(
                 payload=transaction_id,
                 telegram_charge_id=transaction_id,
@@ -160,45 +160,56 @@ async def process_confirmed_platega_payment(
     expiry_ms = int(expires_dt.timestamp() * 1000)
 
     if purchase_type == "renewal" and renew_key_id is not None:
-        try:
-            from app.services.access import build_vpn_manager
-            manager = build_vpn_manager(db, settings, bot=bot)
-            renewed_key = await keys_repo.get_by_id_for_user(renew_key_id, tg_id)
-            key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
+        from app.services.access import build_vpn_manager
+        manager = build_vpn_manager(db, settings, bot=bot)
+        renewed_key = await keys_repo.get_by_id_for_user(renew_key_id, tg_id)
+        key_traffic_gb = int((renewed_key or {}).get("traffic_limit_gb") or 0) or None
 
-            # Extend from the KEY's own current expiry, not from the global subscription.
-            key_expires_raw = (renewed_key or {}).get("expires_at")
-            if key_expires_raw:
-                try:
-                    key_base = max(parse_iso_utc(key_expires_raw), activated_dt)
-                except Exception:
-                    key_base = activated_dt
-            else:
+        key_expires_raw = (renewed_key or {}).get("expires_at")
+        if key_expires_raw:
+            try:
+                key_base = max(parse_iso_utc(key_expires_raw), activated_dt)
+            except Exception:
                 key_base = activated_dt
-            expires_dt = add_months(key_base, tariff["months"])
-            expiry_ms = int(expires_dt.timestamp() * 1000)
-            expires_str = expires_dt.strftime("%d.%m.%Y")
-            days_remaining = max(0, (expires_dt - utc_now()).days)
+        else:
+            key_base = activated_dt
+        expires_dt = add_months(key_base, tariff["months"])
+        expiry_ms = int(expires_dt.timestamp() * 1000)
+        expires_str = expires_dt.strftime("%d.%m.%Y")
+        days_remaining = max(0, (expires_dt - utc_now()).days)
 
-            if user:
-                # users.expires_at = max(current, new key expiry) so renewing a short key
-                # never reduces the global watchdog expiry when longer keys are still active.
-                current_user_expires_raw = (user or {}).get("expires_at")
-                if current_user_expires_raw:
-                    try:
-                        user_expires_dt = max(expires_dt, parse_iso_utc(current_user_expires_raw))
-                    except Exception:
-                        user_expires_dt = expires_dt
-                else:
+        # users.expires_at — update immediately (watchdog safety net); safe before XUI.
+        if user:
+            current_user_expires_raw = (user or {}).get("expires_at")
+            if current_user_expires_raw:
+                try:
+                    user_expires_dt = max(expires_dt, parse_iso_utc(current_user_expires_raw))
+                except Exception:
                     user_expires_dt = expires_dt
-                await users_repo.set_expiry(
-                    tg_id, expires_at=user_expires_dt.isoformat(),
-                    is_active=True, plan="monthly", last_activated_at=activated_at,
-                )
+            else:
+                user_expires_dt = expires_dt
+            await users_repo.set_expiry(
+                tg_id, expires_at=user_expires_dt.isoformat(),
+                is_active=True, plan="monthly", last_activated_at=activated_at,
+            )
+
+        # XUI first — only write keys.expires_at after XUI confirms success.
+        await payments_repo.mark_provisioning(transaction_id)
+        xui_ok = False
+        try:
             await manager.renew_user_access(tg_id, expiry_ms, key_id=renew_key_id, traffic_limit_gb=key_traffic_gb)
-            await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
+            xui_ok = True
         except Exception:
-            logger.exception("Platega renewal: XUI update failed tg_id=%s key_id=%s", tg_id, renew_key_id)
+            logger.exception(
+                "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s transaction_id=%s",
+                tg_id, renew_key_id, transaction_id,
+            )
+        if xui_ok:
+            try:
+                await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
+            except Exception:
+                logger.exception("Platega: failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
+            await payments_repo.mark_active(transaction_id)
         text = (
             "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"
             f"🔄 <b>Продление ключа #{renew_key_id}</b>\n"
@@ -249,6 +260,7 @@ async def process_confirmed_platega_payment(
             "key_id": provisioned_key_id,
         }
 
+    await payments_repo.mark_provisioning(transaction_id)
     try:
         vpn_result = await vpn_idem.execute("vpn_provision", vpn_idem_key, _provision_vpn)
         link = vpn_result.get("vpn_key", "")
@@ -260,7 +272,6 @@ async def process_confirmed_platega_payment(
         if provisioned_key_id:
             key_traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
             try:
-                # Use the plan's own duration, not the global MAX used for users.expires_at.
                 await keys_repo.update_expires_at(provisioned_key_id, tg_id, new_exp.isoformat())
             except Exception:
                 logger.warning("Platega: failed to store key expiry tg_id=%s key_id=%s", tg_id, provisioned_key_id)
@@ -268,12 +279,19 @@ async def process_confirmed_platega_payment(
                 await keys_repo.update_traffic_limit(provisioned_key_id, tg_id, key_traffic_gb)
             except Exception:
                 logger.warning("Platega: failed to store key traffic tg_id=%s key_id=%s", tg_id, provisioned_key_id)
+        await payments_repo.mark_active(transaction_id)
     except AccessEnsureError:
-        logger.exception("Platega: key provisioning failed tg_id=%s", tg_id)
+        logger.exception(
+            "event=PROV_FAILED tg_id=%s transaction_id=%s error=access_ensure",
+            tg_id, transaction_id,
+        )
         await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
         return
     except Exception:
-        logger.exception("Platega: VPN provisioning idempotency failed tg_id=%s", tg_id)
+        logger.exception(
+            "event=PROV_FAILED tg_id=%s transaction_id=%s error=vpn_provision",
+            tg_id, transaction_id,
+        )
         await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
         return
 
