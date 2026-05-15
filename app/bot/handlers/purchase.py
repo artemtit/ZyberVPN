@@ -19,11 +19,13 @@ from app.services.access import AccessEnsureError, build_vpn_manager, ensure_use
 from app.services.idempotency import IdempotencyService
 from app.services.payments import generate_payload
 from app.services.plans import get_plan_by_id, get_plan_by_tariff_code
+from app.services.provisioning_failures import notify_provisioning_failed
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from html import escape
 
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
+from app.utils.tg import photo_to_text
 
 try:
     from app.services.platega import PlategaClient, PlategaError
@@ -87,7 +89,8 @@ async def _repair_provision_result(
 async def buy_new_key(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await state.update_data(purchase_type="new", renew_key_id=None)
-    await callback.message.edit_text(
+    await photo_to_text(
+        callback.message,
         "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
         reply_markup=tariffs_keyboard(),
     )
@@ -386,8 +389,18 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         await payments_repo.mark_active(payload)
     except AccessEnsureError:
         logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=access_ensure", tg_id, payload)
+        failed_payment = await payments_repo.mark_failed(payload, "access_ensure")
+        if failed_payment:
+            await notify_provisioning_failed(callback.bot, tg_id, payload)
+        await callback.answer()
+        return
     except Exception:
         logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=vpn_provision", tg_id, payload)
+        failed_payment = await payments_repo.mark_failed(payload, "vpn_provision")
+        if failed_payment:
+            await notify_provisioning_failed(callback.bot, tg_id, payload)
+        await callback.answer()
+        return
 
     referral_idem = IdempotencyService(IdempotencyRepository())
     async def _accrue_referral() -> dict:
@@ -579,6 +592,11 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
             await payments_repo.mark_active(payload)
         except Exception:
             logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=balance_provision", tg_id, payload)
+            failed_payment = await payments_repo.mark_failed(payload, "balance_provision")
+            if failed_payment:
+                await notify_provisioning_failed(callback.bot, tg_id, payload)
+            await callback.answer()
+            return
 
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)

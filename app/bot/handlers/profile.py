@@ -22,6 +22,7 @@ from app.bot.keyboards.inline import (
 )
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.promo import PromoState
+from app.utils.tg import photo_to_text
 from app.bot.states.purchase import ProfileState
 from app.config import Settings
 from app.db.database import Database
@@ -122,7 +123,8 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
     news_url = "https://t.me/ZyberVPN_News"
     support_url = "https://t.me/ZyberVPN_Support_bot"
 
-    await callback.message.edit_text(
+    await photo_to_text(
+        callback.message,
         f"👤 ПРОФИЛЬ: {username} / iD: {callback.from_user.id}\n\n"
         "💎 ПОДПИСКА\n"
         f"🛡 Подписка: {status_line}\n"

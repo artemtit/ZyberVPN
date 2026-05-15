@@ -12,6 +12,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.keys import KeyCommentState
+from app.utils.tg import photo_to_text
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -35,9 +36,14 @@ def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
 
 
 
-def _key_label(is_primary: bool, num: int, months_left: int, is_active: bool) -> str:
+def _key_label(is_primary: bool, num: int, days_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
-    status = f"{months_left} мес." if is_active else "истёк"
+    if not is_active:
+        status = "истёк"
+    elif days_left < 30:
+        status = f"{days_left} дн."
+    else:
+        status = f"{days_left // 30} мес."
     return f"{icon} Ключ #{num} — {status}"
 
 
@@ -50,12 +56,6 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     keys = await keys_repo.list_by_user(callback.from_user.id)
     active_sub = await subs_repo.get_active(callback.from_user.id)
 
-    sub_months_left = 0
-    if active_sub:
-        sub_expires_at = parse_iso_utc(active_sub["expires_at"])
-        sub_days, _, _ = _remaining_parts(sub_expires_at)
-        sub_months_left = max(sub_days // 30, 0)
-
     key_rows: list[tuple[str, str]] = []
     for num, key_data in enumerate(keys, start=1):
         key_str = str(key_data.get("key") or "")
@@ -66,19 +66,20 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
         if key_expires_raw:
             key_expires_at = parse_iso_utc(key_expires_raw)
             key_days, _, _ = _remaining_parts(key_expires_at)
-            key_months = max(key_days // 30, 0)
             key_is_active = key_days > 0
         elif active_sub:
-            key_months = sub_months_left
+            sub_expires_at = parse_iso_utc(active_sub["expires_at"])
+            key_days, _, _ = _remaining_parts(sub_expires_at)
             key_is_active = True
         else:
-            key_months = 0
+            key_days = 0
             key_is_active = False
 
-        label = _key_label(is_primary, num, key_months, key_is_active)
+        label = _key_label(is_primary, num, key_days, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
-    await callback.message.edit_text(
+    await photo_to_text(
+        callback.message,
         "🔑 Ваши ключи доступа\n\nНиже представлен список ваших активных и истекших ключей:",
         reply_markup=keys_list_keyboard(key_rows),
     )
