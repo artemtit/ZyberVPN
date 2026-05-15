@@ -121,9 +121,21 @@ def payment_back_keyboard(redirect_url: str, tariff_code: str = "", purchase_typ
     ])
 
 
-def topup_back_keyboard() -> InlineKeyboardMarkup:
+def topup_payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="topup_pay:stars")])
+    if platega_enabled:
+        rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="topup_pay:platega")])
+    if platega_crypto_enabled:
+        rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="topup_pay:platega_crypto")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="profile_topup")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def topup_platega_keyboard(redirect_url: str, rub_amount: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Вернуться к пополнению", callback_data="profile_topup")],
+        [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"topup_method_back:{rub_amount}")],
     ])
 
 

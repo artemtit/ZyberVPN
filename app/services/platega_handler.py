@@ -87,10 +87,40 @@ async def process_confirmed_platega_payment(
     purchase_type = str(payment.get("purchase_type") or "new")
     renew_key_id_raw = payment.get("renew_key_id")
     tariff_code = str(payment.get("tariff_code") or "m1")
-    tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
 
     renew_key_id = int(renew_key_id_raw) if purchase_type == "renewal" and renew_key_id_raw else None
 
+    # Handle balance top-up — no VPN provisioning needed.
+    if purchase_type == "topup":
+        rub_amount = int(payment.get("amount") or 0)
+        topup_idem_key = f"platega-topup:{transaction_id}"
+
+        async def _process_topup() -> dict:
+            if payment.get("status") not in ("paid", "provisioning", "active"):
+                await payments_repo.mark_paid(payload=transaction_id, telegram_charge_id=transaction_id)
+                if rub_amount > 0:
+                    await users_repo.add_balance(tg_id, rub_amount)
+                await payments_repo.mark_active(transaction_id)
+            return {"rub_amount": rub_amount}
+
+        try:
+            result = await idem.execute("platega_topup_success", topup_idem_key, _process_topup)
+        except Exception:
+            logger.exception("Platega topup failed tg_id=%s transaction_id=%s", tg_id, transaction_id)
+            await _send(bot, tg_id, "Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.")
+            return
+
+        credited = int((result or {}).get("rub_amount") or rub_amount)
+        await _send(
+            bot, tg_id,
+            f"✅ <b>Баланс пополнен!</b>\n\n"
+            f"💳 Зачислено: <b>{credited} ₽</b>\n\n"
+            "Используйте баланс при следующей покупке подписки.",
+            keyboard=main_menu_keyboard(settings.support_url),
+        )
+        return
+
+    tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
     idem_key = f"platega-payment-success:{transaction_id}"
 
     async def _process() -> dict:

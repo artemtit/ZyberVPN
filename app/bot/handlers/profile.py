@@ -17,9 +17,16 @@ from app.bot.keyboards.inline import (
     promo_keyboard,
     referral_keyboard,
     subscription_info_keyboard,
-    topup_back_keyboard,
     topup_keyboard,
+    topup_payment_keyboard,
+    topup_platega_keyboard,
 )
+
+try:
+    from app.services.platega import PlategaClient, PlategaError
+    _PLATEGA_AVAILABLE = True
+except ImportError:
+    _PLATEGA_AVAILABLE = False
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.promo import PromoState
 from app.utils.tg import photo_to_text
@@ -175,19 +182,14 @@ _VALID_TOPUP_RUB = {100, 300, 500, 1000}
 async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text(
-        "💰 Пополнение баланса\n\n"
-        "Выберите сумму пополнения:",
+        "💰 Пополнение баланса\n\nВыберите сумму:",
         reply_markup=topup_keyboard(),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("topup_rub:"))
-async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Settings) -> None:
-    import math
-    from app.services.payments import generate_payload
-    from aiogram.types import LabeledPrice
-
+async def topup_select_amount(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     raw = callback.data.split(":", 1)[1]
     try:
         rub_amount = int(raw)
@@ -196,6 +198,58 @@ async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Setting
         return
     if rub_amount not in _VALID_TOPUP_RUB:
         await callback.answer("Некорректная сумма", show_alert=True)
+        return
+
+    await state.update_data(topup_rub_amount=rub_amount)
+    await state.set_state(ProfileState.waiting_topup_amount)
+
+    platega_on = bool(settings.platega_merchant_id and settings.platega_api_key)
+    platega_crypto_on = platega_on and bool(settings.platega_crypto_method)
+
+    await callback.message.edit_text(
+        f"💰 Пополнение баланса: <b>{rub_amount} ₽</b>\n\nВыберите способ оплаты:",
+        parse_mode="HTML",
+        reply_markup=topup_payment_keyboard(platega_on, platega_crypto_on),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("topup_method_back:"))
+async def topup_method_back(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    raw = callback.data.split(":", 1)[1]
+    rub_amount = int(raw) if raw.isdigit() else 0
+    if rub_amount not in _VALID_TOPUP_RUB:
+        await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
+        return
+
+    await state.update_data(topup_rub_amount=rub_amount)
+    await state.set_state(ProfileState.waiting_topup_amount)
+
+    platega_on = bool(settings.platega_merchant_id and settings.platega_api_key)
+    platega_crypto_on = platega_on and bool(settings.platega_crypto_method)
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        f"💰 Пополнение баланса: <b>{rub_amount} ₽</b>\n\nВыберите способ оплаты:",
+        parse_mode="HTML",
+        reply_markup=topup_payment_keyboard(platega_on, platega_crypto_on),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "topup_pay:stars")
+async def topup_pay_stars(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    import math
+    from app.services.payments import generate_payload
+    from aiogram.types import LabeledPrice
+
+    data = await state.get_data()
+    rub_amount = int(data.get("topup_rub_amount") or 0)
+    if rub_amount not in _VALID_TOPUP_RUB:
+        await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
         return
 
     stars_count = math.ceil(rub_amount / settings.stars_rate)
@@ -214,6 +268,7 @@ async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Setting
         idempotency_key=idem_key,
         purchase_type="topup",
     )
+    await state.clear()
     try:
         await callback.message.delete()
     except Exception:
@@ -225,6 +280,91 @@ async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Setting
         currency="XTR",
         prices=[LabeledPrice(label=f"Баланс +{rub_amount} ₽", amount=stars_count)],
         provider_token="",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.in_({"topup_pay:platega", "topup_pay:platega_crypto"}))
+async def topup_pay_platega(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    from app.services.payments import generate_payload
+
+    if not _PLATEGA_AVAILABLE:
+        await callback.answer("Platega недоступна", show_alert=True)
+        return
+
+    merchant_id = settings.platega_merchant_id
+    api_key = settings.platega_api_key
+    if not merchant_id or not api_key:
+        await callback.answer("Platega не настроена", show_alert=True)
+        return
+
+    is_crypto = callback.data == "topup_pay:platega_crypto"
+    if is_crypto and not settings.platega_crypto_method:
+        await callback.answer("Крипто-оплата не настроена", show_alert=True)
+        return
+
+    data = await state.get_data()
+    rub_amount = int(data.get("topup_rub_amount") or 0)
+    if rub_amount not in _VALID_TOPUP_RUB:
+        await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
+        return
+
+    payment_method = settings.platega_crypto_method if is_crypto else 2
+    method_label = "Криптовалюта" if is_crypto else "СБП / QR"
+
+    users_repo = UsersRepository(db)
+    payments_repo = PaymentsRepository(db)
+    await users_repo.get_or_create(callback.from_user.id)
+
+    return_url = settings.public_base_url or "https://t.me/"
+    idem_key = f"platega-topup-{payment_method}:{callback.from_user.id}:{rub_amount}"
+
+    try:
+        client = PlategaClient(
+            merchant_id=merchant_id,
+            api_key=api_key,
+            return_url=return_url,
+            failed_url=return_url,
+        )
+        result = await client.create_payment(
+            amount=rub_amount,
+            description=f"ZyberVPN — пополнение баланса {rub_amount} ₽",
+            internal_payload=idem_key,
+            payment_method=payment_method,
+        )
+        transaction_id = result["transaction_id"]
+        redirect_url = result["redirect_url"]
+
+        await payments_repo.create_pending(
+            tg_id=callback.from_user.id,
+            amount=rub_amount,
+            tariff_code=f"topup{rub_amount}",
+            email=None,
+            payload=transaction_id,
+            idempotency_key=idem_key,
+            purchase_type="topup",
+        )
+        await state.clear()
+    except PlategaError as exc:
+        logger.exception("Platega topup creation failed tg_id=%s error=%s", callback.from_user.id, exc)
+        await callback.answer("Platega временно недоступна. Попробуйте позже.", show_alert=True)
+        return
+    except Exception:
+        logger.exception("Platega topup unexpected error tg_id=%s", callback.from_user.id)
+        await callback.answer("Ошибка при создании платежа. Попробуйте позже.", show_alert=True)
+        return
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        f"💳 <b>Оплата через {method_label} (Platega)</b>\n\n"
+        f"💰 Сумма: <b>{rub_amount} ₽</b>\n\n"
+        "Нажмите кнопку ниже для перехода к оплате.\n"
+        "После оплаты баланс пополнится автоматически.",
+        parse_mode="HTML",
+        reply_markup=topup_platega_keyboard(redirect_url, rub_amount),
     )
     await callback.answer()
 
