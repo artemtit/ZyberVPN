@@ -225,7 +225,6 @@ async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Setting
         currency="XTR",
         prices=[LabeledPrice(label=f"Баланс +{rub_amount} ₽", amount=stars_count)],
         provider_token="",
-        reply_markup=topup_back_keyboard(),
     )
     await callback.answer()
 
