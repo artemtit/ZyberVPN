@@ -103,11 +103,16 @@ async def process_confirmed_platega_payment(
         topup_idem_key = f"platega-topup:{transaction_id}"
 
         async def _process_topup() -> dict:
-            if payment.get("status") not in ("paid", "provisioning", "active"):
+            # Re-fetch current status — the closure `payment` may be stale on retry.
+            fresh = await payments_repo.get_by_payload(transaction_id)
+            fresh_status = (fresh or {}).get("status", "")
+            if fresh_status == "active":
+                return {"rub_amount": rub_amount}
+            if fresh_status not in ("paid", "provisioning"):
                 await payments_repo.mark_paid(payload=transaction_id, telegram_charge_id=transaction_id)
-                if rub_amount > 0:
-                    await users_repo.add_balance(tg_id, rub_amount)
-                await payments_repo.mark_active(transaction_id)
+            if rub_amount > 0:
+                await users_repo.add_balance(tg_id, rub_amount)
+            await payments_repo.mark_active(transaction_id)
             return {"rub_amount": rub_amount}
 
         try:

@@ -49,19 +49,23 @@ logger = logging.getLogger(__name__)
 _promo_attempts: dict[int, list[float]] = {}
 MAX_ATTEMPTS = 5
 WINDOW_SECONDS = 3600
+_MAX_TRACKED_USERS = 5000
 
 
 def _check_promo_rate_limit(tg_id: int) -> bool:
     now = time.time()
     attempts = [t for t in _promo_attempts.get(tg_id, []) if now - t < WINDOW_SECONDS]
     if not attempts:
-        # All previous timestamps are stale — remove the entry to prevent unbounded growth.
         _promo_attempts.pop(tg_id, None)
     if len(attempts) >= MAX_ATTEMPTS:
         _promo_attempts[tg_id] = attempts
         return False
     attempts.append(now)
     _promo_attempts[tg_id] = attempts
+    # Evict oldest entries when dict grows too large.
+    if len(_promo_attempts) > _MAX_TRACKED_USERS:
+        oldest = min(_promo_attempts, key=lambda k: min(_promo_attempts[k], default=now))
+        _promo_attempts.pop(oldest, None)
     return True
 
 

@@ -90,13 +90,19 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         topup_idem_key = f"payment-success:{payment_info.invoice_payload}"
 
         async def _process_topup() -> dict:
-            if payment.get("status") not in ("paid", "provisioning", "active"):
+            # Re-fetch current status — stale closure on Telegram retry.
+            fresh = await payments_repo.get_by_payload(payment_info.invoice_payload)
+            fresh_status = (fresh or {}).get("status", "")
+            if fresh_status == "active":
+                return {"tg_id": int(payment["tg_id"]), "rub_amount": rub_amount}
+            if fresh_status not in ("paid", "provisioning"):
                 await payments_repo.mark_paid(
                     payload=payment_info.invoice_payload,
                     telegram_charge_id=payment_info.telegram_payment_charge_id,
                 )
-                if rub_amount > 0:
-                    await users_repo.add_balance(int(payment["tg_id"]), rub_amount)
+            if rub_amount > 0:
+                await users_repo.add_balance(int(payment["tg_id"]), rub_amount)
+            await payments_repo.mark_active(payment_info.invoice_payload)
             return {"tg_id": int(payment["tg_id"]), "rub_amount": rub_amount}
 
         try:
