@@ -50,6 +50,7 @@ async def get_subscription(request: web.Request) -> web.Response:
             "profile-update-interval": "12",
             "support-url": "https://t.me/ZyberVPN_Support_bot",
             "profile-web-page-url": "https://t.me/ZyberVPN_Support_bot",
+            "Cache-Control": "private, max-age=60",
         },
     )
 

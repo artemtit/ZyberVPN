@@ -12,6 +12,8 @@ class ReferralService:
         inviter_tg_id = buyer_user.get("ref_tg_id")
         if not inviter_tg_id:
             return 0
+        if int(inviter_tg_id) == int(buyer_user.get("tg_id", 0)):
+            return 0  # self-referral
         bonus = int(payment_amount_rub * self.percent / 100)
         if bonus > 0:
             await self.users_repo.add_balance(int(inviter_tg_id), bonus)

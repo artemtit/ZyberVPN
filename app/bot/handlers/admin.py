@@ -221,6 +221,7 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, db: Data
         await callback.answer("Текст не найден", show_alert=True)
         return
 
+    logger.warning("ADMIN BROADCAST | admin=%s recipients=active preview=%s", callback.from_user.id, text[:60])
     users_repo = UsersRepository(db)
     active_tg_ids = await users_repo.list_active_tg_ids()
     sent = failed = 0
@@ -489,6 +490,7 @@ async def admin_restore_keys(message: Message, db: Database, settings: Settings)
         if key_id:
             await keys_repo.update_expires_at(key_id, target_id, expiry_iso)
 
+    logger.warning("ADMIN RESTORE_KEYS | admin=%s target=%s keys=%s", message.from_user.id, target_id, len(all_keys))
     manager = build_vpn_manager(db, settings)
     ok, failed = await manager.restore_user_keys(target_id, all_keys, expiry_ms)
 

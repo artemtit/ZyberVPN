@@ -796,7 +796,7 @@ async def _pay_via_platega(
 
         await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=full_price,  # store full price; balance_applied = full_price - platega_amount
+            amount=platega_amount,  # actual Platega charge; balance_applied = full_price - platega_amount
             tariff_code=tariff_code,
             email=email,
             payload=transaction_id,

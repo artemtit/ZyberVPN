@@ -89,6 +89,13 @@ async def process_confirmed_platega_payment(
     tariff_code = str(payment.get("tariff_code") or "m1")
 
     renew_key_id = int(renew_key_id_raw) if purchase_type == "renewal" and renew_key_id_raw else None
+    tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
+
+    # balance_applied: difference between full tariff price and what Platega actually charged.
+    # When purchase.py stores amount=platega_amount, this recovers the balance portion.
+    full_tariff_price = int(tariff.get("price_rub", 0))
+    payment_amount = int(payment.get("amount") or 0)
+    balance_applied = max(0, full_tariff_price - payment_amount)
 
     # Handle balance top-up — no VPN provisioning needed.
     if purchase_type == "topup":
@@ -120,11 +127,9 @@ async def process_confirmed_platega_payment(
         )
         return
 
-    tariff = TARIFFS.get(tariff_code, TARIFFS["m1"])
     idem_key = f"platega-payment-success:{transaction_id}"
 
     async def _process() -> dict:
-        balance_applied = 0
         if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(
                 payload=transaction_id,
@@ -147,7 +152,7 @@ async def process_confirmed_platega_payment(
         return {
             "tg_id": tg_id,
             "tariff_code": tariff_code,
-            "amount": int(payment.get("amount") or 0),
+            "amount": full_tariff_price,  # full plan price for referral bonus calculation
             "balance_applied": balance_applied,
             "purchase_type": purchase_type,
             "renew_key_id": renew_key_id,
