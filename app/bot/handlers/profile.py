@@ -168,12 +168,17 @@ async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
+_STARS_TO_RUB = 1.69
+_VALID_TOPUP_STARS = {100, 250, 500, 1000}
+
+
 @router.callback_query(F.data == "profile_topup")
 async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text(
         "💰 Пополнение баланса\n\n"
-        "Выберите сумму пополнения (1 Star = 1 RUB):",
+        f"Курс: 1 ⭐ = {_STARS_TO_RUB} ₽\n\n"
+        "Выберите количество Stars для пополнения:",
         reply_markup=topup_keyboard(),
     )
     await callback.answer()
@@ -181,28 +186,30 @@ async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("topup_stars:"))
 async def topup_stars_pay(callback: CallbackQuery, db: Database) -> None:
+    from app.services.payments import generate_payload
+    from aiogram.types import LabeledPrice
+
     raw = callback.data.split(":", 1)[1]
     try:
-        stars_amount = int(raw)
+        stars_count = int(raw)
     except ValueError:
         await callback.answer("Некорректная сумма", show_alert=True)
         return
-    if stars_amount not in {100, 300, 500, 1000}:
+    if stars_count not in _VALID_TOPUP_STARS:
         await callback.answer("Некорректная сумма", show_alert=True)
         return
 
-    from app.services.payments import generate_payload
-    from aiogram.types import LabeledPrice
+    rub_amount = round(stars_count * _STARS_TO_RUB)
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
-    payload = generate_payload(callback.from_user.id, f"topup{stars_amount}")
-    idem_key = f"topup-create:{callback.from_user.id}:{stars_amount}:{payload}"
+    payload = generate_payload(callback.from_user.id, f"topup{stars_count}")
+    idem_key = f"topup-create:{callback.from_user.id}:{stars_count}:{payload}"
     await payments_repo.create_pending(
         tg_id=callback.from_user.id,
-        amount=stars_amount,
-        tariff_code=f"topup{stars_amount}",
+        amount=rub_amount,
+        tariff_code=f"topup{stars_count}",
         email=None,
         payload=payload,
         idempotency_key=idem_key,
@@ -214,10 +221,10 @@ async def topup_stars_pay(callback: CallbackQuery, db: Database) -> None:
         pass
     await callback.message.answer_invoice(
         title="ZyberVPN — Пополнение баланса",
-        description=f"Пополнение баланса на {stars_amount} RUB",
+        description=f"Пополнение баланса на {rub_amount} ₽",
         payload=payload,
         currency="XTR",
-        prices=[LabeledPrice(label=f"Баланс +{stars_amount} RUB", amount=stars_amount)],
+        prices=[LabeledPrice(label=f"Баланс +{rub_amount} ₽", amount=stars_count)],
         provider_token="",
         reply_markup=topup_back_keyboard(),
     )

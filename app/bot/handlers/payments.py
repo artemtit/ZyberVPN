@@ -17,6 +17,7 @@ from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
+from app.services.provisioning_failures import notify_provisioning_failed
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
@@ -85,7 +86,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     # Handle balance top-up separately — no VPN provisioning needed.
     if payment.get("purchase_type") == "topup":
-        stars_amount = int(payment.get("amount") or 0)
+        rub_amount = int(payment.get("amount") or 0)
         topup_idem_key = f"payment-success:{payment_info.invoice_payload}"
 
         async def _process_topup() -> dict:
@@ -94,22 +95,27 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                     payload=payment_info.invoice_payload,
                     telegram_charge_id=payment_info.telegram_payment_charge_id,
                 )
-                if stars_amount > 0:
-                    await users_repo.add_balance(int(payment["tg_id"]), stars_amount)
-            return {"tg_id": int(payment["tg_id"]), "stars_amount": stars_amount}
+                if rub_amount > 0:
+                    await users_repo.add_balance(int(payment["tg_id"]), rub_amount)
+            return {"tg_id": int(payment["tg_id"]), "rub_amount": rub_amount}
 
         try:
-            await idem.execute("topup_success", topup_idem_key, _process_topup)
+            result = await idem.execute("topup_success", topup_idem_key, _process_topup)
         except Exception:
             logger.exception("Failed to process topup tg_id=%s", payment.get("tg_id"))
-            await message.answer("Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.", reply_markup=get_main_menu_keyboard())
+            await message.answer(
+                "Оплата получена, но пополнение временно недоступно. Обратитесь в поддержку.",
+                reply_markup=get_main_menu_keyboard(),
+            )
             return
+        credited = int((result or {}).get("rub_amount") or rub_amount)
         await message.answer(
             f"✅ <b>Баланс пополнен!</b>\n\n"
-            f"💳 Зачислено: <b>{stars_amount} RUB</b>",
-            reply_markup=get_main_menu_keyboard(),
+            f"💳 Зачислено: <b>{credited} ₽</b>\n\n"
+            "Используйте баланс при следующей покупке подписки.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(settings.support_url),
         )
-        await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
         return
 
     async def _process_payment() -> dict:
@@ -258,6 +264,11 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s payload=%s",
                 tg_id, key_id_int, payment_info.invoice_payload,
             )
+        if not xui_ok:
+            failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "renewal_xui")
+            if failed_payment:
+                await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
+            return
         if xui_ok:
             try:
                 await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
@@ -339,14 +350,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             "event=PROV_FAILED tg_id=%s payload=%s error=access_ensure",
             tg_id, payment_info.invoice_payload,
         )
-        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
+        failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "access_ensure")
+        if failed_payment:
+            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
         return
     except Exception:
         logger.exception(
             "event=PROV_FAILED tg_id=%s payload=%s error=vpn_provision",
             tg_id, payment_info.invoice_payload,
         )
-        await message.answer("Оплата прошла, но ключ пока не создан. Попробуйте позже.", reply_markup=get_main_menu_keyboard())
+        failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "vpn_provision")
+        if failed_payment:
+            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
         return
 
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""

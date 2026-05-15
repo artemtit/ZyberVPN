@@ -154,12 +154,13 @@ def subscription_info_keyboard() -> InlineKeyboardMarkup:
 
 
 def topup_keyboard() -> InlineKeyboardMarkup:
+    # 1 Star ≈ 1.69 RUB
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⭐ 100 Stars → 100 RUB", callback_data="topup_stars:100")],
-            [InlineKeyboardButton(text="⭐ 300 Stars → 300 RUB", callback_data="topup_stars:300")],
-            [InlineKeyboardButton(text="⭐ 500 Stars → 500 RUB", callback_data="topup_stars:500")],
-            [InlineKeyboardButton(text="⭐ 1000 Stars → 1000 RUB", callback_data="topup_stars:1000")],
+            [InlineKeyboardButton(text="⭐ 100 Stars → 169 ₽", callback_data="topup_stars:100")],
+            [InlineKeyboardButton(text="⭐ 250 Stars → 423 ₽", callback_data="topup_stars:250")],
+            [InlineKeyboardButton(text="⭐ 500 Stars → 845 ₽", callback_data="topup_stars:500")],
+            [InlineKeyboardButton(text="⭐ 1000 Stars → 1690 ₽", callback_data="topup_stars:1000")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
         ]
     )
