@@ -168,8 +168,7 @@ async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
-_STARS_TO_RUB = 1.69
-_VALID_TOPUP_STARS = {100, 250, 500, 1000}
+_VALID_TOPUP_RUB = {100, 300, 500, 1000}
 
 
 @router.callback_query(F.data == "profile_topup")
@@ -177,39 +176,39 @@ async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text(
         "💰 Пополнение баланса\n\n"
-        f"Курс: 1 ⭐ = {_STARS_TO_RUB} ₽\n\n"
-        "Выберите количество Stars для пополнения:",
+        "Выберите сумму пополнения:",
         reply_markup=topup_keyboard(),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("topup_stars:"))
-async def topup_stars_pay(callback: CallbackQuery, db: Database) -> None:
+@router.callback_query(F.data.startswith("topup_rub:"))
+async def topup_rub_pay(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    import math
     from app.services.payments import generate_payload
     from aiogram.types import LabeledPrice
 
     raw = callback.data.split(":", 1)[1]
     try:
-        stars_count = int(raw)
+        rub_amount = int(raw)
     except ValueError:
         await callback.answer("Некорректная сумма", show_alert=True)
         return
-    if stars_count not in _VALID_TOPUP_STARS:
+    if rub_amount not in _VALID_TOPUP_RUB:
         await callback.answer("Некорректная сумма", show_alert=True)
         return
 
-    rub_amount = round(stars_count * _STARS_TO_RUB)
+    stars_count = math.ceil(rub_amount / settings.stars_rate)
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
-    payload = generate_payload(callback.from_user.id, f"topup{stars_count}")
-    idem_key = f"topup-create:{callback.from_user.id}:{stars_count}:{payload}"
+    payload = generate_payload(callback.from_user.id, f"topup{rub_amount}")
+    idem_key = f"topup-create:{callback.from_user.id}:{rub_amount}:{payload}"
     await payments_repo.create_pending(
         tg_id=callback.from_user.id,
         amount=rub_amount,
-        tariff_code=f"topup{stars_count}",
+        tariff_code=f"topup{rub_amount}",
         email=None,
         payload=payload,
         idempotency_key=idem_key,
