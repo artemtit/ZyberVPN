@@ -740,9 +740,18 @@ class VPNManager:
                 try:
                     existing_uuid = await provider.get_client(server, user_id, key_id=key_id)
                     if existing_uuid:
-                        # Client exists in XUI — still ensure the secondary DB row exists.
-                        # Without this, sync_secondary_servers_for_key loops forever when
-                        # the client was provisioned before secondary-row tracking was added.
+                        # Client exists — re-enable if disabled, then ensure secondary DB row exists.
+                        effective_sec_gb = traffic_limit_gb if traffic_limit_gb > 0 else self._settings.vpn_total_gb
+                        try:
+                            await provider.update_client_expiry(
+                                server, existing_uuid, expiry_time,
+                                total_gb=effective_sec_gb if effective_sec_gb > 0 else None,
+                            )
+                        except Exception as enable_err:
+                            logger.warning(
+                                "secondary re-enable failed user_id=%s server_id=%s error=%s",
+                                user_id, server.id, enable_err,
+                            )
                         try:
                             profiles = await provider.get_client_config(user_id, server, existing_uuid)
                             await self._save_additional_server_access(

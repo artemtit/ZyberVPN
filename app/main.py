@@ -155,7 +155,7 @@ async def _enforce_traffic_loop(db: Database, settings, bot, interval_seconds: i
         await asyncio.sleep(interval_seconds)
 
 
-async def _provisioning_reconciliation_loop(db: Database, settings, interval_seconds: int = 600) -> None:
+async def _provisioning_reconciliation_loop(db: Database, settings, bot: Bot, interval_seconds: int = 600) -> None:
     """Detect and heal payments stuck in 'provisioning' or 'paid' state.
 
     Every 10 minutes:
@@ -169,7 +169,7 @@ async def _provisioning_reconciliation_loop(db: Database, settings, interval_sec
     """
     from app.repositories.payments import PaymentsRepository
     from app.repositories.user_vpn import UserVpnRepository
-    from datetime import timedelta
+    from app.services.provisioning_failures import notify_provisioning_failed
     from app.utils.datetime import utc_now, parse_iso_utc
 
     payments_repo = PaymentsRepository(db)
@@ -198,7 +198,9 @@ async def _provisioning_reconciliation_loop(db: Database, settings, interval_sec
                     except Exception:
                         age_minutes = 0
                     if age_minutes > 120:
-                        await payments_repo.mark_failed(payload, "reconciliation_timeout_2h")
+                        failed_payment = await payments_repo.mark_failed(payload, "reconciliation_timeout_2h")
+                        if failed_payment:
+                            await notify_provisioning_failed(bot, tg_id, payload)
                         logging.error(
                             "event=PROV_TIMEOUT_FAILED payload=%s tg_id=%s status=%s age_minutes=%.0f",
                             payload, tg_id, status, age_minutes,
@@ -416,7 +418,7 @@ async def run() -> None:
     per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings, bot=bot))
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
     disk_alert_task = asyncio.create_task(_disk_alert_loop(bot, settings))
-    reconciliation_task = asyncio.create_task(_provisioning_reconciliation_loop(db, settings))
+    reconciliation_task = asyncio.create_task(_provisioning_reconciliation_loop(db, settings, bot))
 
     # Restore banned-user set from DB so bans survive bot restarts.
     try:

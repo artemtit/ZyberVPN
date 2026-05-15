@@ -24,6 +24,7 @@ from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
 from app.services.access import AccessEnsureError, ensure_user_access
 from app.services.idempotency import IdempotencyService
+from app.services.provisioning_failures import notify_provisioning_failed
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.utils.datetime import add_months, parse_iso_utc, utc_now
@@ -78,8 +79,8 @@ async def process_confirmed_platega_payment(
     if not payment:
         logger.error("Platega webhook: payment not found transaction_id=%s", transaction_id)
         return
-    if payment.get("status") in ("provisioning", "active"):
-        logger.info("Platega: payment already processing/active, skipping transaction_id=%s", transaction_id)
+    if payment.get("status") in ("provisioning", "active", "failed"):
+        logger.info("Platega: payment already finalized/processing, skipping transaction_id=%s", transaction_id)
         return
 
     tg_id = int(payment["tg_id"])
@@ -204,6 +205,11 @@ async def process_confirmed_platega_payment(
                 "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s transaction_id=%s",
                 tg_id, renew_key_id, transaction_id,
             )
+        if not xui_ok:
+            failed_payment = await payments_repo.mark_failed(transaction_id, "renewal_xui")
+            if failed_payment:
+                await notify_provisioning_failed(bot, tg_id, transaction_id)
+            return
         if xui_ok:
             try:
                 await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
@@ -285,14 +291,18 @@ async def process_confirmed_platega_payment(
             "event=PROV_FAILED tg_id=%s transaction_id=%s error=access_ensure",
             tg_id, transaction_id,
         )
-        await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
+        failed_payment = await payments_repo.mark_failed(transaction_id, "access_ensure")
+        if failed_payment:
+            await notify_provisioning_failed(bot, tg_id, transaction_id)
         return
     except Exception:
         logger.exception(
             "event=PROV_FAILED tg_id=%s transaction_id=%s error=vpn_provision",
             tg_id, transaction_id,
         )
-        await _send(bot, tg_id, "✅ Оплата прошла, но VPN-ключ пока не создан. Попробуйте позже через «Мои ключи».")
+        failed_payment = await payments_repo.mark_failed(transaction_id, "vpn_provision")
+        if failed_payment:
+            await notify_provisioning_failed(bot, tg_id, transaction_id)
         return
 
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""

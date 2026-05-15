@@ -122,12 +122,12 @@ class PaymentsRepository:
             operation="payments.mark_active",
         )
 
-    async def mark_failed(self, payload: str, reason: str = "") -> None:
+    async def mark_failed(self, payload: str, reason: str = "") -> Optional[dict]:
         """Mark a payment as provisioning-failed. Money was received; no refund implied."""
         if not self._supabase:
-            return
+            return None
         logger.error("event=PROV_FAILED payload=%s reason=%s", payload, reason[:200])
-        await execute_with_retry(
+        response = await execute_with_retry(
             lambda: (
                 self._supabase.table("payments")
                 .update({"status": "failed"})
@@ -137,6 +137,8 @@ class PaymentsRepository:
             ),
             operation="payments.mark_failed",
         )
+        rows = response.data or []
+        return rows[0] if rows else None
 
     async def list_stuck_payments(
         self, prov_age_minutes: int = 15, paid_age_minutes: int = 60

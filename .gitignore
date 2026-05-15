@@ -216,3 +216,7 @@ CLAUDE.md
 deploy.py
 settings.local.json
 BUGS.md
+
+# Telethon session file (bot automation tester)
+tests/bot_test_session.session*
+tests/bot_automation_results.json
