@@ -314,6 +314,9 @@ async def key_comment_open(callback: CallbackQuery, db: Database, state: FSMCont
         await callback.answer("Ключ не найден", show_alert=True)
         return
 
+    all_keys = [k for k in await keys_repo.list_by_user(callback.from_user.id) if not k.get("disabled_at")]
+    display_num = next((i for i, k in enumerate(all_keys, start=1) if k["id"] == key_id), key_id)
+
     current = str(key_data.get("comment") or "").strip()
     current_text = f"Текущий: <i>{escape(current)}</i>\n\n" if current else ""
 
@@ -324,7 +327,7 @@ async def key_comment_open(callback: CallbackQuery, db: Database, state: FSMCont
         inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data=f"key_comment_cancel:{key_id}")]]
     )
     await callback.message.answer(
-        f"📝 Комментарий к ключу #{key_id}\n\n{current_text}Введите новый комментарий (до 500 символов):",
+        f"📝 Комментарий к ключу #{display_num}\n\n{current_text}Введите новый комментарий (до 500 символов):",
         reply_markup=cancel_kb,
     )
     await callback.answer()
