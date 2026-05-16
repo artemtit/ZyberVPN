@@ -49,6 +49,23 @@ def _parse_tg_id(text: str, command: str) -> int | None:
         return None
 
 
+async def _resolve_user(text: str, command: str, db: Database) -> tuple[int | None, str]:
+    """Parse tg_id or @username from command arg. Returns (tg_id, error_msg)."""
+    raw = text.removeprefix(f"/{command}").strip().split()[0] if text else ""
+    if not raw:
+        return None, f"Использование: /{command} &lt;tg_id&gt; или @username"
+    if raw.startswith("@") or not raw.lstrip("-").isdigit():
+        users_repo = UsersRepository(db)
+        user = await users_repo.get_by_username(raw)
+        if not user:
+            return None, f"❌ Пользователь {raw} не найден (поиск по username)."
+        return int(user["tg_id"]), ""
+    try:
+        return int(raw), ""
+    except ValueError:
+        return None, f"❌ Неверный аргумент: {raw}"
+
+
 def _format_expiry(raw: str | None) -> str:
     if not raw:
         return "—"
@@ -68,8 +85,8 @@ async def admin_help(message: Message, settings: Settings) -> None:
     await message.answer(
         "🔧 <b>Admin commands:</b>\n\n"
         "<b>👤 Пользователи</b>\n"
-        "/user &lt;tg_id&gt; — профиль пользователя\n"
-        "/payments &lt;tg_id&gt; — история платежей\n"
+        "/user &lt;tg_id|@username&gt; — профиль пользователя\n"
+        "/payments &lt;tg_id|@username&gt; — история платежей\n"
         "/ban &lt;tg_id&gt; — заблокировать\n"
         "/unban &lt;tg_id&gt; — разблокировать\n\n"
         "<b>🔑 Ключи</b>\n"
@@ -142,9 +159,9 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
 async def admin_user(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
-    target_id = _parse_tg_id(message.text or "", "user")
+    target_id, err = await _resolve_user(message.text or "", "user", db)
     if not target_id:
-        await message.answer("Использование: /user &lt;tg_id&gt;")
+        await message.answer(err or "Использование: /user &lt;tg_id&gt; или @username")
         return
 
     users_repo = UsersRepository(db)
@@ -161,6 +178,8 @@ async def admin_user(message: Message, db: Database, settings: Settings) -> None
     plan = user.get("plan") or "—"
     traffic_gb = user.get("traffic_limit_gb") or 0
     balance = user.get("balance") or 0
+    username = user.get("username")
+    username_str = f" (@{username})" if username else ""
 
     active_sub = await subs_repo.get_active(target_id)
     sub_expires = active_sub["expires_at"] if active_sub else expires_raw
@@ -181,7 +200,7 @@ async def admin_user(message: Message, db: Database, settings: Settings) -> None
 
     status_emoji = "✅" if is_active else "❌"
     await message.answer(
-        f"👤 <b>Пользователь {target_id}</b>\n\n"
+        f"👤 <b>Пользователь {target_id}</b>{username_str}\n\n"
         f"🛡 Статус: {status_emoji} {'Активен' if is_active else 'Неактивен'}\n"
         f"📅 Expires_at: {_format_expiry(sub_expires)}\n"
         f"📦 План: {plan}\n"
@@ -837,9 +856,9 @@ async def admin_del_key(message: Message, db: Database, settings: Settings) -> N
 async def admin_payments(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
-    target_id = _parse_tg_id(message.text or "", "payments")
+    target_id, err = await _resolve_user(message.text or "", "payments", db)
     if not target_id:
-        await message.answer("Использование: /payments &lt;tg_id&gt;")
+        await message.answer(err or "Использование: /payments &lt;tg_id&gt; или @username")
         return
 
     payments_repo = PaymentsRepository(db)

@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 
 from app.api.middlewares import (
@@ -327,10 +327,66 @@ async def _disk_alert_loop(bot: Bot, settings, threshold_pct: int = 85, interval
         await asyncio.sleep(interval_seconds)
 
 
+async def _register_commands(bot: Bot, settings) -> None:
+    user_commands = [
+        BotCommand(command="start", description="Запуск бота"),
+        BotCommand(command="menu", description="Главное меню"),
+        BotCommand(command="keys", description="Мои ключи"),
+        BotCommand(command="buy", description="Купить подписку"),
+    ]
+    admin_commands = user_commands + [
+        BotCommand(command="admin", description="Список команд"),
+        BotCommand(command="stats", description="Статистика"),
+        BotCommand(command="user", description="Профиль пользователя"),
+        BotCommand(command="payments", description="История платежей"),
+        BotCommand(command="givekey", description="Выдать ключ"),
+        BotCommand(command="delkey", description="Удалить ключ"),
+        BotCommand(command="addbalance", description="Пополнить баланс"),
+        BotCommand(command="setexpiry", description="Установить срок подписки"),
+        BotCommand(command="ban", description="Заблокировать пользователя"),
+        BotCommand(command="unban", description="Разблокировать пользователя"),
+        BotCommand(command="broadcast", description="Рассылка активным"),
+        BotCommand(command="broadcastall", description="Рассылка всем"),
+        BotCommand(command="servers", description="Список серверов"),
+    ]
+    try:
+        await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+        for admin_id in settings.admin_ids:
+            try:
+                await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+            except Exception:
+                logging.warning("Failed to set admin commands for admin_id=%s", admin_id)
+        logging.info("Bot commands registered (user=%d, admin=%d)", len(user_commands), len(admin_commands))
+    except Exception:
+        logging.exception("Failed to register bot commands")
+
+
 async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
     users_repo = UsersRepository(db)
     while True:
         try:
+            expiring_7d = await users_repo.get_users_expiring_soon(168)
+            for user in expiring_7d:
+                if user.get("notified_7d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"⏳ Ваша подписка ZyberVPN истекает {expires_str} — через неделю.\n\n"
+                        "Продлите заранее, чтобы не потерять доступ.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                        ),
+                    )
+                    await users_repo.set_notified(tg_id, "7d")
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send 7d expiry notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+
             expiring_3d = await users_repo.get_users_expiring_soon(72)
             for user in expiring_3d:
                 if user.get("notified_3d_at"):
@@ -431,6 +487,7 @@ async def run() -> None:
         logging.exception("Failed to load banned IDs from DB on startup")
 
     await bot.delete_webhook(drop_pending_updates=True)
+    await _register_commands(bot, settings)
     try:
         await dp.start_polling(bot)
     except asyncio.CancelledError:

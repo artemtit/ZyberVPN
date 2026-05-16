@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
@@ -30,9 +30,12 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
     users_repo = UsersRepository(db)
     ref_tg_id = _extract_ref_tg_id(command.args if command else None)
     await users_repo.get_or_create(message.from_user.id, ref_tg_id=ref_tg_id)
+    if message.from_user.username:
+        await users_repo.update_username(message.from_user.id, message.from_user.username)
     await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))
 
 
+@router.message(Command("menu"))
 @router.message(F.text == "🏠 Главное меню")
 async def menu_button(message: Message, settings: Settings) -> None:
     await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))

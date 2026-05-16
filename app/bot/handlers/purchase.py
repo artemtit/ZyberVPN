@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, LabeledPrice
+from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
 from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, stars_back_keyboard, tariffs_keyboard
@@ -83,6 +84,17 @@ async def _repair_provision_result(
     if key_id > 0 and not sub_token:
         sub_token = await keys_repo.ensure_sub_token(key_id, tg_id)
     return link, key_id, sub_token
+
+
+@router.message(Command("buy"))
+async def buy_command(message: Message, state: FSMContext, settings: Settings) -> None:
+    await state.clear()
+    await state.update_data(purchase_type="new", renew_key_id=None)
+    is_admin = message.from_user.id in settings.admin_ids
+    await message.answer(
+        "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
+        reply_markup=tariffs_keyboard(is_admin=is_admin),
+    )
 
 
 @router.callback_query(F.data == "buy_open")

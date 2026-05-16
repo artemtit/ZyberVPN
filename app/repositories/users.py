@@ -28,30 +28,35 @@ class UsersRepository:
     def last_supabase_error(self) -> bool:
         return self._last_supabase_error
 
+    _BASE_FIELDS = "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
+
     async def get_by_tg_id(self, tg_id: int) -> Optional[dict]:
         if not self._supabase:
             self._last_supabase_error = True
             return None
-        try:
-            response = await execute_with_retry(
-                lambda: (
-                    self._supabase.table("users")
-                    .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
-                    )
-                    .eq("tg_id", tg_id)
-                    .limit(1)
-                    .execute()
-                ),
-                operation="users.get_by_tg_id",
-            )
-            data = response.data or []
-            self._last_supabase_error = False
-            return data[0] if data else None
-        except Exception:
-            self._last_supabase_error = True
-            logger.exception("Supabase get_by_tg_id failed")
-            return None
+        for fields in (self._BASE_FIELDS + ",username", self._BASE_FIELDS):
+            try:
+                response = await execute_with_retry(
+                    lambda f=fields: (
+                        self._supabase.table("users")
+                        .select(f)
+                        .eq("tg_id", tg_id)
+                        .limit(1)
+                        .execute()
+                    ),
+                    operation="users.get_by_tg_id",
+                )
+                data = response.data or []
+                self._last_supabase_error = False
+                return data[0] if data else None
+            except Exception as exc:
+                if "42703" in str(exc) or "does not exist" in str(exc):
+                    continue
+                self._last_supabase_error = True
+                logger.exception("Supabase get_by_tg_id failed")
+                return None
+        self._last_supabase_error = True
+        return None
 
     async def create(
         self,
@@ -142,6 +147,45 @@ class UsersRepository:
             logger.exception("Supabase update_sub_token failed")
             return None
 
+    async def get_by_username(self, username: str) -> Optional[dict]:
+        if not self._supabase:
+            return None
+        clean = username.lstrip("@").lower()
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select(
+                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb,username"
+                    )
+                    .ilike("username", clean)
+                    .limit(1)
+                    .execute()
+                ),
+                operation="users.get_by_username",
+            )
+            data = response.data or []
+            return data[0] if data else None
+        except Exception:
+            logger.exception("Supabase get_by_username failed username=%s", clean)
+            return None
+
+    async def update_username(self, tg_id: int, username: str | None) -> None:
+        if not self._supabase or not username:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"username": username.lstrip("@").lower()})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.update_username",
+            )
+        except Exception:
+            logger.exception("Supabase update_username failed tg_id=%s", tg_id)
+
     async def get_by_sub_token(self, token: str) -> Optional[dict]:
         if not self._supabase:
             self._last_supabase_error = True
@@ -152,9 +196,7 @@ class UsersRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("users")
-                    .select(
-                        "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
-                    )
+                    .select(self._BASE_FIELDS)
                     .eq("sub_token", token)
                     .limit(1)
                     .execute()
@@ -287,34 +329,39 @@ class UsersRepository:
             return []
         now = utc_now()
         deadline = now + timedelta(hours=hours_until_expiry)
-        try:
-            response = await execute_with_retry(
-                lambda: (
-                    self._supabase.table("users")
-                    .select(
-                        "id,tg_id,expires_at,is_active,notified_3d_at,notified_1d_at"
-                    )
-                    .eq("is_active", True)
-                    .not_.is_("expires_at", "null")
-                    .lte("expires_at", deadline.isoformat())
-                    .gt("expires_at", now.isoformat())
-                    .execute()
-                ),
-                operation="users.get_users_expiring_soon",
-            )
-            return list(response.data or [])
-        except Exception:
-            logger.exception("Supabase get_users_expiring_soon failed hours=%s", hours_until_expiry)
-            return []
+        for fields in (
+            "id,tg_id,expires_at,is_active,notified_7d_at,notified_3d_at,notified_1d_at",
+            "id,tg_id,expires_at,is_active,notified_3d_at,notified_1d_at",
+        ):
+            try:
+                response = await execute_with_retry(
+                    lambda f=fields: (
+                        self._supabase.table("users")
+                        .select(f)
+                        .eq("is_active", True)
+                        .not_.is_("expires_at", "null")
+                        .lte("expires_at", deadline.isoformat())
+                        .gt("expires_at", now.isoformat())
+                        .execute()
+                    ),
+                    operation="users.get_users_expiring_soon",
+                )
+                return list(response.data or [])
+            except Exception as exc:
+                if "42703" in str(exc) or "does not exist" in str(exc):
+                    continue
+                logger.exception("Supabase get_users_expiring_soon failed hours=%s", hours_until_expiry)
+                return []
+        return []
 
     async def set_notified(self, tg_id: int, notification_type: str) -> None:
         if not self._supabase:
             return
-        field = ""
-        if notification_type == "3d":
-            field = "notified_3d_at"
-        elif notification_type == "1d":
-            field = "notified_1d_at"
+        field = {
+            "7d": "notified_7d_at",
+            "3d": "notified_3d_at",
+            "1d": "notified_1d_at",
+        }.get(notification_type)
         if not field:
             return
         try:
@@ -327,8 +374,11 @@ class UsersRepository:
                 ),
                 operation=f"users.set_notified.{notification_type}",
             )
-        except Exception:
-            logger.exception("Supabase set_notified failed tg_id=%s type=%s", tg_id, notification_type)
+        except Exception as exc:
+            if "42703" in str(exc) or "does not exist" in str(exc):
+                logger.debug("set_notified: column %s not yet in schema, skipping", field)
+            else:
+                logger.exception("Supabase set_notified failed tg_id=%s type=%s", tg_id, notification_type)
 
     async def count_referrals(self, tg_id: int) -> int:
         if not self._supabase:
