@@ -69,9 +69,9 @@ def key_card_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tariffs_keyboard() -> InlineKeyboardMarkup:
+def tariffs_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    for plan in get_all_plans():
+    for plan in get_all_plans(include_admin=is_admin):
         rows.append(
             [
                 InlineKeyboardButton(
@@ -91,8 +91,17 @@ def payment_keyboard(
     show_test_pay: bool = False,
     balance: int = 0,
     price_rub: int = 0,
+    admin_plan: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
+    if admin_plan:
+        # Admin-only plan: only Platega, no Stars/balance
+        if platega_enabled:
+            rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega")])
+        if platega_crypto_enabled:
+            rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
+        rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
     if balance > 0:
         if price_rub > 0 and balance >= price_rub:
             label = f"💰 Оплатить с баланса (бесплатно, −{price_rub} руб.)"

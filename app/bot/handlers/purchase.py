@@ -86,25 +86,27 @@ async def _repair_provision_result(
 
 
 @router.callback_query(F.data == "buy_open")
-async def buy_new_key(callback: CallbackQuery, state: FSMContext) -> None:
+async def buy_new_key(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     await state.clear()
     await state.update_data(purchase_type="new", renew_key_id=None)
+    is_admin = callback.from_user.id in settings.admin_ids
     await photo_to_text(
         callback.message,
         "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
-        reply_markup=tariffs_keyboard(),
+        reply_markup=tariffs_keyboard(is_admin=is_admin),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("key_renew:"))
-async def buy_renew_key(callback: CallbackQuery, state: FSMContext) -> None:
+async def buy_renew_key(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     key_id = int(callback.data.split(":")[1])
     await state.clear()
     await state.update_data(purchase_type="renewal", renew_key_id=key_id)
+    is_admin = callback.from_user.id in settings.admin_ids
     await callback.message.edit_text(
         f"🔄 Продление ключа #{key_id}\n\nВыберите подходящий период подписки:",
-        reply_markup=tariffs_keyboard(),
+        reply_markup=tariffs_keyboard(is_admin=is_admin),
     )
     await callback.answer()
 
@@ -175,6 +177,22 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, 
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     is_admin = callback.from_user.id in settings.admin_ids
+    # Admin-only plan: block for non-admins, show only Platega for admins.
+    if plan.get("admin_only"):
+        if not is_admin:
+            await callback.answer("Этот тариф только для администраторов.", show_alert=True)
+            return
+        await callback.message.edit_text(
+            f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
+            reply_markup=payment_keyboard(
+                platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
+                show_test_pay=False, balance=0, price_rub=plan["price_rub"],
+                admin_plan=True,
+            ),
+        )
+        await callback.answer()
+        return
+
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
     balance = int((user or {}).get("balance") or 0)
