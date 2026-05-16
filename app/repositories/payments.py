@@ -180,6 +180,26 @@ class PaymentsRepository:
             logger.exception("list_stuck_payments failed")
             return []
 
+    async def list_by_user(self, tg_id: int, limit: int = 10) -> list[dict]:
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select("id,amount,tariff_code,status,purchase_type,created_at,payload")
+                    .eq("tg_id", tg_id)
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                ),
+                operation="payments.list_by_user",
+            )
+            return list(response.data or [])
+        except Exception:
+            logger.exception("payments.list_by_user failed tg_id=%s", tg_id)
+            return []
+
     async def count_paid(self, tg_id: int) -> int:
         if not self._supabase:
             return 0

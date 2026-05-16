@@ -19,8 +19,8 @@ from app.repositories.servers import ServersRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
-from app.services.access import build_vpn_manager
-from app.utils.datetime import parse_iso_utc, to_moscow, utc_now
+from app.services.access import build_vpn_manager, ensure_user_access
+from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 from datetime import timedelta
 
 router = Router()
@@ -67,16 +67,25 @@ async def admin_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "🔧 <b>Admin commands:</b>\n\n"
-        "/stats — статистика проекта\n"
+        "<b>👤 Пользователи</b>\n"
         "/user &lt;tg_id&gt; — профиль пользователя\n"
-        "/ban &lt;tg_id&gt; — заблокировать пользователя\n"
-        "/unban &lt;tg_id&gt; — разблокировать пользователя\n"
+        "/payments &lt;tg_id&gt; — история платежей\n"
+        "/ban &lt;tg_id&gt; — заблокировать\n"
+        "/unban &lt;tg_id&gt; — разблокировать\n\n"
+        "<b>🔑 Ключи</b>\n"
+        "/givekey &lt;tg_id&gt; — выдать ключ на 30 дней\n"
+        "/delkey &lt;tg_id&gt; &lt;key_id&gt; — удалить ключ\n"
         "/reenable_key &lt;tg_id&gt; [key_id] — переактивировать ключ(и)\n"
-        "/restore_keys &lt;tg_id&gt; — восстановить ключи после бана\n"
+        "/restore_keys &lt;tg_id&gt; — восстановить после бана\n\n"
+        "<b>💰 Финансы</b>\n"
+        "/addbalance &lt;tg_id&gt; &lt;сумма&gt; — добавить на баланс\n"
+        "/setexpiry &lt;tg_id&gt; &lt;дней&gt; — установить срок подписки\n\n"
+        "<b>📊 Общее</b>\n"
+        "/stats — статистика проекта\n"
         "/servers — список серверов\n"
-        "/sync_servers — добавить все ключи на новые серверы\n"
-        "/broadcast &lt;текст&gt; — рассылка активным пользователям\n"
-        "/broadcastall &lt;текст&gt; — рассылка ВСЕМ пользователям",
+        "/sync_servers — синхронизировать серверы\n"
+        "/broadcast &lt;текст&gt; — рассылка активным\n"
+        "/broadcastall &lt;текст&gt; — рассылка ВСЕМ",
     )
 
 
@@ -619,3 +628,230 @@ async def admin_sync_servers(message: Message, db: Database, settings: Settings)
         f"Ошибок: <b>{failed}</b>\n"
         f"Пропущено пользователей: <b>{skipped}</b>"
     )
+
+
+# ──────────────────────────────────────────
+# /addbalance <tg_id> <amount>
+# ──────────────────────────────────────────
+@router.message(Command("addbalance"))
+async def admin_add_balance(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer("Использование: /addbalance &lt;tg_id&gt; &lt;сумма&gt;")
+        return
+    try:
+        target_id = int(parts[1])
+        amount = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Неверные аргументы. Пример: /addbalance 123456789 100")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0.")
+        return
+
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+
+    old_balance = int((user or {}).get("balance") or 0)
+    await users_repo.add_balance(target_id, amount)
+    logger.warning("ADMIN ADDBALANCE | admin=%s target=%s amount=%s", message.from_user.id, target_id, amount)
+    try:
+        await message.bot.send_message(
+            target_id,
+            f"💳 <b>Администратор пополнил ваш баланс на {amount} ₽</b>\n\n"
+            f"Текущий баланс: {old_balance + amount} ₽",
+        )
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ Баланс пополнен.\n"
+        f"Пользователь: <code>{target_id}</code>\n"
+        f"Было: <b>{old_balance} ₽</b> → Стало: <b>{old_balance + amount} ₽</b>"
+    )
+
+
+# ──────────────────────────────────────────
+# /setexpiry <tg_id> <days>
+# ──────────────────────────────────────────
+@router.message(Command("setexpiry"))
+async def admin_set_expiry(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer("Использование: /setexpiry &lt;tg_id&gt; &lt;дней&gt;\nПример: /setexpiry 123456789 30")
+        return
+    try:
+        target_id = int(parts[1])
+        days = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Неверные аргументы.")
+        return
+    if days <= 0 or days > 3650:
+        await message.answer("❌ Количество дней: от 1 до 3650.")
+        return
+
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+
+    expires_dt = utc_now() + timedelta(days=days)
+    await users_repo.set_expiry(
+        target_id,
+        expires_at=expires_dt.isoformat(),
+        is_active=True,
+        plan="monthly",
+        last_activated_at=utc_now().isoformat(),
+    )
+    logger.warning("ADMIN SETEXPIRY | admin=%s target=%s days=%s", message.from_user.id, target_id, days)
+    try:
+        await message.bot.send_message(
+            target_id,
+            f"✅ <b>Ваша подписка продлена администратором!</b>\n\n"
+            f"📅 Действует до: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>",
+        )
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ Срок подписки установлен.\n"
+        f"Пользователь: <code>{target_id}</code>\n"
+        f"Подписка до: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y %H:%M МСК')}</b>"
+    )
+
+
+# ──────────────────────────────────────────
+# /givekey <tg_id>  — выдать бесплатный ключ
+# ──────────────────────────────────────────
+@router.message(Command("givekey"))
+async def admin_give_key(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    target_id = _parse_tg_id(message.text or "", "givekey")
+    if not target_id:
+        await message.answer("Использование: /givekey &lt;tg_id&gt;")
+        return
+
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        await message.answer(f"❌ Пользователь {target_id} не найден.")
+        return
+
+    # Ensure subscription is active for 30 days
+    expires_dt = utc_now() + timedelta(days=30)
+    await users_repo.set_expiry(
+        target_id,
+        expires_at=expires_dt.isoformat(),
+        is_active=True,
+        plan="monthly",
+        last_activated_at=utc_now().isoformat(),
+    )
+    await users_repo.add_traffic_limit(target_id, 60)
+
+    await message.answer(f"⏳ Создаю ключ для <code>{target_id}</code>...")
+    try:
+        result = await ensure_user_access(
+            tg_id=target_id,
+            db=db,
+            settings=settings,
+            require_active=True,
+            force_new_key=True,
+            action="create",
+            traffic_limit_gb=60,
+        )
+        vpn_key = result.get("vpn_key", "")
+        key_id = result.get("key_id", 0)
+        logger.warning("ADMIN GIVEKEY | admin=%s target=%s key_id=%s", message.from_user.id, target_id, key_id)
+        try:
+            await message.bot.send_message(
+                target_id,
+                f"🎁 <b>Администратор выдал вам VPN-ключ на 30 дней!</b>\n\n"
+                f"📅 Действует до: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n\n"
+                "Откройте «Мои ключи» чтобы подключиться.",
+            )
+        except Exception:
+            pass
+        await message.answer(
+            f"✅ Ключ выдан!\n"
+            f"Пользователь: <code>{target_id}</code>\n"
+            f"Key ID: <b>{key_id}</b>\n"
+            f"До: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n"
+            f"<code>{escape(vpn_key[:80])}...</code>"
+        )
+    except Exception:
+        logger.exception("admin_give_key failed target_id=%s", target_id)
+        await message.answer(f"❌ Не удалось создать ключ для {target_id}. Проверьте логи.")
+
+
+# ──────────────────────────────────────────
+# /delkey <tg_id> <key_id>
+# ──────────────────────────────────────────
+@router.message(Command("delkey"))
+async def admin_del_key(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer("Использование: /delkey &lt;tg_id&gt; &lt;key_id&gt;")
+        return
+    try:
+        target_id = int(parts[1])
+        key_id = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Неверные аргументы.")
+        return
+
+    keys_repo = KeysRepository(db)
+    key_row = await keys_repo.get_by_id_for_user(key_id, target_id)
+    if not key_row:
+        await message.answer(f"❌ Ключ #{key_id} для пользователя {target_id} не найден.")
+        return
+
+    manager = build_vpn_manager(db, settings)
+    try:
+        await manager.disable_key_access(target_id, key_id)
+    except Exception:
+        logger.exception("admin_del_key: disable_key_access failed key_id=%s", key_id)
+    await keys_repo.mark_disabled(key_id, target_id)
+    logger.warning("ADMIN DELKEY | admin=%s target=%s key_id=%s", message.from_user.id, target_id, key_id)
+    await message.answer(
+        f"✅ Ключ #{key_id} пользователя <code>{target_id}</code> отключён и помечен как удалённый."
+    )
+
+
+# ──────────────────────────────────────────
+# /payments <tg_id>
+# ──────────────────────────────────────────
+@router.message(Command("payments"))
+async def admin_payments(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    target_id = _parse_tg_id(message.text or "", "payments")
+    if not target_id:
+        await message.answer("Использование: /payments &lt;tg_id&gt;")
+        return
+
+    payments_repo = PaymentsRepository(db)
+    rows = await payments_repo.list_by_user(target_id, limit=15)
+    if not rows:
+        await message.answer(f"❌ Платежи для пользователя {target_id} не найдены.")
+        return
+
+    lines = [f"💳 <b>Платежи пользователя {target_id}</b> (последние {len(rows)}):\n"]
+    status_icons = {"active": "✅", "paid": "💚", "pending": "⏳", "failed": "❌", "provisioning": "🔄"}
+    for row in rows:
+        icon = status_icons.get(str(row.get("status") or ""), "❓")
+        dt = _format_expiry(row.get("created_at"))
+        amount = row.get("amount") or 0
+        ptype = row.get("purchase_type") or "—"
+        tariff = row.get("tariff_code") or "—"
+        lines.append(f"{icon} <b>{amount} ₽</b> | {tariff} | {ptype} | {dt}")
+
+    await message.answer("\n".join(lines))
