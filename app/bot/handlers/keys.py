@@ -253,6 +253,10 @@ async def key_qr(callback: CallbackQuery, db: Database, settings: Settings) -> N
         await callback.answer("Subscription URL не найден", show_alert=True)
         return
     qr_bytes = qr_png_from_text(sub_url)
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer_photo(
         BufferedInputFile(qr_bytes, filename=f"subscription-{key_id}.png"),
         caption=f"QR-код для подключения\n<code>{escape(sub_url)}</code>",
