@@ -6,7 +6,7 @@ from html import escape
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
@@ -398,15 +398,12 @@ async def process_successful_payment(message: Message, db: Database, settings: S
                 logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
             await payments_repo.mark_active(payment_info.invoice_payload)
 
-        key_label = f" ключа #{key_id_int}"
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            f"🔄 <b>Продление{key_label}</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>"
+            f"🎉 <b>Подписка продлена!</b>\n\n"
+            f"🔑 Ключ #{key_id_int}\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
         )
-        await message.answer(text, reply_markup=get_main_menu_keyboard())
-        await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        await message.answer(text, reply_markup=renewal_success_keyboard(key_id_int))
         u = message.from_user
         uname = f"@{u.username}" if u.username else str(tg_id)
         amount_rub = int(processed.get("amount") or 0)
@@ -509,24 +506,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     if sub_url:
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{escape(sub_url)}</code>\n\n"
-            "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
-            "или «Показать QR» для сканирования."
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
+            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
         )
         await message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
-            "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+            "⏳ Ключ создаётся, через минуту откройте «Мои ключи»."
         )
-        await message.answer(text, reply_markup=get_main_menu_keyboard())
+        await message.answer(text, reply_markup=renewal_success_keyboard(provisioned_key_id))
 
     u = message.from_user
     uname = f"@{u.username}" if u.username else str(tg_id)
@@ -555,9 +546,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         logger.exception("Referral bonus failed payload=%s", payment_info.invoice_payload)
         inviter_bonus = 0
         friend_bonus = 0
-    await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if friend_bonus > 0:
-        await message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())
+        await message.answer(f"🎁 Реферальный бонус зачислен: +{friend_bonus} ₽ на баланс")
     if inviter_bonus > 0:
         inviter_tg_id = int((user or {}).get("ref_tg_id") or 0)
         if inviter_tg_id:

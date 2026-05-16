@@ -4,17 +4,27 @@ from app.services.plans import get_all_plans
 
 def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMarkup:
     connect_button = (
-        InlineKeyboardButton(text="📲 Подключить", callback_data=f"key_connect:{key_id}")
+        InlineKeyboardButton(text="📲 Подключить устройство", callback_data=f"key_connect:{key_id}")
         if key_id
-        else InlineKeyboardButton(text="📲 Подключить", url=sub_url)
+        else InlineKeyboardButton(text="📲 Подключить устройство", url=sub_url)
     )
     qr_callback = f"key_qr:{key_id}" if key_id else "payment_show_qr"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [connect_button],
             [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=qr_callback)],
+            [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
         ]
     )
+
+
+def renewal_success_keyboard(key_id: int = 0) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if key_id:
+        rows.append([InlineKeyboardButton(text="📲 Подключить", callback_data=f"key_connect:{key_id}")])
+    rows.append([InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyboardMarkup:
@@ -35,9 +45,9 @@ def trial_expired_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="1 месяц — 69 ₽", callback_data="tariff:m1")],
-            [InlineKeyboardButton(text="3 месяца — 189 ₽", callback_data="tariff:m3")],
-            [InlineKeyboardButton(text="6 месяцев — 349 ₽", callback_data="tariff:m6")],
-            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_menu")],
+            [InlineKeyboardButton(text="3 месяца — 189 ₽  (−9%)", callback_data="tariff:m3")],
+            [InlineKeyboardButton(text="6 месяцев — 349 ₽  (−16%)", callback_data="tariff:m6")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")],
         ]
     )
 
@@ -84,16 +94,18 @@ def key_card_keyboard(
 
 def tariffs_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    base_monthly_price = 69  # m1 price — reference for discount calc
     for plan in get_all_plans(include_admin=is_admin):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{plan['name']} — {plan['traffic_gb']} ГБ — {plan['price_rub']}₽",
-                    callback_data=f"buy_plan:{plan['id']}",
-                )
-            ]
-        )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_keys")])
+        if plan.get("admin_only"):
+            label = f"🔧 {plan['name']} — {plan['price_rub']} ₽"
+        else:
+            months = max(1, plan["duration_days"] // 30)
+            per_month = plan["price_rub"] / months
+            discount = round((1 - per_month / base_monthly_price) * 100)
+            suffix = f"  (−{discount}%)" if discount > 0 else ""
+            label = f"{plan['name']} — {plan['price_rub']} ₽{suffix}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy_plan:{plan['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

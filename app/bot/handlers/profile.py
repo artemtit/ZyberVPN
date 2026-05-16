@@ -99,6 +99,14 @@ def _status_text(is_active: bool) -> str:
     return "активна ✅" if is_active else "истекла ❌"
 
 
+_PLAN_NAMES: dict[str, str] = {
+    "monthly": "Ежемесячная",
+    "trial": "Пробная (1 день)",
+    "promo": "Промо",
+    "none": "—",
+}
+
+
 @router.callback_query(F.data == "menu_profile")
 async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> None:
     await state.clear()
@@ -110,49 +118,66 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
     if full_user and not is_active:
         await users_repo.update_status(callback.from_user.id, False)
 
-    username = callback.from_user.username or callback.from_user.full_name
     invited = await users_repo.count_referrals(callback.from_user.id)
 
     keys_repo = KeysRepository(db)
     user_keys = await keys_repo.list_by_user(callback.from_user.id)
-    primary_expiry_raw = user_keys[0].get("expires_at") if user_keys else None
-    expires_raw = primary_expiry_raw or (full_user or {}).get("expires_at")
+    # Use the primary key's expiry; fall back to any key, then to users.expires_at
+    primary_key = next((k for k in user_keys if k.get("is_primary")), user_keys[0] if user_keys else None)
+    expires_raw = (primary_key.get("expires_at") if primary_key else None) or (full_user or {}).get("expires_at")
+    active_key_count = sum(
+        1 for k in user_keys
+        if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://")
+    )
 
     days_left = 0
     hours_left = 0
-    months_count = 0
-    if is_active and expires_raw:
+    expires_date_str = ""
+    if expires_raw:
         try:
             expires_dt = parse_iso_utc(expires_raw)
             delta = expires_dt - utc_now()
             total_seconds = max(0, int(delta.total_seconds()))
             days_left = total_seconds // 86400
             hours_left = (total_seconds % 86400) // 3600
-            months_count = max(1, days_left // 30)
+            expires_date_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
         except Exception:
             pass
 
-    status_line = "Активна ✅" if is_active else "Не активна ❌"
     balance_rub = int((full_user or {}).get("balance") or 0)
     auto_renew_key_id = int((full_user or {}).get("auto_renew_stars_key_id") or 0)
+    plan_raw = str((full_user or {}).get("plan") or "none")
+    plan_display = _PLAN_NAMES.get(plan_raw, "Ежемесячная")
+    name_display = callback.from_user.full_name or callback.from_user.username or "—"
 
-    news_url = "https://t.me/ZyberVPN_News"
-    support_url = "https://t.me/ZyberVPN_Support_bot"
+    lines = [
+        f"👤 <b>{name_display}</b>",
+        f"🆔 <code>{callback.from_user.id}</code>",
+        "",
+        "🛡 <b>Подписка</b>",
+    ]
+    if is_active and expires_date_str:
+        lines += [
+            f"Статус: Активна ✅",
+            f"До: <b>{expires_date_str}</b> · {days_left} д. {hours_left} ч.",
+            f"Тариф: {plan_display}",
+        ]
+    elif is_active:
+        lines.append("Статус: Активна ✅")
+    else:
+        lines.append("Статус: Не активна ❌")
+    lines += [
+        f"Ключей активно: {active_key_count}",
+        "",
+        "💰 <b>Финансы</b>",
+        f"Баланс: <b>{balance_rub} ₽</b>",
+        f"Рефералов приглашено: {invited}",
+    ]
 
     await photo_to_text(
         callback.message,
-        f"👤 ПРОФИЛЬ: {username} / iD: {callback.from_user.id}\n\n"
-        "💎 ПОДПИСКА\n"
-        f"🛡 Подписка: {status_line}\n"
-        f"⏳ Осталось: {days_left} д. {hours_left} ч.\n"
-        f"📅 Приобретено месяцев: {months_count}\n\n"
-        "💼 ФИНАНСЫ\n"
-        f"💳 Баланс: {balance_rub} RUB\n"
-        f"🤝 Рефералов: {invited}\n\n"
-        f"📄 <a href=\"{news_url}\">Новости</a>\n"
-        f"💬 <a href=\"{support_url}\">Поддержка</a>",
+        "\n".join(lines),
         reply_markup=profile_keyboard(auto_renew_active=bool(auto_renew_key_id)),
-        disable_web_page_preview=True,
     )
     await callback.answer()
 
@@ -174,11 +199,13 @@ async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
     if not is_active:
         await users_repo.update_status(callback.from_user.id, False)
 
+    plan_raw = str(supabase_user.get("plan") or "none")
+    plan_display = _PLAN_NAMES.get(plan_raw, "Ежемесячная")
     await callback.message.edit_text(
-        "👤 Моя подписка\n\n"
+        "🛡 <b>Подписка</b>\n\n"
         f"Статус: {_status_text(is_active)}\n"
-        f"Срок действия: {_format_expiry(supabase_user.get('expires_at'))}\n"
-        f"План: {supabase_user.get('plan') or 'не задан'}",
+        f"Действует до: {_format_expiry(supabase_user.get('expires_at'))}\n"
+        f"Тариф: {plan_display}",
         reply_markup=subscription_info_keyboard(),
     )
     await callback.answer()

@@ -56,6 +56,19 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
         )
 
     show_trial = await is_trial_eligible(message.from_user.id, db)
+
+    if is_new:
+        await message.answer(
+            "👋 <b>Добро пожаловать в ZyberVPN!</b>\n\n"
+            "Быстрый и надёжный VPN — без логов и ограничений.\n\n"
+            "🌍 Серверы в Нидерландах и Польше\n"
+            "📱 Android, iOS, Windows, macOS, Linux\n"
+            "🔒 Протокол VLESS+Reality — стабильно и безопасно\n\n"
+            + ("Попробуйте <b>1 день бесплатно</b> или выберите тариф ниже 👇"
+               if show_trial else
+               "Выберите тариф в меню ниже 👇")
+        )
+
     await send_main_menu(message, inline_main_menu_keyboard(settings.support_url, show_trial=show_trial))
 
 

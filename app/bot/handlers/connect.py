@@ -42,13 +42,50 @@ APPS: dict[str, list[tuple[str, str]]] = {
 }
 
 INSTRUCTIONS: dict[str, str] = {
-    "app_v2rayng": "1. Установите v2rayNG\n2. Откройте приложение\n3. Нажмите +\n4. Импорт из буфера\n5. Вставьте ключ\n6. Подключитесь",
-    "app_v2raytun": "1. Установите V2RayTun\n2. Откройте приложение\n3. Добавьте новый профиль\n4. Выберите импорт из буфера\n5. Вставьте ключ\n6. Подключитесь",
-    "app_shadowrocket": "1. Установите Shadowrocket\n2. Нажмите +\n3. Import from Clipboard\n4. Вставьте ключ\n5. Подключитесь",
-    "app_happ": "1. Установите Happ\n2. Откройте приложение\n3. Добавьте конфигурацию\n4. Выберите импорт из буфера\n5. Вставьте ключ\n6. Подключитесь",
-    "app_v2rayn": "1. Установите v2rayN\n2. Откройте приложение\n3. Нажмите Add\n4. Выберите import from clipboard\n5. Вставьте ключ\n6. Подключитесь",
-    "app_v2rayx": "1. Установите V2RayX\n2. Откройте приложение\n3. Импортируйте конфигурацию из буфера\n4. Вставьте ключ\n5. Активируйте профиль\n6. Подключитесь",
-    "app_cli": "1. Установите CLI-клиент V2Ray/Xray\n2. Создайте конфиг-файл\n3. Вставьте ключ\n4. Сохраните файл\n5. Запустите клиент\n6. Проверьте подключение",
+    "app_v2rayng": (
+        "1️⃣ Установите <b>v2rayNG</b> из Google Play\n"
+        "2️⃣ Нажмите <b>«+»</b> в правом верхнем углу\n"
+        "3️⃣ Выберите <b>«Import config from clipboard»</b>\n"
+        "4️⃣ Вставьте ссылку → нажмите ✔️\n"
+        "5️⃣ Нажмите <b>▶ Старт</b> — готово!"
+    ),
+    "app_v2raytun": (
+        "1️⃣ Установите <b>V2RayTun</b> из Google Play\n"
+        "2️⃣ Откройте приложение → нажмите <b>«+»</b>\n"
+        "3️⃣ Выберите <b>«Import from clipboard»</b>\n"
+        "4️⃣ Вставьте ссылку и сохраните\n"
+        "5️⃣ Нажмите <b>Подключить</b> — готово!"
+    ),
+    "app_shadowrocket": (
+        "1️⃣ Установите <b>Shadowrocket</b> из App Store\n"
+        "2️⃣ Нажмите <b>«+»</b> (сверху справа)\n"
+        "3️⃣ Выберите <b>«Import from Clipboard»</b>\n"
+        "4️⃣ Нажмите на добавленный профиль → <b>Connect</b>"
+    ),
+    "app_happ": (
+        "1️⃣ Установите <b>Happ</b> из App Store\n"
+        "2️⃣ Нажмите <b>«+»</b> → <b>«From clipboard»</b>\n"
+        "3️⃣ Профиль добавится автоматически\n"
+        "4️⃣ Нажмите <b>Connect</b> — готово!"
+    ),
+    "app_v2rayn": (
+        "1️⃣ Установите <b>v2rayN</b>\n"
+        "2️⃣ В меню выберите <b>Server → Import from clipboard</b>\n"
+        "3️⃣ Вставьте ссылку и нажмите <b>OK</b>\n"
+        "4️⃣ Нажмите <b>▶ Старт</b> — готово!"
+    ),
+    "app_v2rayx": (
+        "1️⃣ Установите <b>V2RayX</b>\n"
+        "2️⃣ Откройте меню <b>Configure → Import</b>\n"
+        "3️⃣ Вставьте ссылку и сохраните\n"
+        "4️⃣ Нажмите <b>Turn V2RayX On</b> — готово!"
+    ),
+    "app_cli": (
+        "1️⃣ Установите <b>xray</b> или <b>v2ray</b>\n"
+        "2️⃣ Создайте файл <code>config.json</code>\n"
+        "3️⃣ Добавьте ключ как <code>outbound</code>\n"
+        "4️⃣ Запустите: <code>xray run -c config.json</code>"
+    ),
 }
 
 
@@ -112,7 +149,7 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
         await state.update_data(vpn_key=vpn_key, sub_url=sub_url, vpn_configs=[vpn_key])
 
         await callback.message.edit_text(
-            "Подключение к ZyberVPN\n\nВыберите устройство:",
+            "📲 <b>Подключение к ZyberVPN</b>\n\nНа каком устройстве хотите настроить VPN?",
             reply_markup=connect_devices_keyboard(),
         )
         await callback.answer()
@@ -154,7 +191,7 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
     await state.update_data(vpn_key=vpn_key, sub_url=sub_url, vpn_configs=vpn_configs)
 
     await callback.message.edit_text(
-        "Подключение к ZyberVPN\n\nВыберите устройство:",
+        "📲 <b>Подключение к ZyberVPN</b>\n\nНа каком устройстве хотите настроить VPN?",
         reply_markup=connect_devices_keyboard(),
     )
     await callback.answer()
@@ -182,7 +219,7 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
     await state.update_data(device_code=device_code, device_name=device_name)
 
     await callback.message.edit_text(
-        f"Подключение к ZyberVPN\n\nУстройство: {device_name}\n\nВыберите приложение:",
+        f"📲 <b>Подключение к ZyberVPN</b>\n\n📱 Устройство: <b>{escape(device_name)}</b>\n\nВыберите приложение для VPN:",
         reply_markup=connect_apps_keyboard(apps),
     )
     await callback.answer()
@@ -219,22 +256,18 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
 
     if app_callback == "app_cli":
         text = (
-            "📲 Подключение к ZyberVPN\n\n"
-            f"Устройство: {escape(device_name)}\n"
-            f"Приложение: {escape(app_name)}\n\n"
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 {escape(device_name)} · <b>{escape(app_name)}</b>\n\n"
             f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>\n\n"
-            "📋 Инструкция:\n"
-            f"{escape(instruction)}"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
         )
     else:
         connection_value = sub_url or vpn_key
         text = (
-            "📲 Подключение к ZyberVPN\n\n"
-            f"Устройство: {escape(device_name)}\n"
-            f"Приложение: {escape(app_name)}\n\n"
-            f"🔗 Ссылка для подключения:\n<code>{escape(connection_value)}</code>\n\n"
-            "📋 Инструкция:\n"
-            f"{escape(instruction)}"
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 {escape(device_name)} · <b>{escape(app_name)}</b>\n\n"
+            f"🔗 <b>Ссылка для подключения:</b>\n<code>{escape(connection_value)}</code>\n\n"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
         )
 
     await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
@@ -281,7 +314,7 @@ async def connect_back_devices(callback: CallbackQuery, state: FSMContext) -> No
 
     await state.set_state(ConnectFlowState.choosing_device)
     await callback.message.edit_text(
-        "Подключение к ZyberVPN\n\nВыберите устройство:",
+        "📲 <b>Подключение к ZyberVPN</b>\n\nНа каком устройстве хотите настроить VPN?",
         reply_markup=connect_devices_keyboard(),
     )
     await callback.answer()

@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 _MENU_PHOTO_FILE_ID: str | None = None
 _MENU_PHOTO_PATH = Path(__file__).parent.parent / "assets" / "menu_photo.png"
-_MENU_CAPTION = "🏠 Главное меню\nВыберите действие:"
+_MENU_CAPTION = "🛡 ZyberVPN\n\nВыберите раздел:"
 
 
 async def send_main_menu(message: Message, keyboard: InlineKeyboardMarkup) -> None:

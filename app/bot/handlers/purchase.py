@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, stars_back_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, renewal_success_keyboard, stars_back_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.config import Settings
@@ -92,7 +92,7 @@ async def buy_command(message: Message, state: FSMContext, settings: Settings) -
     await state.update_data(purchase_type="new", renew_key_id=None)
     is_admin = message.from_user.id in settings.admin_ids
     await message.answer(
-        "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
+        "🔑 <b>Новый ключ</b>\n\nВыберите тариф:",
         reply_markup=tariffs_keyboard(is_admin=is_admin),
     )
 
@@ -104,7 +104,7 @@ async def buy_new_key(callback: CallbackQuery, state: FSMContext, settings: Sett
     is_admin = callback.from_user.id in settings.admin_ids
     await photo_to_text(
         callback.message,
-        "💳 Выбор тарифа: Новый ключ\n\nВыберите подходящий период подписки:",
+        "🔑 <b>Новый ключ</b>\n\nВыберите тариф:",
         reply_markup=tariffs_keyboard(is_admin=is_admin),
     )
     await callback.answer()
@@ -117,7 +117,7 @@ async def buy_renew_key(callback: CallbackQuery, state: FSMContext, settings: Se
     await state.update_data(purchase_type="renewal", renew_key_id=key_id)
     is_admin = callback.from_user.id in settings.admin_ids
     await callback.message.edit_text(
-        f"🔄 Продление ключа #{key_id}\n\nВыберите подходящий период подписки:",
+        f"🔄 <b>Продление ключа #{key_id}</b>\n\nВыберите тариф:",
         reply_markup=tariffs_keyboard(is_admin=is_admin),
     )
     await callback.answer()
@@ -383,15 +383,12 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
             logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
         expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
         days_remaining = max(0, (expires_dt - utc_now()).days)
-        key_label = f" ключа #{key_id_int}"
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            f"🔄 <b>Продление{key_label}</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>"
+            f"🎉 <b>Подписка продлена!</b>\n\n"
+            f"🔑 Ключ #{key_id_int}\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
         )
-        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
-        await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        await callback.message.answer(text, reply_markup=renewal_success_keyboard(key_id_int))
         return
 
     link = ""
@@ -468,27 +465,20 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
     if sub_url:
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{escape(sub_url)}</code>\n\n"
-            "Нажмите «Подключить» чтобы настроить VPN-клиент,\n"
-            "или «Показать QR» для сканирования."
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
+            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
         )
         await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
-            "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+            "⏳ Ключ создаётся, через минуту откройте «Мои ключи»."
         )
-        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
-    await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        await callback.message.answer(text, reply_markup=renewal_success_keyboard(provisioned_key_id))
     if friend_bonus > 0:
-        await callback.message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())
+        await callback.message.answer(f"🎁 Реферальный бонус зачислен: +{friend_bonus} ₽ на баланс")
     await callback.answer()
 
 
@@ -659,29 +649,31 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
 
     expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
     days_remaining = max(0, (expires_dt - utc_now()).days)
-    balance_after = max(0, balance - price)
 
-    if sub_url:
+    if purchase_type == "renewal" and renew_key_id is not None:
         text = (
-            "✅ <b>Оплата с баланса прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
+            f"🎉 <b>Подписка продлена!</b>\n\n"
+            f"🔑 Ключ #{renew_key_id}\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            f"💰 Списано с баланса: <b>{price} руб.</b> (остаток: {balance_after} руб.)\n"
-            "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{escape(sub_url)}</code>"
+            f"💰 Списано с баланса: {price} ₽"
+        )
+        await callback.message.answer(text, reply_markup=renewal_success_keyboard(int(renew_key_id)))
+    elif sub_url:
+        text = (
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+            f"💰 Списано с баланса: {price} ₽\n\n"
+            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
         )
         await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
-            "✅ <b>Оплата с баланса прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
             f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            f"💰 Списано с баланса: <b>{price} руб.</b>\n"
-            "📊 Статус: <b>Активна</b>"
+            f"💰 Списано с баланса: {price} ₽\n\n"
+            "⏳ Ключ создаётся, через минуту откройте «Мои ключи»."
         )
-        await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
-    await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        await callback.message.answer(text, reply_markup=renewal_success_keyboard(provisioned_key_id))
     await callback.answer()
 
 

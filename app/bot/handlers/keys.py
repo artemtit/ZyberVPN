@@ -61,10 +61,17 @@ async def keys_command(message: Message, db: Database) -> None:
             await message.answer(
                 "⏰ <b>Пробный период завершён</b>\n\n"
                 "Ваш бесплатный день подошёл к концу.\n"
-                "Выберите тариф, чтобы продолжить пользоваться ZyberVPN:",
+                "Выберите тариф, чтобы продолжить:",
                 reply_markup=trial_expired_keyboard(),
             )
-            return
+        else:
+            await message.answer(
+                "🔑 <b>Мои ключи</b>\n\n"
+                "У вас пока нет активных ключей.\n\n"
+                "👇 Попробуйте VPN бесплатно на 1 день или купите подписку:",
+                reply_markup=keys_list_keyboard([]),
+            )
+        return
     active_sub = await subs_repo.get_active(message.from_user.id)
     key_rows: list[tuple[str, str]] = []
     for num, key_data in enumerate(keys, start=1):
@@ -78,7 +85,7 @@ async def keys_command(message: Message, db: Database) -> None:
             days, is_active_key = 0, False
         label = _key_label(is_primary, num, days, is_active_key)
         key_rows.append((label, str(key_data["id"])))
-    await message.answer("🔑 <b>Ваши ключи:</b>", reply_markup=keys_list_keyboard(key_rows))
+    await message.answer("🔑 <b>Мои ключи</b>", reply_markup=keys_list_keyboard(key_rows))
 
 
 @router.callback_query(F.data == "menu_keys")
@@ -96,11 +103,19 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
                 callback.message,
                 "⏰ <b>Пробный период завершён</b>\n\n"
                 "Ваш бесплатный день подошёл к концу.\n"
-                "Выберите тариф, чтобы продолжить пользоваться ZyberVPN:",
+                "Выберите тариф, чтобы продолжить:",
                 reply_markup=trial_expired_keyboard(),
             )
-            await callback.answer()
-            return
+        else:
+            await photo_to_text(
+                callback.message,
+                "🔑 <b>Мои ключи</b>\n\n"
+                "У вас пока нет активных ключей.\n\n"
+                "👇 Попробуйте VPN бесплатно на 1 день или купите подписку:",
+                reply_markup=keys_list_keyboard([]),
+            )
+        await callback.answer()
+        return
 
     active_sub = await subs_repo.get_active(callback.from_user.id)
     key_rows: list[tuple[str, str]] = []
@@ -127,7 +142,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
 
     await photo_to_text(
         callback.message,
-        "🔑 Ваши ключи доступа\n\nНиже представлен список ваших активных и истекших ключей:",
+        "🔑 <b>Мои ключи</b>",
         reply_markup=keys_list_keyboard(key_rows),
     )
     await callback.answer()

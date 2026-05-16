@@ -13,7 +13,7 @@ from html import escape
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard
+from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
@@ -257,17 +257,15 @@ async def process_confirmed_platega_payment(
             except Exception:
                 logger.exception("Platega: failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
             await payments_repo.mark_active(transaction_id)
-        text = (
-            "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"
-            f"🔄 <b>Продление ключа #{renew_key_id}</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>"
-        )
-        await _send(bot, tg_id, text)
-        await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
         balance_applied = int(processed.get("balance_applied") or 0)
-        if balance_applied > 0:
-            await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+        balance_line = f"\n💰 Баланс списан: {balance_applied} ₽" if balance_applied > 0 else ""
+        text = (
+            f"🎉 <b>Подписка продлена!</b>\n\n"
+            f"🔑 Ключ #{renew_key_id}\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
+            f"{balance_line}"
+        )
+        await _send(bot, tg_id, text, keyboard=renewal_success_keyboard(renew_key_id))
         amount_rub = int(payment.get("amount") or 0)
         tariff_code = str(payment.get("tariff_code") or "")
         await notify_admins(
@@ -358,31 +356,24 @@ async def process_confirmed_platega_payment(
         return
 
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
+    balance_applied = int(processed.get("balance_applied") or 0)
+    balance_line = f"\n💰 Баланс списан: {balance_applied} ₽" if balance_applied > 0 else ""
     if sub_url:
         text = (
-            "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            "📊 Статус: <b>Активна</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{escape(sub_url)}</code>\n\n"
-            "Нажмите «Подключить» чтобы открыть в VPN-клиенте."
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
+            f"{balance_line}\n\n"
+            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
         )
         await _send(bot, tg_id, text, keyboard=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (
-            "✅ <b>Оплата через Platega прошла успешно!</b>\n\n"
-            "📦 <b>Подписка активирована</b>\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
-            "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
+            "🎉 <b>Готово! VPN активирован.</b>\n\n"
+            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
+            f"{balance_line}\n\n"
+            "⏳ Ключ создаётся, через минуту откройте «Мои ключи»."
         )
-        await _send(bot, tg_id, text)
-
-    await _send(bot, tg_id, "Главное меню", keyboard=main_menu_keyboard(settings.support_url))
-
-    balance_applied = int(processed.get("balance_applied") or 0)
-    if balance_applied > 0:
-        await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+        await _send(bot, tg_id, text, keyboard=renewal_success_keyboard(provisioned_key_id))
 
     amount_rub = int(payment.get("amount") or 0)
     tariff_code = str(payment.get("tariff_code") or "")
