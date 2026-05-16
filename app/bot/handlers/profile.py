@@ -365,7 +365,7 @@ async def topup_pay_platega(callback: CallbackQuery, state: FSMContext, db: Data
     payments_repo = PaymentsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
 
-    return_url = settings.public_base_url or "https://t.me/"
+    return_url = f"https://t.me/{settings.bot_username}"
     idem_key = f"platega-topup-{payment_method}:{callback.from_user.id}:{rub_amount}"
 
     try:

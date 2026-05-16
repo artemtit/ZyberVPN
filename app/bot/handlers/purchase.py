@@ -812,7 +812,7 @@ async def _pay_via_platega(
         )
 
         webhook_secret = getattr(settings, "platega_webhook_secret", "")
-        return_url = settings.public_base_url or "https://t.me/"
+        return_url = f"https://t.me/{settings.bot_username}"
 
         client = PlategaClient(
             merchant_id=merchant_id,

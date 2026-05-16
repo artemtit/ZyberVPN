@@ -94,7 +94,7 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     # Platega payment client — only created when credentials are configured.
     if settings.platega_merchant_id and settings.platega_api_key:
         from app.services.platega import PlategaClient
-        return_url = settings.public_base_url or "https://t.me/"
+        return_url = f"https://t.me/{settings.bot_username}"
         app["platega_client"] = PlategaClient(
             merchant_id=settings.platega_merchant_id,
             api_key=settings.platega_api_key,
