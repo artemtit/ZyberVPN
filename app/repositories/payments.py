@@ -195,6 +195,23 @@ class PaymentsRepository:
         )
         return response.count or 0
 
+    async def sum_paid_for_tg_ids(self, tg_ids: list[int]) -> int:
+        if not self._supabase or not tg_ids:
+            return 0
+        response = await execute_with_retry(
+            lambda: (
+                self._supabase.table("payments")
+                .select("amount")
+                .in_("tg_id", tg_ids)
+                .in_("status", list(_PAID_STATUSES))
+                .neq("purchase_type", "topup")
+                .execute()
+            ),
+            operation="payments.sum_paid_for_tg_ids",
+        )
+        rows = response.data or []
+        return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
+
     async def total_revenue(self) -> int:
         if not self._supabase:
             return 0

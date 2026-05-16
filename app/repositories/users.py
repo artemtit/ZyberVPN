@@ -339,6 +339,16 @@ class UsersRepository:
         )
         return len(response.data or [])
 
+    async def list_referral_tg_ids(self, inviter_tg_id: int) -> list[int]:
+        if not self._supabase:
+            return []
+        response = await execute_with_retry(
+            lambda: self._supabase.table("users").select("tg_id").eq("ref_tg_id", inviter_tg_id).execute(),
+            operation="users.list_referral_tg_ids",
+        )
+        rows = response.data or []
+        return [int(r["tg_id"]) for r in rows if isinstance(r, dict) and r.get("tg_id") is not None]
+
     async def count_all(self) -> int:
         if not self._supabase:
             return 0

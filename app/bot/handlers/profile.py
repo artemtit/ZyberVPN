@@ -654,8 +654,14 @@ def _build_share_url(bot_username: str, tg_id: int) -> str:
 @router.callback_query(F.data == "profile_ref")
 async def referral_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
-    local_user = await users_repo.get_or_create(callback.from_user.id)
+    payments_repo = PaymentsRepository(db)
+    await users_repo.get_or_create(callback.from_user.id)
     invited = await users_repo.count_referrals(callback.from_user.id)
+
+    referral_tg_ids = await users_repo.list_referral_tg_ids(callback.from_user.id)
+    total_paid = await payments_repo.sum_paid_for_tg_ids(referral_tg_ids)
+    earned = total_paid * settings.referral_bonus_percent // 100
+
     me = await callback.bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
     share_url = _build_share_url(me.username, callback.from_user.id)
@@ -668,7 +674,7 @@ async def referral_open(callback: CallbackQuery, db: Database, settings: Setting
         "• Скидка 5% на первую покупку\n\n"
         "📊 Статистика:\n"
         f"👤 Приглашено: {invited}\n"
-        "💰 Заработано: 0.00 RUB\n\n"
+        f"💰 Заработано: {earned} RUB\n\n"
         "🔗 Реферальная ссылка:\n"
         f"{ref_link}",
         reply_markup=referral_keyboard(share_url),
