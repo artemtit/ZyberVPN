@@ -27,6 +27,7 @@ from app.services.idempotency import IdempotencyService
 from app.services.provisioning_failures import notify_provisioning_failed
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
+from app.utils.admin_notify import notify_admins
 from app.utils.datetime import add_months, parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -267,6 +268,15 @@ async def process_confirmed_platega_payment(
         balance_applied = int(processed.get("balance_applied") or 0)
         if balance_applied > 0:
             await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+        amount_rub = int(payment.get("amount") or 0)
+        tariff_code = str(payment.get("tariff_code") or "")
+        await notify_admins(
+            bot, settings.admin_ids,
+            f"💳 <b>Platega — Продление</b>\n\n"
+            f"👤 <code>{tg_id}</code>\n"
+            f"🔑 Ключ #{renew_key_id} | {tariff_code} | <b>{amount_rub} RUB</b>\n"
+            f"📅 До: {expires_str}",
+        )
         referral_idem = IdempotencyService(IdempotencyRepository())
         async def _accrue_ref_bonus() -> dict:
             svc = ReferralService(users_repo, settings.referral_bonus_percent)
@@ -373,6 +383,16 @@ async def process_confirmed_platega_payment(
     balance_applied = int(processed.get("balance_applied") or 0)
     if balance_applied > 0:
         await _send(bot, tg_id, f"💰 Списано с баланса: <b>{balance_applied} руб.</b>")
+
+    amount_rub = int(payment.get("amount") or 0)
+    tariff_code = str(payment.get("tariff_code") or "")
+    await notify_admins(
+        bot, settings.admin_ids,
+        f"💳 <b>Platega — Новый ключ</b>\n\n"
+        f"👤 <code>{tg_id}</code>\n"
+        f"📦 {tariff_code} | <b>{amount_rub} RUB</b>\n"
+        f"🔑 Ключ #{provisioned_key_id} | до {expires_str}",
+    )
 
     referral_idem = IdempotencyService(IdempotencyRepository())
     async def _accrue_ref_bonus() -> dict:

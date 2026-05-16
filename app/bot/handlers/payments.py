@@ -22,6 +22,7 @@ from app.services.provisioning_failures import notify_provisioning_failed
 from app.services.referrals import ReferralService
 from app.services.tariffs import TARIFFS
 from app.services.vpn import qr_png_from_text
+from app.utils.admin_notify import notify_admins
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 
 router = Router()
@@ -164,6 +165,15 @@ async def _handle_subscription_payment(message: Message, db: Database, settings:
         f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
         "📊 Статус: <b>Активна</b>",
         reply_markup=get_main_menu_keyboard(),
+    )
+    u = message.from_user
+    uname = f"@{u.username}" if u.username else str(tg_id)
+    await notify_admins(
+        message.bot, settings.admin_ids,
+        f"⭐ <b>Авто-продление Stars</b>\n\n"
+        f"👤 {uname} / <code>{tg_id}</code>\n"
+        f"🔑 Ключ #{key_id} | <b>m1</b> — 1 мес.\n"
+        f"📅 До: {expires_str}",
     )
 
 
@@ -397,6 +407,17 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         )
         await message.answer(text, reply_markup=get_main_menu_keyboard())
         await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
+        u = message.from_user
+        uname = f"@{u.username}" if u.username else str(tg_id)
+        amount_rub = int(processed.get("amount") or 0)
+        tariff_str = str(processed.get("tariff_code") or "")
+        await notify_admins(
+            message.bot, settings.admin_ids,
+            f"⭐ <b>Stars — Продление</b>\n\n"
+            f"👤 {uname} / <code>{tg_id}</code>\n"
+            f"🔑 Ключ #{key_id_int} | {tariff_str} | <b>{amount_rub} RUB</b>\n"
+            f"📅 До: {expires_str}",
+        )
 
         referral_idem = IdempotencyService(IdempotencyRepository())
         async def _accrue_ref_renewal() -> dict:
@@ -506,6 +527,18 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             "⏳ VPN-ключ создаётся. Используйте «Мои ключи» через минуту."
         )
         await message.answer(text, reply_markup=get_main_menu_keyboard())
+
+    u = message.from_user
+    uname = f"@{u.username}" if u.username else str(tg_id)
+    amount_rub = int(processed.get("amount") or 0)
+    tariff_str = str(processed.get("tariff_code") or "")
+    await notify_admins(
+        message.bot, settings.admin_ids,
+        f"⭐ <b>Stars — Новый ключ</b>\n\n"
+        f"👤 {uname} / <code>{tg_id}</code>\n"
+        f"📦 {tariff_str} | <b>{amount_rub} RUB</b>\n"
+        f"🔑 Ключ #{provisioned_key_id} | до {expires_str}",
+    )
 
     referral_idem = IdempotencyService(IdempotencyRepository())
     async def _accrue_referral() -> dict:

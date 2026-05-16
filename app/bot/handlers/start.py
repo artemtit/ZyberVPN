@@ -12,6 +12,8 @@ from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.users import UsersRepository
+from app.utils.admin_notify import notify_admins
+from app.utils.datetime import utc_now
 from app.utils.tg import send_main_menu
 
 router = Router()
@@ -29,12 +31,30 @@ def _extract_ref_tg_id(start_arg: str | None) -> int | None:
 async def cmd_start(message: Message, command: CommandObject, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
     ref_tg_id = _extract_ref_tg_id(command.args if command else None)
+
+    existing = await users_repo.get_by_tg_id(message.from_user.id)
+    is_new = existing is None
+
     await users_repo.get_or_create(message.from_user.id, ref_tg_id=ref_tg_id)
     await users_repo.update_user_info(
         message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
     )
+
+    if is_new and settings.admin_ids:
+        u = message.from_user
+        name = u.full_name or u.first_name or "—"
+        uname = f"@{u.username}" if u.username else "без username"
+        ref_line = f"\n🔗 Реферал от: <code>{ref_tg_id}</code>" if ref_tg_id else ""
+        await notify_admins(
+            message.bot,
+            settings.admin_ids,
+            f"🆕 <b>Новый пользователь!</b>\n\n"
+            f"👤 {name} / {uname}\n"
+            f"🆔 ID: <code>{u.id}</code>{ref_line}",
+        )
+
     await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))
 
 
