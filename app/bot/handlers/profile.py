@@ -179,17 +179,57 @@ async def profile_subscription(callback: CallbackQuery, db: Database) -> None:
     await callback.answer()
 
 
-_VALID_TOPUP_RUB = {100, 300, 500, 1000}
+_TOPUP_MIN = 50
+_TOPUP_MAX = 10000
+
+
+def _is_valid_topup_amount(amount: int) -> bool:
+    return _TOPUP_MIN <= amount <= _TOPUP_MAX
+
+
+def _topup_payment_text(rub_amount: int, stars_rate: float) -> str:
+    import math
+    stars = math.ceil(rub_amount / stars_rate)
+    return (
+        f"💰 Пополнение баланса: <b>{rub_amount} ₽</b>\n"
+        f"⭐ Стоимость в Stars: <b>{stars}</b>\n\n"
+        "Выберите способ оплаты:"
+    )
 
 
 @router.callback_query(F.data == "profile_topup")
 async def topup_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
+    await state.set_state(ProfileState.waiting_topup_input)
     await callback.message.edit_text(
-        "💰 Пополнение баланса\n\nВыберите сумму:",
+        "💰 <b>Пополнение баланса</b>\n\n"
+        "Выберите сумму из списка или введите свою от <b>50</b> до <b>10 000 ₽</b>:",
+        parse_mode="HTML",
         reply_markup=topup_keyboard(),
     )
     await callback.answer()
+
+
+@router.message(ProfileState.waiting_topup_input)
+async def topup_input_amount(message: Message, state: FSMContext, settings: Settings) -> None:
+    text = (message.text or "").strip().replace(" ", "").replace(" ", "")
+    try:
+        rub_amount = int(float(text.replace(",", ".")))
+    except (ValueError, OverflowError):
+        await message.answer(f"Введите целое число от {_TOPUP_MIN} до {_TOPUP_MAX}")
+        return
+    if not _is_valid_topup_amount(rub_amount):
+        await message.answer(f"Сумма должна быть от {_TOPUP_MIN} до {_TOPUP_MAX} ₽. Попробуйте снова:")
+        return
+    await state.update_data(topup_rub_amount=rub_amount)
+    await state.set_state(ProfileState.waiting_topup_amount)
+    platega_on = bool(settings.platega_merchant_id and settings.platega_api_key)
+    platega_crypto_on = platega_on and bool(settings.platega_crypto_method)
+    await message.answer(
+        _topup_payment_text(rub_amount, settings.stars_rate),
+        parse_mode="HTML",
+        reply_markup=topup_payment_keyboard(platega_on, platega_crypto_on),
+    )
 
 
 @router.callback_query(F.data.startswith("topup_rub:"))
@@ -200,8 +240,8 @@ async def topup_select_amount(callback: CallbackQuery, state: FSMContext, settin
     except ValueError:
         await callback.answer("Некорректная сумма", show_alert=True)
         return
-    if rub_amount not in _VALID_TOPUP_RUB:
-        await callback.answer("Некорректная сумма", show_alert=True)
+    if not _is_valid_topup_amount(rub_amount):
+        await callback.answer(f"Сумма должна быть от {_TOPUP_MIN} до {_TOPUP_MAX} ₽", show_alert=True)
         return
 
     await state.update_data(topup_rub_amount=rub_amount)
@@ -211,7 +251,7 @@ async def topup_select_amount(callback: CallbackQuery, state: FSMContext, settin
     platega_crypto_on = platega_on and bool(settings.platega_crypto_method)
 
     await callback.message.edit_text(
-        f"💰 Пополнение баланса: <b>{rub_amount} ₽</b>\n\nВыберите способ оплаты:",
+        _topup_payment_text(rub_amount, settings.stars_rate),
         parse_mode="HTML",
         reply_markup=topup_payment_keyboard(platega_on, platega_crypto_on),
     )
@@ -221,8 +261,11 @@ async def topup_select_amount(callback: CallbackQuery, state: FSMContext, settin
 @router.callback_query(F.data.startswith("topup_method_back:"))
 async def topup_method_back(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
     raw = callback.data.split(":", 1)[1]
-    rub_amount = int(raw) if raw.isdigit() else 0
-    if rub_amount not in _VALID_TOPUP_RUB:
+    try:
+        rub_amount = int(raw)
+    except ValueError:
+        rub_amount = 0
+    if not _is_valid_topup_amount(rub_amount):
         await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
         return
 
@@ -237,7 +280,7 @@ async def topup_method_back(callback: CallbackQuery, state: FSMContext, settings
     except Exception:
         pass
     await callback.message.answer(
-        f"💰 Пополнение баланса: <b>{rub_amount} ₽</b>\n\nВыберите способ оплаты:",
+        _topup_payment_text(rub_amount, settings.stars_rate),
         parse_mode="HTML",
         reply_markup=topup_payment_keyboard(platega_on, platega_crypto_on),
     )
@@ -252,7 +295,7 @@ async def topup_pay_stars(callback: CallbackQuery, state: FSMContext, db: Databa
 
     data = await state.get_data()
     rub_amount = int(data.get("topup_rub_amount") or 0)
-    if rub_amount not in _VALID_TOPUP_RUB:
+    if not _is_valid_topup_amount(rub_amount):
         await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
         return
 
@@ -309,7 +352,7 @@ async def topup_pay_platega(callback: CallbackQuery, state: FSMContext, db: Data
 
     data = await state.get_data()
     rub_amount = int(data.get("topup_rub_amount") or 0)
-    if rub_amount not in _VALID_TOPUP_RUB:
+    if not _is_valid_topup_amount(rub_amount):
         await callback.answer("Сессия истекла, выберите сумму заново", show_alert=True)
         return
 

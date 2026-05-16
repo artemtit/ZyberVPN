@@ -170,10 +170,16 @@ def subscription_info_keyboard() -> InlineKeyboardMarkup:
 def topup_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💰 100 ₽", callback_data="topup_rub:100")],
-            [InlineKeyboardButton(text="💰 300 ₽", callback_data="topup_rub:300")],
-            [InlineKeyboardButton(text="💰 500 ₽", callback_data="topup_rub:500")],
-            [InlineKeyboardButton(text="💰 1000 ₽", callback_data="topup_rub:1000")],
+            [
+                InlineKeyboardButton(text="100 ₽", callback_data="topup_rub:100"),
+                InlineKeyboardButton(text="300 ₽", callback_data="topup_rub:300"),
+                InlineKeyboardButton(text="500 ₽", callback_data="topup_rub:500"),
+            ],
+            [
+                InlineKeyboardButton(text="1 000 ₽", callback_data="topup_rub:1000"),
+                InlineKeyboardButton(text="3 000 ₽", callback_data="topup_rub:3000"),
+                InlineKeyboardButton(text="5 000 ₽", callback_data="topup_rub:5000"),
+            ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
         ]
     )

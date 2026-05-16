@@ -8,3 +8,4 @@ class PurchaseState(StatesGroup):
 
 class ProfileState(StatesGroup):
     waiting_topup_amount = State()
+    waiting_topup_input = State()
