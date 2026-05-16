@@ -248,7 +248,7 @@ async def process_confirmed_platega_payment(
         if not xui_ok:
             failed_payment = await payments_repo.mark_failed(transaction_id, "renewal_xui")
             if failed_payment:
-                await notify_provisioning_failed(bot, tg_id, transaction_id)
+                await notify_provisioning_failed(bot, tg_id, transaction_id, settings.admin_ids)
             return
         if xui_ok:
             try:
@@ -279,7 +279,9 @@ async def process_confirmed_platega_payment(
             logger.exception("Platega: referral bonus failed transaction_id=%s", transaction_id)
             bonus = 0
         if bonus > 0:
-            await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
+            inviter_tg_id = int((user or {}).get("ref_tg_id") or 0)
+            if inviter_tg_id:
+                await _send(bot, inviter_tg_id, f"🎁 Реферальный бонус: +{bonus} RUB\n\nВаш реферал продлил подписку!")
         return
 
     # New key: provision VPN access — wrapped in its own idempotency so that
@@ -333,7 +335,7 @@ async def process_confirmed_platega_payment(
         )
         failed_payment = await payments_repo.mark_failed(transaction_id, "access_ensure")
         if failed_payment:
-            await notify_provisioning_failed(bot, tg_id, transaction_id)
+            await notify_provisioning_failed(bot, tg_id, transaction_id, settings.admin_ids)
         return
     except Exception:
         logger.exception(
@@ -342,7 +344,7 @@ async def process_confirmed_platega_payment(
         )
         failed_payment = await payments_repo.mark_failed(transaction_id, "vpn_provision")
         if failed_payment:
-            await notify_provisioning_failed(bot, tg_id, transaction_id)
+            await notify_provisioning_failed(bot, tg_id, transaction_id, settings.admin_ids)
         return
 
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
@@ -384,7 +386,9 @@ async def process_confirmed_platega_payment(
         logger.exception("Platega: referral bonus failed transaction_id=%s", transaction_id)
         bonus = 0
     if bonus > 0:
-        await _send(bot, tg_id, f"Реферальный бонус: +{bonus} RUB")
+        inviter_tg_id = int((user or {}).get("ref_tg_id") or 0)
+        if inviter_tg_id:
+            await _send(bot, inviter_tg_id, f"🎁 Реферальный бонус: +{bonus} RUB\n\nВаш реферал купил подписку!")
 
 
 async def _send(bot: Bot, tg_id: int, text: str, keyboard=None) -> None:

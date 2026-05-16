@@ -427,14 +427,14 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=access_ensure", tg_id, payload)
         failed_payment = await payments_repo.mark_failed(payload, "access_ensure")
         if failed_payment:
-            await notify_provisioning_failed(callback.bot, tg_id, payload)
+            await notify_provisioning_failed(callback.bot, tg_id, payload, settings.admin_ids)
         await callback.answer()
         return
     except Exception:
         logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=vpn_provision", tg_id, payload)
         failed_payment = await payments_repo.mark_failed(payload, "vpn_provision")
         if failed_payment:
-            await notify_provisioning_failed(callback.bot, tg_id, payload)
+            await notify_provisioning_failed(callback.bot, tg_id, payload, settings.admin_ids)
         await callback.answer()
         return
 
@@ -487,6 +487,20 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
     if not plan:
         await callback.answer("Сначала выберите тариф", show_alert=True)
         return
+    if plan.get("admin_only") and callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Этот тариф только для администраторов.", show_alert=True)
+        return
+
+    purchase_type = str(data.get("purchase_type") or "new")
+    renew_key_id = data.get("renew_key_id")
+
+    if purchase_type == "new":
+        keys_repo = KeysRepository(db)
+        user_keys = await keys_repo.list_by_user(callback.from_user.id)
+        active_count = sum(1 for k in user_keys if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://"))
+        if active_count >= 5:
+            await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5.", show_alert=True)
+            return
 
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
@@ -496,9 +510,6 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
     if balance <= 0:
         await callback.answer("На балансе нет средств", show_alert=True)
         return
-
-    purchase_type = str(data.get("purchase_type") or "new")
-    renew_key_id = data.get("renew_key_id")
 
     if balance < price:
         # Partial balance: pay the remainder via Platega.
@@ -630,7 +641,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
             logger.exception("event=PROV_FAILED tg_id=%s payload=%s error=balance_provision", tg_id, payload)
             failed_payment = await payments_repo.mark_failed(payload, "balance_provision")
             if failed_payment:
-                await notify_provisioning_failed(callback.bot, tg_id, payload)
+                await notify_provisioning_failed(callback.bot, tg_id, payload, settings.admin_ids)
             await callback.answer()
             return
 
@@ -663,7 +674,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
 
 
 @router.callback_query(F.data == "pay:stars")
-async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     data = await state.get_data()
     tariff_code = data.get("tariff_code")
     if not tariff_code:
@@ -673,9 +684,20 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
     if not plan:
         await callback.answer("Тариф не найден", show_alert=True)
         return
+    if plan.get("admin_only") and callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Этот тариф только для администраторов.", show_alert=True)
+        return
     email = data.get("email")
     purchase_type = str(data.get("purchase_type") or "new")
     renew_key_id = data.get("renew_key_id")
+
+    if purchase_type == "new":
+        keys_repo = KeysRepository(db)
+        user_keys = await keys_repo.list_by_user(callback.from_user.id)
+        active_count = sum(1 for k in user_keys if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://"))
+        if active_count >= 5:
+            await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5.", show_alert=True)
+            return
 
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
@@ -757,13 +779,20 @@ async def payment_select_back(callback: CallbackQuery, state: FSMContext, settin
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
     is_admin = callback.from_user.id in settings.admin_ids
+    users_repo = UsersRepository(db)
+    back_user = await users_repo.get_by_tg_id(callback.from_user.id)
+    balance = int((back_user or {}).get("balance") or 0)
+    price_rub = int(plan["price_rub"])
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.message.answer(
-        f"💰 К оплате: {float(plan['price_rub']):.2f} RUB\n\nВыберите удобный способ оплаты:",
-        reply_markup=payment_keyboard(platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on, show_test_pay=is_admin),
+        f"💰 К оплате: {float(price_rub):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        reply_markup=payment_keyboard(
+            platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
+            show_test_pay=is_admin, balance=balance, price_rub=price_rub,
+        ),
     )
     await callback.answer()
 
@@ -793,10 +822,21 @@ async def _pay_via_platega(
     if not plan:
         await callback.answer("Тариф не найден", show_alert=True)
         return
+    if plan.get("admin_only") and callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Этот тариф только для администраторов.", show_alert=True)
+        return
 
     purchase_type = str(data.get("purchase_type") or "new")
     renew_key_id = data.get("renew_key_id")
     email = data.get("email")
+
+    if purchase_type == "new":
+        from app.repositories.keys import KeysRepository as _KR
+        _keys = await _KR(db).list_by_user(callback.from_user.id)
+        _active = sum(1 for k in _keys if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://"))
+        if _active >= 5:
+            await callback.answer(f"У вас уже {_active} активных ключей. Максимум — 5.", show_alert=True)
+            return
 
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)

@@ -419,8 +419,13 @@ class UsersRepository:
         )
 
     async def deduct_balance(self, tg_id: int, amount: int) -> None:
-        """Atomically deduct amount from balance. Amount must be > 0."""
+        """Atomically deduct amount from balance. Amount must be > 0. Silently skips if balance insufficient."""
         if not self._supabase or amount <= 0:
+            return
+        user = await self.get_by_tg_id(tg_id)
+        current = int((user or {}).get("balance") or 0)
+        if current < amount:
+            logger.warning("deduct_balance skipped: insufficient balance tg_id=%s balance=%s amount=%s", tg_id, current, amount)
             return
         await execute_with_retry(
             lambda: self._supabase.rpc(

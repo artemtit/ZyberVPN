@@ -273,7 +273,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         if not xui_ok:
             failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "renewal_xui")
             if failed_payment:
-                await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
+                await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload, settings.admin_ids)
             return
         if xui_ok:
             try:
@@ -304,7 +304,15 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             logger.exception("Referral bonus failed payload=%s", payment_info.invoice_payload)
             bonus = 0
         if bonus > 0:
-            await message.answer(f"Реферальный бонус: +{bonus} RUB", reply_markup=get_main_menu_keyboard())
+            inviter_tg_id = int((user or {}).get("ref_tg_id") or 0)
+            if inviter_tg_id:
+                try:
+                    await message.bot.send_message(
+                        inviter_tg_id,
+                        f"🎁 Реферальный бонус: +{bonus} RUB\n\nВаш реферал продлил подписку!",
+                    )
+                except Exception:
+                    logger.warning("Failed to notify inviter tg_id=%s", inviter_tg_id)
         return
 
     # New key: provision a fresh VPN key — wrapped in its own idempotency so that
@@ -358,7 +366,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         )
         failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "access_ensure")
         if failed_payment:
-            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
+            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload, settings.admin_ids)
         return
     except Exception:
         logger.exception(
@@ -367,7 +375,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         )
         failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "vpn_provision")
         if failed_payment:
-            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload)
+            await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload, settings.admin_ids)
         return
 
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
@@ -399,16 +407,28 @@ async def process_successful_payment(message: Message, db: Database, settings: S
         b = await svc.accrue_bonus(user, int(processed["amount"]))
         pc = await payments_repo.count_paid(tg_id)
         fb = await svc.accrue_friend_bonus(user, pc, settings.referral_friend_bonus_rub)
-        return {"friend_bonus": fb}
+        return {"inviter_bonus": b, "friend_bonus": fb}
     try:
         referral_result = await referral_idem.execute("referral_bonus", f"referral-bonus:{idem_key}", _accrue_referral)
+        inviter_bonus = int(referral_result.get("inviter_bonus") or 0)
         friend_bonus = int(referral_result.get("friend_bonus") or 0)
     except Exception:
         logger.exception("Referral bonus failed payload=%s", payment_info.invoice_payload)
+        inviter_bonus = 0
         friend_bonus = 0
     await message.answer("Главное меню", reply_markup=main_menu_keyboard(settings.support_url))
     if friend_bonus > 0:
         await message.answer(f"🎁 Вам начислен реферальный бонус: +{friend_bonus} RUB на баланс", reply_markup=get_main_menu_keyboard())
+    if inviter_bonus > 0:
+        inviter_tg_id = int((user or {}).get("ref_tg_id") or 0)
+        if inviter_tg_id:
+            try:
+                await message.bot.send_message(
+                    inviter_tg_id,
+                    f"🎁 Реферальный бонус: +{inviter_bonus} RUB\n\nВаш реферал купил подписку!",
+                )
+            except Exception:
+                logger.warning("Failed to notify inviter tg_id=%s", inviter_tg_id)
 
 
 @router.callback_query(F.data == "payment_show_qr")
