@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar
+from aiohttp import ClientError, ClientSession, ClientTimeout, CookieJar, TCPConnector
 
 from app.services.vpn.base import ClientLimits, CreateClientResult, ServerInfo, VPNProvider, VpnProfile
 from app.utils.security import sanitize_log_data
@@ -34,10 +34,11 @@ class XUIProvider(VPNProvider):
     def __init__(self, timeout_seconds: int = 5, retries: int = 3) -> None:
         self._timeout = ClientTimeout(total=timeout_seconds)
         self._retries = min(3, max(1, retries))
-        # Maps id(ClientSession) → CSRF token fetched during _login.
-        # Used to include X-CSRF-Token in all subsequent POST requests
-        # (3x-ui v3 requires it on all API endpoints, not only /login).
-        self._session_csrf: dict[int, str] = {}
+        # Persistent sessions per server — avoids creating a new ClientSession
+        # (and TCP connection pool) on every XUI API call, which caused OOM.
+        self._sessions: dict[int, ClientSession] = {}  # server.id → session
+        self._logged_in: set[int] = set()  # server IDs with valid login cookie
+        self._lock = asyncio.Lock()
 
     async def create_client(
         self,
@@ -51,7 +52,7 @@ class XUIProvider(VPNProvider):
         self._validate_server_security(server)
         reality_email = self._client_email(user_id, "reality", key_id)
         ws_email = self._client_email(user_id, "ws", key_id)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             ctx = self._extract_inbound_context(server, inbound)
@@ -132,7 +133,7 @@ class XUIProvider(VPNProvider):
 
     async def delete_client(self, user_id: int, server: ServerInfo, client_uuid: str) -> None:
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             url = f"{server.api_url}/panel/api/inbounds/delClient"
             payload = {"id": server.inbound_id, "clientId": client_uuid}
@@ -142,7 +143,7 @@ class XUIProvider(VPNProvider):
 
     async def disable_client(self, server: ServerInfo, client_uuid: str) -> None:
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             await self._update_client_record(
                 session,
@@ -165,7 +166,7 @@ class XUIProvider(VPNProvider):
         Returns True if client was found and updated.
         """
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             settings_raw = inbound.get("settings")
@@ -191,7 +192,7 @@ class XUIProvider(VPNProvider):
 
     async def client_exists(self, server: ServerInfo, client_uuid: str) -> bool:
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             return self._find_client_by_uuid(inbound, client_uuid)
@@ -199,7 +200,7 @@ class XUIProvider(VPNProvider):
     async def get_client(self, server: ServerInfo, user_id: int, key_id: int | None = None) -> str | None:
         self._validate_server_security(server)
         reality_email = self._client_email(user_id, "reality", key_id)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             return self._find_existing_client_uuid(inbound, reality_email)
@@ -219,7 +220,7 @@ class XUIProvider(VPNProvider):
 
     async def get_client_config(self, user_id: int, server: ServerInfo, client_uuid: str) -> list[VpnProfile]:
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             inbound = await self._get_inbound(session, server)
             ctx = self._extract_inbound_context(server, inbound)
@@ -228,7 +229,7 @@ class XUIProvider(VPNProvider):
     async def is_healthy(self, server: ServerInfo) -> bool:
         try:
             self._validate_server_security(server)
-            async with self._session() as session:
+            async with self._session(server) as session:
                 await self._login(session, server)
                 inbound = await self._get_inbound(session, server)
                 self._validate_inbound_clients_readable(inbound)
@@ -245,21 +246,35 @@ class XUIProvider(VPNProvider):
             raise XUIProviderError("Insecure XUI api_url over HTTP is blocked; use localhost tunnel")
 
     @asynccontextmanager
-    async def _session(self):
-        session = ClientSession(timeout=self._timeout, cookie_jar=CookieJar(unsafe=True))
+    async def _session(self, server: ServerInfo):
+        """Return a persistent, reusable ClientSession for this server.
+
+        Sessions are created once per server and reused across all subsequent
+        requests, eliminating the per-request TCP setup overhead and GC pressure
+        that caused OOM on the 1 GB production host.
+        """
+        async with self._lock:
+            sess = self._sessions.get(server.id)
+            if sess is None or sess.closed:
+                connector = TCPConnector(
+                    limit=5, limit_per_host=3, keepalive_timeout=30
+                )
+                sess = ClientSession(
+                    timeout=self._timeout,
+                    cookie_jar=CookieJar(unsafe=True),
+                    connector=connector,
+                )
+                self._sessions[server.id] = sess
+                self._logged_in.discard(server.id)
         try:
-            yield session
-        finally:
-            self._session_csrf.pop(id(session), None)
-            await session.close()
+            yield sess
+        except Exception:
+            # Force re-login next time — the session cookie may have expired.
+            self._logged_in.discard(server.id)
+            raise
 
     async def _request_json(self, session: ClientSession, method: str, url: str, **kwargs) -> dict | list:
-        if method.lower() == "post":
-            csrf = self._session_csrf.get(id(session), "")
-            if csrf:
-                existing = dict(kwargs.pop("headers", {}))
-                existing.setdefault("X-CSRF-Token", csrf)
-                kwargs["headers"] = existing
+        # CSRF is set as a session-level default header during _login — no per-request lookup needed.
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
             try:
@@ -275,23 +290,19 @@ class XUIProvider(VPNProvider):
         raise XUIProviderError(f"Request failed after retries: {method.upper()} {url}") from last_error
 
     async def _login(self, session: ClientSession, server: ServerInfo) -> None:
-        url = f"{server.api_url}/login"
+        if server.id in self._logged_in:
+            return  # Cookie still valid — skip round-trip to /login
 
-        # 3x-ui v3 requires a CSRF token fetched from the login page before posting.
-        # Older versions return 200+JSON directly; v3 returns 403 without the token.
+        url = f"{server.api_url}/login"
         csrf_token = await self._get_csrf_token(session, server)
 
-        headers = {}
+        headers: dict[str, str] = {}
         if csrf_token:
             headers["X-CSRF-Token"] = csrf_token
-            self._session_csrf[id(session)] = csrf_token
 
         async with session.post(
             url,
-            json={
-                "username": server.username,
-                "password": server.password,
-            },
+            json={"username": server.username, "password": server.password},
             headers=headers,
         ) as resp:
             if resp.status == 403 and not csrf_token:
@@ -300,6 +311,11 @@ class XUIProvider(VPNProvider):
 
         if isinstance(payload, dict) and payload.get("success") is False:
             raise XUIProviderError(str(payload.get("msg") or "login rejected"))
+
+        # Store CSRF in session default headers so every POST carries it automatically.
+        if csrf_token:
+            session.headers.update({"X-CSRF-Token": csrf_token})
+        self._logged_in.add(server.id)
 
     async def _get_csrf_token(self, session: ClientSession, server: ServerInfo) -> str:
         """Fetch the CSRF token from the panel root page (3x-ui v3+).
@@ -348,7 +364,7 @@ class XUIProvider(VPNProvider):
             self._client_email(user_id, "reality", key_id),
             self._client_email(user_id, "ws", key_id),
         ]
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             for email in emails:
                 url = f"{server.api_url}/panel/api/inbounds/{server.inbound_id}/resetClientTraffic/{email}"
@@ -362,7 +378,7 @@ class XUIProvider(VPNProvider):
     async def get_client_traffic(self, server: ServerInfo, email: str) -> dict | None:
         """Fetch traffic stats for a client email from 3x-ui panel."""
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             url = f"{server.api_url}/panel/api/inbounds/getClientTraffics/{email}"
             try:
@@ -376,7 +392,7 @@ class XUIProvider(VPNProvider):
     async def get_online_count(self, server: ServerInfo, emails: set[str]) -> int:
         """Count how many of the given emails are currently online."""
         self._validate_server_security(server)
-        async with self._session() as session:
+        async with self._session(server) as session:
             await self._login(session, server)
             url = f"{server.api_url}/panel/api/inbounds/onlines"
             try:
