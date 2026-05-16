@@ -17,14 +17,27 @@ def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMar
     )
 
 
-def main_menu_keyboard(support_url: str) -> InlineKeyboardMarkup:
+def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if show_trial:
+        rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start")])
+    rows.extend([
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")],
+        [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
+        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
+        [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
+        [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def trial_expired_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")],
-            [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
-            [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
-            [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
-            [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
+            [InlineKeyboardButton(text="1 месяц — 69 ₽", callback_data="tariff:m1")],
+            [InlineKeyboardButton(text="3 месяца — 189 ₽", callback_data="tariff:m3")],
+            [InlineKeyboardButton(text="6 месяцев — 349 ₽", callback_data="tariff:m6")],
+            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_menu")],
         ]
     )
 

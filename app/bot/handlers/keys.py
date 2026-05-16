@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard
+from app.bot.keyboards.inline import key_card_keyboard, keys_list_keyboard, trial_expired_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.keys import KeyCommentState
 from app.utils.tg import photo_to_text
@@ -55,6 +55,16 @@ async def keys_command(message: Message, db: Database) -> None:
     subs_repo = SubscriptionsRepository(db)
     await users_repo.get_or_create(message.from_user.id)
     keys = [k for k in await keys_repo.list_by_user(message.from_user.id) if not k.get("disabled_at")]
+    if not keys:
+        user = await users_repo.get_by_tg_id(message.from_user.id)
+        if user and user.get("trial_used"):
+            await message.answer(
+                "⏰ <b>Пробный период завершён</b>\n\n"
+                "Ваш бесплатный день подошёл к концу.\n"
+                "Выберите тариф, чтобы продолжить пользоваться ZyberVPN:",
+                reply_markup=trial_expired_keyboard(),
+            )
+            return
     active_sub = await subs_repo.get_active(message.from_user.id)
     key_rows: list[tuple[str, str]] = []
     for num, key_data in enumerate(keys, start=1):
@@ -68,7 +78,6 @@ async def keys_command(message: Message, db: Database) -> None:
             days, is_active_key = 0, False
         label = _key_label(is_primary, num, days, is_active_key)
         key_rows.append((label, str(key_data["id"])))
-    from app.bot.keyboards.inline import keys_list_keyboard
     await message.answer("🔑 <b>Ваши ключи:</b>", reply_markup=keys_list_keyboard(key_rows))
 
 
@@ -79,8 +88,21 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     subs_repo = SubscriptionsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
     keys = [k for k in await keys_repo.list_by_user(callback.from_user.id) if not k.get("disabled_at")]
-    active_sub = await subs_repo.get_active(callback.from_user.id)
 
+    if not keys:
+        user = await users_repo.get_by_tg_id(callback.from_user.id)
+        if user and user.get("trial_used"):
+            await photo_to_text(
+                callback.message,
+                "⏰ <b>Пробный период завершён</b>\n\n"
+                "Ваш бесплатный день подошёл к концу.\n"
+                "Выберите тариф, чтобы продолжить пользоваться ZyberVPN:",
+                reply_markup=trial_expired_keyboard(),
+            )
+            await callback.answer()
+            return
+
+    active_sub = await subs_repo.get_active(callback.from_user.id)
     key_rows: list[tuple[str, str]] = []
     for num, key_data in enumerate(keys, start=1):
         key_str = str(key_data.get("key") or "")

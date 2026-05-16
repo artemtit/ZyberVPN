@@ -14,7 +14,7 @@ from app.db.database import Database
 from app.repositories.users import UsersRepository
 from app.utils.admin_notify import notify_admins
 from app.utils.datetime import utc_now
-from app.utils.tg import send_main_menu
+from app.utils.tg import is_trial_eligible, send_main_menu
 
 router = Router()
 
@@ -55,21 +55,24 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
             f"🆔 ID: <code>{u.id}</code>{ref_line}",
         )
 
-    await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))
+    show_trial = await is_trial_eligible(message.from_user.id, db)
+    await send_main_menu(message, inline_main_menu_keyboard(settings.support_url, show_trial=show_trial))
 
 
 @router.message(Command("menu"))
 @router.message(F.text == "🏠 Главное меню")
-async def menu_button(message: Message, settings: Settings) -> None:
-    await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))
+async def menu_button(message: Message, db: Database, settings: Settings) -> None:
+    show_trial = await is_trial_eligible(message.from_user.id, db)
+    await send_main_menu(message, inline_main_menu_keyboard(settings.support_url, show_trial=show_trial))
 
 
 @router.callback_query(F.data == "back_menu")
-async def back_menu(callback: CallbackQuery, settings: Settings, state: FSMContext) -> None:
+async def back_menu(callback: CallbackQuery, db: Database, settings: Settings, state: FSMContext) -> None:
     await state.clear()
     try:
         await callback.message.delete()
     except TelegramBadRequest:
         pass
-    await send_main_menu(callback.message, inline_main_menu_keyboard(settings.support_url))
+    show_trial = await is_trial_eligible(callback.from_user.id, db)
+    await send_main_menu(callback.message, inline_main_menu_keyboard(settings.support_url, show_trial=show_trial))
     await callback.answer()

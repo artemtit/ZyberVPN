@@ -407,8 +407,9 @@ class UsersRepository:
         now = utc_now()
         deadline = now + timedelta(hours=hours_until_expiry)
         for fields in (
-            "id,tg_id,expires_at,is_active,notified_7d_at,notified_3d_at,notified_1d_at",
-            "id,tg_id,expires_at,is_active,notified_3d_at,notified_1d_at",
+            "id,tg_id,plan,expires_at,is_active,notified_7d_at,notified_3d_at,notified_1d_at",
+            "id,tg_id,plan,expires_at,is_active,notified_3d_at,notified_1d_at",
+            "id,tg_id,plan,expires_at,is_active",
         ):
             try:
                 response = await execute_with_retry(

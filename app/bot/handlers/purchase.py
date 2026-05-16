@@ -763,7 +763,7 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database, se
 
 
 @router.callback_query(F.data.startswith("payment_back:"))
-async def payment_select_back(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+async def payment_select_back(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     """Return to payment method selection.
 
     tariff_code is encoded in callback_data as payment_back:{tc}:{pt}:{rkid}
