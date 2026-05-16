@@ -686,6 +686,7 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database) ->
             tariff_code=str(tariff_code),
             purchase_type=str(purchase_type),
             renew_key_id=str(renew_key_id or 0),
+            stars=int(plan["price_stars"]),
         ),
     )
     await callback.answer()

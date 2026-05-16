@@ -139,9 +139,11 @@ def topup_platega_keyboard(redirect_url: str, rub_amount: int) -> InlineKeyboard
     ])
 
 
-def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew_key_id: str = "0") -> InlineKeyboardMarkup:
+def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew_key_id: str = "0", stars: int = 0) -> InlineKeyboardMarkup:
     back_data = f"payment_back:{tariff_code}:{purchase_type}:{renew_key_id}"
+    pay_text = f"⭐ Оплатить {stars} Stars" if stars else "⭐ Оплатить Stars"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=pay_text, pay=True)],
         [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
     ])
 
