@@ -20,6 +20,7 @@ from app.utils.datetime import parse_iso_utc, utc_diff, utc_now
 
 logger = logging.getLogger(__name__)
 MAX_SUB_AUTO_CREATE_AGE = timedelta(days=7)
+MAX_KEYS_PER_USER = 5
 T = TypeVar("T")
 
 
@@ -166,6 +167,19 @@ async def ensure_user_access(
 
     if force_new_key:
         logger.debug("ACCESS FLOW | user_id=%s key_id=PENDING action=create", tg_id)
+
+        existing_for_limit = await _safe_repo_call(
+            "keys.list_by_user.limit_check",
+            lambda: keys_repo.list_by_user(tg_id),
+            fallback=[],
+            tg_id=tg_id,
+        )
+        active_key_count = sum(
+            1 for k in existing_for_limit
+            if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://")
+        )
+        if active_key_count >= MAX_KEYS_PER_USER:
+            raise AccessEnsureError(f"key_limit_reached:{active_key_count}/{MAX_KEYS_PER_USER}")
 
         # Pre-allocate a real key_id before VPN creation.
         # Passing key_id=None targets the null-slot which may already hold a 'ready' row,

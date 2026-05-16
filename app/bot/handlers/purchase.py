@@ -116,6 +116,15 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext, db: Database
     if not tariff:
         await callback.answer("Тариф не найден", show_alert=True)
         return
+    data = await state.get_data()
+    purchase_type = str(data.get("purchase_type") or "new")
+    if purchase_type == "new":
+        keys_repo = KeysRepository(db)
+        user_keys = await keys_repo.list_by_user(callback.from_user.id)
+        active_count = sum(1 for k in user_keys if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://"))
+        if active_count >= 5:
+            await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5. Продлите существующий ключ.", show_alert=True)
+            return
     await state.update_data(tariff_code=tariff_code, email=None)
     await state.set_state(PurchaseState.waiting_payment)
     plan = get_plan_by_tariff_code(tariff_code)
@@ -152,6 +161,15 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, 
         await callback.answer("Тариф не найден", show_alert=True)
         return
 
+    data = await state.get_data()
+    purchase_type = str(data.get("purchase_type") or "new")
+    if purchase_type == "new":
+        keys_repo = KeysRepository(db)
+        user_keys = await keys_repo.list_by_user(callback.from_user.id)
+        active_count = sum(1 for k in user_keys if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://"))
+        if active_count >= 5:
+            await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5. Продлите существующий ключ.", show_alert=True)
+            return
     await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"], email=None)
     await state.set_state(PurchaseState.waiting_payment)
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
