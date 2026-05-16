@@ -53,7 +53,7 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
-    keys = await keys_repo.list_by_user(callback.from_user.id)
+    keys = [k for k in await keys_repo.list_by_user(callback.from_user.id) if not k.get("disabled_at")]
     active_sub = await subs_repo.get_active(callback.from_user.id)
 
     key_rows: list[tuple[str, str]] = []
@@ -95,7 +95,7 @@ async def _build_key_card(
     subs_repo = SubscriptionsRepository(db)
 
     await users_repo.get_or_create(tg_id)
-    all_keys = await keys_repo.list_by_user(tg_id)
+    all_keys = [k for k in await keys_repo.list_by_user(tg_id) if not k.get("disabled_at")]
     key_data = next((k for k in all_keys if k["id"] == key_id), None)
     if not key_data:
         return None
