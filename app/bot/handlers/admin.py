@@ -166,12 +166,16 @@ async def admin_user(message: Message, db: Database, settings: Settings) -> None
     sub_expires = active_sub["expires_at"] if active_sub else expires_raw
 
     keys = await keys_repo.list_by_user(target_id)
+    active_keys = [k for k in keys if not k.get("disabled_at")]
+    disabled_keys = [k for k in keys if k.get("disabled_at")]
     keys_text = ""
-    for i, k in enumerate(keys, 1):
+    for k in active_keys:
         k_exp = _format_expiry(k.get("expires_at"))
         k_limit = k.get("traffic_limit_gb") or "—"
-        primary = "⭐" if k.get("is_primary") else "🔑"
-        keys_text += f"  {primary} Ключ #{k['id']} | до {k_exp} | {k_limit} ГБ\n"
+        icon = "⭐" if k.get("is_primary") else "🔑"
+        keys_text += f"  {icon} Ключ #{k['id']} | до {k_exp} | {k_limit} ГБ\n"
+    if disabled_keys:
+        keys_text += f"  🚫 Удалённых: {len(disabled_keys)} шт. (id: {', '.join(str(k['id']) for k in disabled_keys)})\n"
     if not keys_text:
         keys_text = "  нет ключей\n"
 
