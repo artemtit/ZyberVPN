@@ -824,7 +824,11 @@ async def _pay_via_platega(
         platega_amount = max(1, full_price - balance_applied)
         result = await client.create_payment(
             amount=platega_amount,
-            description=f"ZyberVPN — {plan['name']}",
+            description=(
+                f"{'Продление' if purchase_type == 'renewal' else 'Новый ключ'} {plan['name']} "
+                f"(ID: {callback.from_user.id}, "
+                f"{'@' + callback.from_user.username if callback.from_user.username else callback.from_user.full_name})"
+            ),
             internal_payload=idem_key,
             payment_method=payment_method,
         )

@@ -377,7 +377,11 @@ async def topup_pay_platega(callback: CallbackQuery, state: FSMContext, db: Data
         )
         result = await client.create_payment(
             amount=rub_amount,
-            description=f"ZyberVPN — пополнение баланса {rub_amount} ₽",
+            description=(
+                f"Пополнение баланса {rub_amount} ₽ "
+                f"(ID: {callback.from_user.id}, "
+                f"{'@' + callback.from_user.username if callback.from_user.username else callback.from_user.full_name})"
+            ),
             internal_payload=idem_key,
             payment_method=payment_method,
         )
