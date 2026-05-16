@@ -184,7 +184,14 @@ async def _show_key_card_edit(
     if not result:
         return False
     text, keyboard = result
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    if callback.message.photo:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=keyboard)
+    else:
+        await callback.message.edit_text(text, reply_markup=keyboard)
     return True
 
 
