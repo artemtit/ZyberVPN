@@ -260,6 +260,42 @@ class KeysRepository:
             logger.exception("keys.get_by_sub_token failed token_prefix=%s", token[:8])
             return None
 
+    async def count_active(self) -> int:
+        if not self._supabase:
+            return 0
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("keys")
+                    .select("id", count="exact")
+                    .is_("disabled_at", "null")
+                    .execute()
+                ),
+                operation="keys.count_active",
+            )
+            return response.count or 0
+        except Exception:
+            logger.exception("keys.count_active failed")
+            return 0
+
+    async def count_disabled(self) -> int:
+        if not self._supabase:
+            return 0
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("keys")
+                    .select("id", count="exact")
+                    .not_.is_("disabled_at", "null")
+                    .execute()
+                ),
+                operation="keys.count_disabled",
+            )
+            return response.count or 0
+        except Exception:
+            logger.exception("keys.count_disabled failed")
+            return 0
+
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:
             return False

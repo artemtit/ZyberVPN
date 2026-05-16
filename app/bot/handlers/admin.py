@@ -167,35 +167,50 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     servers_repo = ServersRepository(db)
     user_vpn_repo = UserVpnRepository(db)
 
-    total_users, active_users, new_24h, total_revenue, server_counts = await asyncio.gather(
+    (
+        total_users, active_users, new_24h, new_7d,
+        unique_payers, total_revenue, stars_revenue, server_counts,
+        active_keys, disabled_keys,
+    ) = await asyncio.gather(
         users_repo.count_all(),
         users_repo.count_active(),
         users_repo.count_new_last_24h(),
+        users_repo.count_new_last_7d(),
+        payments_repo.count_unique_payers(),
         payments_repo.total_revenue(),
+        payments_repo.revenue_stars(),
         user_vpn_repo.count_users_by_server(),
+        keys_repo.count_active(),
+        keys_repo.count_disabled(),
     )
 
-    # Count total keys across active users — parallelised to avoid sequential latency.
-    active_ids = await users_repo.list_active_tg_ids()
-    capped = active_ids[:100]
-    key_lists = await asyncio.gather(*[keys_repo.list_by_user(tid) for tid in capped])
-    total_keys = sum(len(ks) for ks in key_lists)
-    keys_label = f"{total_keys}+" if len(active_ids) > 100 else str(total_keys)
+    inactive_users = total_users - active_users
+    platega_revenue = total_revenue - stars_revenue
+    never_paid = total_users - unique_payers
+    conversion = round(unique_payers / total_users * 100) if total_users else 0
+    avg_check = round(total_revenue / unique_payers) if unique_payers else 0
 
     servers = await servers_repo.list_all()
     server_lines = ""
     for srv in servers:
         status = "🟢" if srv.is_active else "🔴"
         load = server_counts.get(srv.id, 0)
-        server_lines += f"  {status} {srv.name} ({srv.country}): {load} юзеров\n"
+        server_lines += f"  {status} <b>{srv.name}</b> ({srv.country}): {load} клиентов\n"
 
     await message.answer(
         "📊 <b>Статистика проекта</b>\n\n"
-        f"👥 Всего пользователей: <b>{total_users}</b>\n"
-        f"✅ Активных подписчиков: <b>{active_users}</b>\n"
-        f"🆕 Новых за 24ч: <b>{new_24h}</b>\n"
-        f"🔑 Ключей (активные юзеры): <b>{keys_label}</b>\n"
-        f"💰 Общий доход: <b>{total_revenue} RUB</b>\n\n"
+        "👥 <b>Пользователи</b>\n"
+        f"  Всего в боте: <b>{total_users}</b> (нажали /start)\n"
+        f"  Когда-либо платили: <b>{unique_payers}</b> | Никогда: <b>{never_paid}</b>\n"
+        f"  Активных сейчас: <b>{active_users}</b> | Неактивных: <b>{inactive_users}</b>\n"
+        f"  Новых за 24ч: <b>{new_24h}</b> | за 7 дн: <b>{new_7d}</b>\n"
+        f"  Конверсия: <b>{conversion}%</b>\n\n"
+        "🔑 <b>Ключи</b>\n"
+        f"  Активных: <b>{active_keys}</b> | Отключённых: <b>{disabled_keys}</b>\n\n"
+        "💰 <b>Доход</b>\n"
+        f"  Итого: <b>{total_revenue} RUB</b>\n"
+        f"  ⭐ Stars: <b>{stars_revenue} RUB</b> | 💳 Platega: <b>{platega_revenue} RUB</b>\n"
+        f"  Средний чек: <b>{avg_check} RUB</b>\n\n"
         f"🖥 <b>Серверы:</b>\n{server_lines}",
     )
 

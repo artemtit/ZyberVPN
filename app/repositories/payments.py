@@ -232,6 +232,49 @@ class PaymentsRepository:
         rows = response.data or []
         return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
 
+    async def count_unique_payers(self) -> int:
+        """Distinct users who paid at least once (excl. topups)."""
+        if not self._supabase:
+            return 0
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select("tg_id")
+                    .in_("status", list(_PAID_STATUSES))
+                    .neq("purchase_type", "topup")
+                    .execute()
+                ),
+                operation="payments.count_unique_payers",
+            )
+            rows = response.data or []
+            return len({r.get("tg_id") for r in rows if isinstance(r, dict) and r.get("tg_id")})
+        except Exception:
+            logger.exception("payments.count_unique_payers failed")
+            return 0
+
+    async def revenue_stars(self) -> int:
+        """Revenue from Telegram Stars (have telegram_payment_charge_id)."""
+        if not self._supabase:
+            return 0
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select("amount")
+                    .in_("status", list(_PAID_STATUSES))
+                    .not_.is_("telegram_payment_charge_id", "null")
+                    .neq("purchase_type", "topup")
+                    .execute()
+                ),
+                operation="payments.revenue_stars",
+            )
+            rows = response.data or []
+            return sum(int((r or {}).get("amount") or 0) for r in rows if isinstance(r, dict))
+        except Exception:
+            logger.exception("payments.revenue_stars failed")
+            return 0
+
     async def total_revenue(self) -> int:
         if not self._supabase:
             return 0
