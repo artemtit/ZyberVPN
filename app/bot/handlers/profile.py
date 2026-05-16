@@ -11,6 +11,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards.inline import (
+    auto_renew_active_keyboard,
+    auto_renew_confirm_keyboard,
+    auto_renew_keys_keyboard,
     payment_success_keyboard,
     profile_keyboard,
     promo_apply_target_keyboard,
@@ -131,6 +134,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
 
     status_line = "Активна ✅" if is_active else "Не активна ❌"
     balance_rub = int((full_user or {}).get("balance") or 0)
+    auto_renew_key_id = int((full_user or {}).get("auto_renew_stars_key_id") or 0)
 
     news_url = "https://t.me/ZyberVPN_News"
     support_url = "https://t.me/ZyberVPN_Support_bot"
@@ -147,7 +151,7 @@ async def profile(callback: CallbackQuery, db: Database, state: FSMContext) -> N
         f"🤝 Рефералов: {invited}\n\n"
         f"📄 <a href=\"{news_url}\">Новости</a>\n"
         f"💬 <a href=\"{support_url}\">Поддержка</a>",
-        reply_markup=profile_keyboard(),
+        reply_markup=profile_keyboard(auto_renew_active=bool(auto_renew_key_id)),
         disable_web_page_preview=True,
     )
     await callback.answer()
@@ -741,4 +745,127 @@ async def referral_share(callback: CallbackQuery) -> None:
     )
     await callback.message.answer("Поделитесь ссылкой с друзьями:", reply_markup=keyboard)
     await callback.answer()
+
+
+# ──────────────────────────────────────────
+# Авто-продление Stars
+# ──────────────────────────────────────────
+
+async def _send_autorenew_invoice(message, tg_id: int, key_id: int, stars: int) -> None:
+    from aiogram.types import LabeledPrice
+    await message.answer_invoice(
+        title="ZyberVPN — Авто-продление",
+        description=f"Ежемесячное продление VPN-ключа #{key_id} (30 дней)",
+        payload=f"sub:m1:{tg_id}:{key_id}",
+        currency="XTR",
+        prices=[LabeledPrice(label="1 месяц VPN", amount=stars)],
+        provider_token="",
+        subscription_period=2592000,
+        reply_markup=auto_renew_confirm_keyboard(stars),
+    )
+
+
+@router.callback_query(F.data == "profile_autorenew")
+async def profile_autorenew(callback: CallbackQuery, db: Database) -> None:
+    from app.services.plans import get_plan_by_tariff_code
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    auto_renew_key_id = int((user or {}).get("auto_renew_stars_key_id") or 0)
+    active_keys = [k for k in await keys_repo.list_by_user(callback.from_user.id) if not k.get("disabled_at")]
+
+    if auto_renew_key_id:
+        matched = next((k for k in active_keys if int(k.get("id") or 0) == auto_renew_key_id), None)
+        exp_raw = (matched or {}).get("expires_at")
+        key_line = f"🔑 Ключ #{auto_renew_key_id}"
+        if exp_raw:
+            try:
+                exp_dt = parse_iso_utc(exp_raw)
+                days_left = max(0, (exp_dt - utc_now()).days)
+                key_line = f"🔑 Ключ #{auto_renew_key_id} — до {to_moscow(exp_dt).strftime('%d.%m.%Y')} ({days_left} дн.)"
+            except Exception:
+                pass
+        await callback.message.edit_text(
+            "🔄 <b>Авто-продление включено</b>\n\n"
+            f"{key_line}\n\n"
+            "⭐ Telegram автоматически списывает Stars каждые 30 дней.\n\n"
+            "Чтобы отменить подписку, перейдите в:\n"
+            "<b>Telegram → Настройки → Конфиденциальность → Платежи → Подписки</b>",
+            reply_markup=auto_renew_active_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    if not active_keys:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        await callback.message.edit_text(
+            "🔄 <b>Авто-продление</b>\n\nУ вас нет активных ключей.\nСначала купите подписку.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+            ]),
+        )
+        await callback.answer()
+        return
+
+    plan = get_plan_by_tariff_code("m1")
+    stars = plan["price_stars"] if plan else 39
+
+    if len(active_keys) == 1:
+        key_id = int(active_keys[0].get("id") or 0)
+        # Redirect to the confirm handler so invoice is sent cleanly
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _send_autorenew_invoice(callback.message, callback.from_user.id, key_id, stars)
+    else:
+        await callback.message.edit_text(
+            f"🔄 <b>Авто-продление ⭐</b>\n\n"
+            f"Стоимость: <b>{stars} Stars/мес.</b>\n\n"
+            "Выберите ключ для авто-продления:",
+            reply_markup=auto_renew_keys_keyboard(active_keys),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("autorenew_confirm:"))
+async def autorenew_confirm(callback: CallbackQuery, db: Database) -> None:
+    from app.services.plans import get_plan_by_tariff_code
+    try:
+        key_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    keys_repo = KeysRepository(db)
+    key_row = await keys_repo.get_by_id_for_user(key_id, callback.from_user.id)
+    if not key_row:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    plan = get_plan_by_tariff_code("m1")
+    stars = plan["price_stars"] if plan else 39
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await _send_autorenew_invoice(callback.message, callback.from_user.id, key_id, stars)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "autorenew_disable")
+async def autorenew_disable(callback: CallbackQuery, db: Database) -> None:
+    users_repo = UsersRepository(db)
+    await users_repo.set_auto_renew(callback.from_user.id, None)
+    await callback.message.edit_text(
+        "🔄 <b>Авто-продление отключено</b>\n\n"
+        "Запись об авто-продлении удалена.\n\n"
+        "Если Telegram-подписка ещё активна, отмените её вручную:\n"
+        "<b>Telegram → Настройки → Конфиденциальность → Платежи → Подписки</b>",
+        reply_markup=auto_renew_active_keyboard(),
+    )
+    await callback.answer("Отключено")
 

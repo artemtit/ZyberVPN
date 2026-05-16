@@ -34,7 +34,11 @@ class UsersRepository:
         if not self._supabase:
             self._last_supabase_error = True
             return None
-        for fields in (self._BASE_FIELDS + ",username", self._BASE_FIELDS):
+        for fields in (
+            self._BASE_FIELDS + ",username,auto_renew_stars_key_id",
+            self._BASE_FIELDS + ",username",
+            self._BASE_FIELDS,
+        ):
             try:
                 response = await execute_with_retry(
                     lambda f=fields: (
@@ -169,6 +173,25 @@ class UsersRepository:
         except Exception:
             logger.exception("Supabase get_by_username failed username=%s", clean)
             return None
+
+    async def set_auto_renew(self, tg_id: int, key_id: int | None) -> None:
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"auto_renew_stars_key_id": key_id})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.set_auto_renew",
+            )
+        except Exception as exc:
+            if "42703" in str(exc) or "does not exist" in str(exc):
+                logger.debug("set_auto_renew: column not yet in schema")
+            else:
+                logger.exception("Supabase set_auto_renew failed tg_id=%s", tg_id)
 
     async def update_username(self, tg_id: int, username: str | None) -> None:
         if not self._supabase or not username:

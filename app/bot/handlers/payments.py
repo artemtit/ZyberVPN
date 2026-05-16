@@ -15,6 +15,7 @@ from app.repositories.keys import KeysRepository
 from app.repositories.payments import PaymentsRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.users import UsersRepository
+from app.services.plans import get_plan_by_tariff_code
 from app.services.access import AccessEnsureError, build_vpn_manager, ensure_user_access
 from app.services.idempotency import IdempotencyService
 from app.services.provisioning_failures import notify_provisioning_failed
@@ -67,9 +68,114 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
     await pre_checkout_query.answer(ok=True)
 
 
+async def _handle_subscription_payment(message: Message, db: Database, settings: Settings) -> None:
+    """Handle Stars subscription renewal (payload starts with 'sub:')."""
+    payment_info = message.successful_payment
+    payload = payment_info.invoice_payload
+    charge_id = payment_info.telegram_payment_charge_id
+    tg_id = message.from_user.id
+
+    # Parse payload: sub:m1:{tg_id}:{key_id}
+    try:
+        _, tariff_code, payload_tg_id_str, key_id_str = payload.split(":", 3)
+        payload_tg_id = int(payload_tg_id_str)
+        key_id = int(key_id_str)
+    except (ValueError, TypeError):
+        logger.error("Invalid subscription payload tg_id=%s payload=%s", tg_id, payload)
+        await message.answer("Ошибка обработки подписки. Обратитесь в поддержку.", reply_markup=get_main_menu_keyboard())
+        return
+
+    if payload_tg_id != tg_id:
+        logger.error("Sub payment tg_id mismatch payload_tg_id=%s actual=%s", payload_tg_id, tg_id)
+        return
+
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+    subs_repo = SubscriptionsRepository(db)
+    idem = IdempotencyService(IdempotencyRepository())
+    idem_key = f"sub-payment:{charge_id}"
+
+    async def _process_sub() -> dict:
+        plan = get_plan_by_tariff_code(tariff_code) or get_plan_by_tariff_code("m1")
+        months = 1
+        traffic_gb = int((plan or {}).get("traffic_gb", 60))
+
+        key_row = await keys_repo.get_by_id_for_user(key_id, tg_id)
+        if not key_row:
+            raise RuntimeError(f"sub renewal: key not found tg_id={tg_id} key_id={key_id}")
+
+        now = utc_now()
+        key_expires_raw = key_row.get("expires_at")
+        if key_expires_raw:
+            try:
+                key_base = max(parse_iso_utc(key_expires_raw), now)
+            except Exception:
+                key_base = now
+        else:
+            key_base = now
+        new_expires_dt = add_months(key_base, months)
+        new_expiry_ms = int(new_expires_dt.timestamp() * 1000)
+
+        await subs_repo.create_or_extend(tg_id, months=months)
+        await users_repo.add_traffic_limit(tg_id, traffic_gb)
+
+        user = await users_repo.get_by_tg_id(tg_id)
+        current_user_expires = (user or {}).get("expires_at")
+        user_expires_dt = new_expires_dt
+        if current_user_expires:
+            try:
+                user_expires_dt = max(new_expires_dt, parse_iso_utc(current_user_expires))
+            except Exception:
+                pass
+        await users_repo.set_expiry(
+            tg_id, expires_at=user_expires_dt.isoformat(),
+            is_active=True, plan="monthly", last_activated_at=now.isoformat(),
+        )
+
+        per_key_traffic = int(key_row.get("traffic_limit_gb") or traffic_gb)
+        manager = build_vpn_manager(db, settings, bot=message.bot)
+        await manager.renew_user_access(tg_id, new_expiry_ms, key_id=key_id, traffic_limit_gb=per_key_traffic)
+
+        await keys_repo.update_expires_at(key_id, tg_id, new_expires_dt.isoformat())
+        await keys_repo.add_traffic_limit(key_id, tg_id, traffic_gb)
+        await users_repo.set_auto_renew(tg_id, key_id)
+
+        return {
+            "expires_str": to_moscow(new_expires_dt).strftime("%d.%m.%Y"),
+            "days_remaining": max(0, (new_expires_dt - now).days),
+        }
+
+    try:
+        result = await idem.execute("sub_payment", idem_key, _process_sub)
+    except Exception:
+        logger.exception("Subscription payment failed tg_id=%s key_id=%s charge_id=%s", tg_id, key_id, charge_id)
+        await message.answer(
+            "⚠️ Платёж получен, но продление временно недоступно. Обратитесь в поддержку.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+
+    expires_str = result.get("expires_str", "—")
+    days_remaining = result.get("days_remaining", 0)
+    logger.info("event=SUB_RENEWED tg_id=%s key_id=%s charge_id=%s expires=%s", tg_id, key_id, charge_id, expires_str)
+    await message.answer(
+        f"✅ <b>Авто-продление выполнено!</b>\n\n"
+        f"🔑 Ключ #{key_id} продлён\n"
+        f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
+        "📊 Статус: <b>Активна</b>",
+        reply_markup=get_main_menu_keyboard(),
+    )
+
+
 @router.message(F.successful_payment)
 async def process_successful_payment(message: Message, db: Database, settings: Settings) -> None:
     payment_info = message.successful_payment
+
+    # Subscription renewals have a stable payload starting with "sub:"
+    if (payment_info.invoice_payload or "").startswith("sub:"):
+        await _handle_subscription_payment(message, db, settings)
+        return
+
     payments_repo = PaymentsRepository(db)
     users_repo = UsersRepository(db)
     subs_repo = SubscriptionsRepository(db)
