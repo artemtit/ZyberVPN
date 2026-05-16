@@ -99,11 +99,59 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/setexpiry &lt;tg_id&gt; &lt;дней&gt; — установить срок подписки\n\n"
         "<b>📊 Общее</b>\n"
         "/stats — статистика проекта\n"
+        "/newusers [N] — последние N пользователей\n"
         "/servers — список серверов\n"
         "/sync_servers — синхронизировать серверы\n"
         "/broadcast &lt;текст&gt; — рассылка активным\n"
         "/broadcastall &lt;текст&gt; — рассылка ВСЕМ",
     )
+
+
+# ──────────────────────────────────────────
+# /newusers [N]
+# ──────────────────────────────────────────
+@router.message(Command("newusers"))
+async def admin_new_users(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split()
+    limit = 15
+    if len(parts) >= 2:
+        try:
+            limit = max(1, min(50, int(parts[1])))
+        except ValueError:
+            pass
+
+    users_repo = UsersRepository(db)
+    rows = await users_repo.list_recent(limit)
+    if not rows:
+        await message.answer("Пользователей не найдено.")
+        return
+
+    lines = [f"👥 <b>Последние {len(rows)} пользователей:</b>\n"]
+    for i, row in enumerate(rows, 1):
+        tg_id = row.get("tg_id", "?")
+        username = row.get("username")
+        first_name = row.get("first_name")
+        is_active = bool(row.get("is_active"))
+        created_raw = row.get("created_at")
+
+        name_parts = []
+        if first_name:
+            name_parts.append(escape(first_name))
+        if username:
+            name_parts.append(f"@{username}")
+        name_str = " / ".join(name_parts) if name_parts else "—"
+
+        try:
+            joined_str = to_moscow(parse_iso_utc(created_raw)).strftime("%d.%m.%Y %H:%M") if created_raw else "—"
+        except Exception:
+            joined_str = "—"
+
+        status = "✅" if is_active else "⬜"
+        lines.append(f"{i}. {status} <code>{tg_id}</code> {name_str}\n   📅 {joined_str} МСК")
+
+    await message.answer("\n".join(lines))
 
 
 # ──────────────────────────────────────────

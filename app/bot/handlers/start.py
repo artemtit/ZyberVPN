@@ -30,8 +30,11 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
     users_repo = UsersRepository(db)
     ref_tg_id = _extract_ref_tg_id(command.args if command else None)
     await users_repo.get_or_create(message.from_user.id, ref_tg_id=ref_tg_id)
-    if message.from_user.username:
-        await users_repo.update_username(message.from_user.id, message.from_user.username)
+    await users_repo.update_user_info(
+        message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+    )
     await send_main_menu(message, inline_main_menu_keyboard(settings.support_url))
 
 

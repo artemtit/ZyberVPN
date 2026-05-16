@@ -35,6 +35,7 @@ class UsersRepository:
             self._last_supabase_error = True
             return None
         for fields in (
+            self._BASE_FIELDS + ",username,first_name,auto_renew_stars_key_id",
             self._BASE_FIELDS + ",username,auto_renew_stars_key_id",
             self._BASE_FIELDS + ",username",
             self._BASE_FIELDS,
@@ -173,6 +174,59 @@ class UsersRepository:
         except Exception:
             logger.exception("Supabase get_by_username failed username=%s", clean)
             return None
+
+    async def update_user_info(self, tg_id: int, username: str | None, first_name: str | None) -> None:
+        if not self._supabase:
+            return
+        payload: dict = {}
+        if username:
+            payload["username"] = username.lstrip("@").lower()
+        if first_name:
+            payload["first_name"] = first_name[:64]
+        if not payload:
+            return
+        for fields_attempt in (payload, {k: v for k, v in payload.items() if k == "username"}):
+            if not fields_attempt:
+                break
+            try:
+                await execute_with_retry(
+                    lambda p=fields_attempt: (
+                        self._supabase.table("users").update(p).eq("tg_id", tg_id).execute()
+                    ),
+                    operation="users.update_user_info",
+                )
+                return
+            except Exception as exc:
+                if "42703" in str(exc) or "does not exist" in str(exc):
+                    continue
+                logger.exception("Supabase update_user_info failed tg_id=%s", tg_id)
+                return
+
+    async def list_recent(self, limit: int = 15) -> list[dict]:
+        if not self._supabase:
+            return []
+        for fields in (
+            "tg_id,username,first_name,is_active,plan,created_at",
+            "tg_id,username,is_active,plan,created_at",
+        ):
+            try:
+                response = await execute_with_retry(
+                    lambda f=fields: (
+                        self._supabase.table("users")
+                        .select(f)
+                        .order("created_at", desc=True)
+                        .limit(limit)
+                        .execute()
+                    ),
+                    operation="users.list_recent",
+                )
+                return list(response.data or [])
+            except Exception as exc:
+                if "42703" in str(exc) or "does not exist" in str(exc):
+                    continue
+                logger.exception("Supabase list_recent failed")
+                return []
+        return []
 
     async def set_auto_renew(self, tg_id: int, key_id: int | None) -> None:
         if not self._supabase:
