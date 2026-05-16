@@ -93,6 +93,15 @@ def get_supabase_client() -> Client | None:
         return None
 
 
+_NO_RETRY_CODES = frozenset({"42703", "42P01", "42601", "42501", "23503", "23505"})
+
+
+def _is_permanent_error(exc: Exception) -> bool:
+    """Return True for PostgreSQL errors that should not be retried (schema/auth issues)."""
+    msg = str(exc)
+    return any(code in msg for code in _NO_RETRY_CODES)
+
+
 async def execute_with_retry(
     action: Callable[[], T],
     *,
@@ -106,6 +115,8 @@ async def execute_with_retry(
             return await asyncio.wait_for(asyncio.to_thread(action), timeout=timeout_seconds)
         except Exception as error:
             last_error = error
+            if _is_permanent_error(error):
+                raise
             logger.warning(
                 "Supabase operation retry op=%s attempt=%s/%s error=%s",
                 operation,
