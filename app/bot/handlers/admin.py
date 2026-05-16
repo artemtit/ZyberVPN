@@ -699,8 +699,35 @@ async def admin_add_balance(message: Message, db: Database, settings: Settings) 
 
 
 # ──────────────────────────────────────────
-# /setexpiry <tg_id> <days>
+# /setexpiry <tg_id> <days>  — с выбором ключа
 # ──────────────────────────────────────────
+
+def _setexpiry_keyboard(tg_id: int, days: int, active_keys: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for k in active_keys:
+        k_id = int(k.get("id") or 0)
+        exp_raw = k.get("expires_at")
+        try:
+            exp_str = to_moscow(parse_iso_utc(exp_raw)).strftime("%d.%m.%Y") if exp_raw else "—"
+        except Exception:
+            exp_str = "—"
+        rows.append([InlineKeyboardButton(
+            text=f"🔑 Ключ #{k_id} (до {exp_str})",
+            callback_data=f"sexpk:{tg_id}:{k_id}:{days}",
+        )])
+    if len(active_keys) > 1:
+        rows.append([InlineKeyboardButton(
+            text="🔑 Все ключи",
+            callback_data=f"sexpall:{tg_id}:{days}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="🌐 Только подписку (без XUI)",
+        callback_data=f"sexpsub:{tg_id}:{days}",
+    )])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="sexpcancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(Command("setexpiry"))
 async def admin_set_expiry(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
@@ -720,33 +747,177 @@ async def admin_set_expiry(message: Message, db: Database, settings: Settings) -
         return
 
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
     user = await users_repo.get_by_tg_id(target_id)
     if not user:
         await message.answer(f"❌ Пользователь {target_id} не найден.")
         return
 
+    keys = await keys_repo.list_by_user(target_id)
+    active_keys = [k for k in keys if not k.get("disabled_at")]
     expires_dt = utc_now() + timedelta(days=days)
-    await users_repo.set_expiry(
-        target_id,
-        expires_at=expires_dt.isoformat(),
-        is_active=True,
-        plan="monthly",
-        last_activated_at=utc_now().isoformat(),
+
+    await message.answer(
+        f"👤 <code>{target_id}</code> — продление на <b>{days} дн.</b>\n"
+        f"Новая дата: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n\n"
+        "Что продлить?",
+        reply_markup=_setexpiry_keyboard(target_id, days, active_keys),
     )
-    logger.warning("ADMIN SETEXPIRY | admin=%s target=%s days=%s", message.from_user.id, target_id, days)
+
+
+async def _notify_user_expiry(bot, tg_id: int, expires_dt, key_label: str = "") -> None:
     try:
-        await message.bot.send_message(
-            target_id,
-            f"✅ <b>Ваша подписка продлена администратором!</b>\n\n"
+        suffix = f" (ключ {key_label})" if key_label else ""
+        await bot.send_message(
+            tg_id,
+            f"✅ <b>Администратор продлил вашу подписку{suffix}!</b>\n\n"
             f"📅 Действует до: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>",
         )
     except Exception:
         pass
-    await message.answer(
-        f"✅ Срок подписки установлен.\n"
-        f"Пользователь: <code>{target_id}</code>\n"
-        f"Подписка до: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y %H:%M МСК')}</b>"
+
+
+@router.callback_query(F.data.startswith("sexpk:"))
+async def setexpiry_key_cb(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _, tg_id_str, key_id_str, days_str = callback.data.split(":")
+        target_id, key_id, days = int(tg_id_str), int(key_id_str), int(days_str)
+    except (ValueError, TypeError):
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+    key_row = await keys_repo.get_by_id_for_user(key_id, target_id)
+    if not key_row:
+        await callback.answer("Ключ не найден", show_alert=True)
+        return
+
+    expires_dt = utc_now() + timedelta(days=days)
+    expiry_ms = int(expires_dt.timestamp() * 1000)
+
+    # Extend user.expires_at to max(current, new)
+    user = await users_repo.get_by_tg_id(target_id)
+    user_expires_dt = expires_dt
+    raw = (user or {}).get("expires_at")
+    if raw:
+        try:
+            user_expires_dt = max(expires_dt, parse_iso_utc(raw))
+        except Exception:
+            pass
+    await users_repo.set_expiry(
+        target_id, expires_at=user_expires_dt.isoformat(),
+        is_active=True, plan="monthly", last_activated_at=utc_now().isoformat(),
     )
+
+    # Update XUI + key DB record
+    traffic_gb = int(key_row.get("traffic_limit_gb") or settings.vpn_total_gb)
+    manager = build_vpn_manager(db, settings)
+    xui_ok = False
+    try:
+        await manager.renew_user_access(target_id, expiry_ms, key_id=key_id, traffic_limit_gb=traffic_gb)
+        xui_ok = True
+    except Exception:
+        logger.exception("setexpiry_key: XUI failed target=%s key=%s", target_id, key_id)
+    await keys_repo.update_expires_at(key_id, target_id, expires_dt.isoformat())
+
+    logger.warning("ADMIN SETEXPIRY_KEY | admin=%s target=%s key=%s days=%s", callback.from_user.id, target_id, key_id, days)
+    xui_icon = "✅" if xui_ok else "⚠️ XUI не обновлён —"
+    await callback.message.edit_text(
+        f"✅ Ключ #{key_id} пользователя <code>{target_id}</code> продлён.\n"
+        f"До: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n"
+        f"{xui_icon} XUI {'обновлён' if xui_ok else 'не обновлён (ошибка)'}"
+    )
+    await _notify_user_expiry(callback.bot, target_id, expires_dt, f"#{key_id}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sexpall:"))
+async def setexpiry_all_cb(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _, tg_id_str, days_str = callback.data.split(":")
+        target_id, days = int(tg_id_str), int(days_str)
+    except (ValueError, TypeError):
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+    expires_dt = utc_now() + timedelta(days=days)
+    expiry_ms = int(expires_dt.timestamp() * 1000)
+
+    await users_repo.set_expiry(
+        target_id, expires_at=expires_dt.isoformat(),
+        is_active=True, plan="monthly", last_activated_at=utc_now().isoformat(),
+    )
+
+    keys = [k for k in await keys_repo.list_by_user(target_id) if not k.get("disabled_at")]
+    manager = build_vpn_manager(db, settings)
+    ok = failed = 0
+    for k in keys:
+        k_id = int(k.get("id") or 0)
+        if not k_id:
+            continue
+        traffic_gb = int(k.get("traffic_limit_gb") or settings.vpn_total_gb)
+        try:
+            await manager.renew_user_access(target_id, expiry_ms, key_id=k_id, traffic_limit_gb=traffic_gb)
+            await keys_repo.update_expires_at(k_id, target_id, expires_dt.isoformat())
+            ok += 1
+        except Exception:
+            logger.exception("setexpiry_all: key %s failed", k_id)
+            failed += 1
+
+    logger.warning("ADMIN SETEXPIRY_ALL | admin=%s target=%s days=%s ok=%s fail=%s", callback.from_user.id, target_id, days, ok, failed)
+    await callback.message.edit_text(
+        f"✅ Все ключи <code>{target_id}</code> продлены.\n"
+        f"До: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n"
+        f"Ключей: {ok} ✅ | Ошибок: {failed} ⚠️"
+    )
+    await _notify_user_expiry(callback.bot, target_id, expires_dt)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sexpsub:"))
+async def setexpiry_sub_cb(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        _, tg_id_str, days_str = callback.data.split(":")
+        target_id, days = int(tg_id_str), int(days_str)
+    except (ValueError, TypeError):
+        await callback.answer("Ошибка", show_alert=True)
+        return
+
+    users_repo = UsersRepository(db)
+    expires_dt = utc_now() + timedelta(days=days)
+    await users_repo.set_expiry(
+        target_id, expires_at=expires_dt.isoformat(),
+        is_active=True, plan="monthly", last_activated_at=utc_now().isoformat(),
+    )
+    logger.warning("ADMIN SETEXPIRY_SUB | admin=%s target=%s days=%s", callback.from_user.id, target_id, days)
+    await callback.message.edit_text(
+        f"✅ Подписка <code>{target_id}</code> продлена.\n"
+        f"До: <b>{to_moscow(expires_dt).strftime('%d.%m.%Y')}</b>\n"
+        "(ключи в XUI не изменены)"
+    )
+    await _notify_user_expiry(callback.bot, target_id, expires_dt)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "sexpcancel")
+async def setexpiry_cancel_cb(callback: CallbackQuery, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text("❌ Отменено.")
+    await callback.answer()
 
 
 # ──────────────────────────────────────────
