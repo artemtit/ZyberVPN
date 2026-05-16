@@ -132,6 +132,13 @@ def topup_payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def topup_stars_keyboard(rub_amount: int, stars: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⭐ Оплатить {stars} Stars", pay=True)],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=f"topup_method_back:{rub_amount}")],
+    ])
+
+
 def topup_platega_keyboard(redirect_url: str, rub_amount: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],

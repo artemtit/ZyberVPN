@@ -20,6 +20,7 @@ from app.bot.keyboards.inline import (
     topup_keyboard,
     topup_payment_keyboard,
     topup_platega_keyboard,
+    topup_stars_keyboard,
 )
 
 try:
@@ -327,6 +328,7 @@ async def topup_pay_stars(callback: CallbackQuery, state: FSMContext, db: Databa
         currency="XTR",
         prices=[LabeledPrice(label=f"Баланс +{rub_amount} ₽", amount=stars_count)],
         provider_token="",
+        reply_markup=topup_stars_keyboard(rub_amount, stars_count),
     )
     await callback.answer()
 
