@@ -249,6 +249,9 @@ async def key_qr(callback: CallbackQuery, db: Database, settings: Settings) -> N
     await callback.message.answer_photo(
         BufferedInputFile(qr_bytes, filename=f"subscription-{key_id}.png"),
         caption=f"QR-код для подключения\n<code>{escape(sub_url)}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад к ключу", callback_data=f"key_open:{key_id}")]
+        ]),
     )
     await callback.answer()
 
