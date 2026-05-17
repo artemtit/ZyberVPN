@@ -405,6 +405,22 @@ class XUIProvider(VPNProvider):
                 logger.debug("get_online_count failed server_id=%s error=%s", server.id, error)
             return 0
 
+    async def get_all_online_count(self, server: ServerInfo) -> int:
+        """Count all clients currently connected to this server."""
+        self._validate_server_security(server)
+        async with self._session(server) as session:
+            await self._login(session, server)
+            url = f"{server.api_url}/panel/api/inbounds/onlines"
+            try:
+                data = await self._request_json(session, "post", url)
+                if isinstance(data, dict) and data.get("success") is True:
+                    online_list = data.get("obj") or []
+                    if isinstance(online_list, list):
+                        return len(online_list)
+            except Exception as error:
+                logger.debug("get_all_online_count failed server_id=%s error=%s", server.id, error)
+            return 0
+
     async def _add_client(
         self,
         session: ClientSession,

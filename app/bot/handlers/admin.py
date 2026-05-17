@@ -20,6 +20,7 @@ from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager, ensure_user_access
+from app.services.vpn.manager import VPNManager
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 from datetime import timedelta
 
@@ -165,11 +166,10 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     payments_repo = PaymentsRepository(db)
     keys_repo = KeysRepository(db)
     servers_repo = ServersRepository(db)
-    user_vpn_repo = UserVpnRepository(db)
 
     (
         total_users, active_users, new_24h, new_7d,
-        unique_payers, total_revenue, stars_revenue, server_counts,
+        unique_payers, total_revenue, stars_revenue,
         active_keys, disabled_keys,
     ) = await asyncio.gather(
         users_repo.count_all(),
@@ -179,7 +179,6 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
         payments_repo.count_unique_payers(),
         payments_repo.total_revenue(),
         payments_repo.revenue_stars(),
-        user_vpn_repo.count_users_by_server(),
         keys_repo.count_active(),
         keys_repo.count_disabled(),
     )
@@ -190,12 +189,19 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     conversion = round(unique_payers / total_users * 100) if total_users else 0
     avg_check = round(total_revenue / unique_payers) if unique_payers else 0
 
+    # Real-time online counts from XUI (cached by healthcheck loop).
+    online_counts = VPNManager.get_online_counts()
+
     servers = await servers_repo.list_all()
     server_lines = ""
     for srv in servers:
         status = "🟢" if srv.is_active else "🔴"
-        load = server_counts.get(srv.id, 0)
-        server_lines += f"  {status} <b>{srv.name}</b> ({srv.country}): {load} клиентов\n"
+        online = online_counts.get(srv.id)
+        if online is not None:
+            load_str = f"{online} онлайн"
+        else:
+            load_str = "нет данных"
+        server_lines += f"  {status} <b>{srv.name}</b> ({srv.country}): {load_str}\n"
 
     await message.answer(
         "📊 <b>Статистика проекта</b>\n\n"
@@ -211,7 +217,7 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
         f"  Итого: <b>{total_revenue} RUB</b>\n"
         f"  ⭐ Stars: <b>{stars_revenue} RUB</b> | 💳 Platega: <b>{platega_revenue} RUB</b>\n"
         f"  Средний чек: <b>{avg_check} RUB</b>\n\n"
-        f"🖥 <b>Серверы:</b>\n{server_lines}",
+        f"🖥 <b>Серверы (онлайн прямо сейчас):</b>\n{server_lines}",
     )
 
 

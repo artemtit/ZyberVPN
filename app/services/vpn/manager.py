@@ -66,6 +66,9 @@ def pick_server(servers: list[ServerInfo], user_counts: dict[int, int], block_mi
 
 
 class VPNManager:
+    # Shared across all instances — updated by the healthcheck loop, read by provisioning and stats.
+    _online_counts: dict[int, int] = {}
+
     def __init__(
         self,
         providers: dict[str, VPNProvider],
@@ -85,6 +88,10 @@ class VPNManager:
         self._users_repo = users_repo
         self._keys_repo = keys_repo
         self._bot = bot
+
+    @classmethod
+    def get_online_counts(cls) -> dict[int, int]:
+        return dict(cls._online_counts)
 
     async def create_user_access(
         self,
@@ -284,6 +291,12 @@ class VPNManager:
             )
             if ok:
                 healthy += 1
+                try:
+                    online = await provider.get_all_online_count(server)
+                    VPNManager._online_counts[server.id] = online
+                    logger.info("online_count server_id=%s name=%s online=%s", server.id, server.name, online)
+                except Exception:
+                    logger.warning("get_all_online_count failed server_id=%s", server.id)
             # Alert admin when a server first crosses the unhealthy threshold (errors==3).
             if not ok and server.health_errors == 2 and self._bot is not None:
                 from app.config import load_settings
@@ -652,7 +665,9 @@ class VPNManager:
     ) -> list[str]:
         await self._servers_repo.bootstrap_from_env_if_empty(self._settings)
         all_servers = await self._servers_repo.list_all()
-        counts = await self._user_vpn_repo.count_users_by_server()
+        # Prefer real-time online counts if the healthcheck has populated them.
+        # Fall back to registered-client DB counts on first startup before healthcheck runs.
+        counts = VPNManager._online_counts if VPNManager._online_counts else await self._user_vpn_repo.count_users_by_server()
         candidates = pick_server(all_servers, counts, self._settings.vpn_circuit_break_minutes)
         active_count = sum(1 for s in all_servers if s.is_active)
         if not candidates:
