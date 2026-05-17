@@ -220,7 +220,7 @@ def auto_renew_confirm_keyboard(stars: int) -> InlineKeyboardMarkup:
 
 def auto_renew_active_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отключить авто-продление", callback_data="autorenew_disable")],
+        [InlineKeyboardButton(text="🚫 Отключить авто-продление", callback_data="autorenew_disable")],
         [InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data="menu_profile")],
     ])
 

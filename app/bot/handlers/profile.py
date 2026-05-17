@@ -781,13 +781,12 @@ async def referral_share(callback: CallbackQuery) -> None:
 async def _send_autorenew_invoice(message, tg_id: int, key_id: int, stars: int) -> None:
     from aiogram.types import LabeledPrice
     await message.answer_invoice(
-        title="ZyberVPN — Авто-продление",
-        description=f"Ежемесячное продление VPN-ключа #{key_id} (30 дней)",
+        title="ZyberVPN — Продление подписки",
+        description=f"Продление VPN-ключа #{key_id} на 1 месяц (30 дней)",
         payload=f"sub:m1:{tg_id}:{key_id}",
         currency="XTR",
         prices=[LabeledPrice(label="1 месяц VPN", amount=stars)],
         provider_token="",
-        subscription_period=2592000,
         reply_markup=auto_renew_confirm_keyboard(stars),
     )
 
@@ -814,11 +813,10 @@ async def profile_autorenew(callback: CallbackQuery, db: Database) -> None:
             except Exception:
                 pass
         await callback.message.edit_text(
-            "🔄 <b>Авто-продление включено</b>\n\n"
+            "⭐ <b>Авто-продление включено</b>\n\n"
             f"{key_line}\n\n"
-            "⭐ Telegram автоматически списывает Stars каждые 30 дней.\n\n"
-            "Чтобы отменить подписку, перейдите в:\n"
-            "<b>Telegram → Настройки → Конфиденциальность → Платежи → Подписки</b>",
+            "За 3 дня до истечения бот пришлёт счёт на Stars — просто нажмите «Оплатить».\n\n"
+            "Чтобы отключить — нажмите кнопку ниже.",
             reply_markup=auto_renew_active_keyboard(),
         )
         await callback.answer()
@@ -849,9 +847,10 @@ async def profile_autorenew(callback: CallbackQuery, db: Database) -> None:
         await _send_autorenew_invoice(callback.message, callback.from_user.id, key_id, stars)
     else:
         await callback.message.edit_text(
-            f"🔄 <b>Авто-продление ⭐</b>\n\n"
+            "⭐ <b>Авто-продление</b>\n\n"
             f"Стоимость: <b>{stars} Stars/мес.</b>\n\n"
-            "Выберите ключ для авто-продления:",
+            "За 3 дня до истечения бот пришлёт счёт — нажмёте «Оплатить» и ключ продлится.\n\n"
+            "Выберите ключ:",
             reply_markup=auto_renew_keys_keyboard(active_keys),
         )
     await callback.answer()
@@ -888,10 +887,9 @@ async def autorenew_disable(callback: CallbackQuery, db: Database) -> None:
     users_repo = UsersRepository(db)
     await users_repo.set_auto_renew(callback.from_user.id, None)
     await callback.message.edit_text(
-        "🔄 <b>Авто-продление отключено</b>\n\n"
-        "Запись об авто-продлении удалена.\n\n"
-        "Если Telegram-подписка ещё активна, отмените её вручную:\n"
-        "<b>Telegram → Настройки → Конфиденциальность → Платежи → Подписки</b>",
+        "⭐ <b>Авто-продление отключено</b>\n\n"
+        "Бот больше не будет присылать счёт на Stars автоматически.\n\n"
+        "Продлить подписку можно вручную через «Мои ключи» → «Продлить».",
         reply_markup=auto_renew_active_keyboard(),
     )
     await callback.answer("Отключено")
