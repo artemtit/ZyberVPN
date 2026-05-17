@@ -232,6 +232,28 @@ class PaymentsRepository:
         rows = response.data or []
         return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
 
+    async def count_paying_in_tg_ids(self, tg_ids: list[int]) -> int:
+        """Count how many of the given tg_ids have at least one paid payment."""
+        if not self._supabase or not tg_ids:
+            return 0
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("payments")
+                    .select("tg_id")
+                    .in_("tg_id", tg_ids)
+                    .in_("status", list(_PAID_STATUSES))
+                    .neq("purchase_type", "topup")
+                    .execute()
+                ),
+                operation="payments.count_paying_in_tg_ids",
+            )
+            rows = response.data or []
+            return len({r["tg_id"] for r in rows if isinstance(r, dict) and r.get("tg_id")})
+        except Exception:
+            logger.exception("Supabase count_paying_in_tg_ids failed")
+            return 0
+
     async def count_unique_payers(self, exclude_tg_ids: list[int] | None = None) -> int:
         """Distinct users who paid at least once (excl. topups)."""
         if not self._supabase:

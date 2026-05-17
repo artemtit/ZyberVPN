@@ -491,6 +491,19 @@ async def promo_input(message: Message, state: FSMContext, db: Database, setting
         await message.answer("❌ Промокод не найден", reply_markup=get_main_menu_keyboard())
         return
 
+    # Discount codes are only usable during checkout, not from the profile.
+    if validation.promo_type == "discount":
+        await state.clear()
+        await message.answer(
+            f"🏷 Это промокод со скидкой <b>{validation.discount_percent}%</b> на покупку.\n\n"
+            "Он применяется во время оформления заказа:\n"
+            "1. Нажмите <b>Купить</b>\n"
+            "2. Выберите тариф\n"
+            "3. Нажмите <b>🎁 Ввести промокод</b> и введите этот код.",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
+
     promo = validation.promo or {}
     days = int(promo.get("days") or 30)
     keys_repo = KeysRepository(db)
@@ -731,28 +744,39 @@ def _build_share_url(bot_username: str, tg_id: int) -> str:
 async def referral_open(callback: CallbackQuery, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
     payments_repo = PaymentsRepository(db)
-    await users_repo.get_or_create(callback.from_user.id)
-    invited = await users_repo.count_referrals(callback.from_user.id)
+    tg_id = callback.from_user.id
+    await users_repo.get_or_create(tg_id)
 
-    referral_tg_ids = await users_repo.list_referral_tg_ids(callback.from_user.id)
+    user = await users_repo.get_by_tg_id(tg_id)
+    balance = int((user or {}).get("balance") or 0)
+    invited = await users_repo.count_referrals(tg_id)
+    referral_tg_ids = await users_repo.list_referral_tg_ids(tg_id)
+    paying = await payments_repo.count_paying_in_tg_ids(referral_tg_ids)
     total_paid = await payments_repo.sum_paid_for_tg_ids(referral_tg_ids)
     earned = total_paid * settings.referral_bonus_percent // 100
+    conversion = round(paying / invited * 100) if invited else 0
 
     me = await callback.bot.get_me()
-    ref_link = f"https://t.me/{me.username}?start=ref_{callback.from_user.id}"
-    share_url = _build_share_url(me.username, callback.from_user.id)
+    ref_link = f"https://t.me/{me.username}?start=ref_{tg_id}"
+    share_url = _build_share_url(me.username, tg_id)
+
+    friend_bonus_line = (
+        f"• Друг получает <b>{settings.referral_friend_bonus_rub} ₽</b> на баланс при первой покупке\n"
+        if settings.referral_friend_bonus_rub > 0 else ""
+    )
+    conv_line = f" (конверсия {conversion}%)" if invited else ""
+
     await callback.message.edit_text(
-        "🌟 Реферальная программа\n\n"
-        "Приглашайте друзей и получайте бонусы! 💰\n\n"
-        "💎 Ваша награда:\n"
-        f"• Вы зарабатываете {settings.referral_bonus_percent}% от каждой покупки ваших друзей\n\n"
-        "🎁 Бонус другу:\n"
-        "• Скидка 5% на первую покупку\n\n"
-        "📊 Статистика:\n"
-        f"👤 Приглашено: {invited}\n"
-        f"💰 Заработано: {earned} RUB\n\n"
-        "🔗 Реферальная ссылка:\n"
-        f"{ref_link}",
+        "🌟 <b>Реферальная программа</b>\n\n"
+        f"За каждую покупку вашего реферала вы получаете <b>{settings.referral_bonus_percent}%</b> на баланс.\n"
+        f"{friend_bonus_line}\n"
+        "📊 <b>Статистика:</b>\n"
+        f"  👤 Приглашено: <b>{invited}</b>{conv_line}\n"
+        f"  💳 Оплатили: <b>{paying}</b>\n"
+        f"  🏆 Заработано всего: <b>{earned} ₽</b>\n"
+        f"  💰 Доступно на балансе: <b>{balance} ₽</b>\n\n"
+        "🔗 <b>Ваша ссылка:</b>\n"
+        f"<code>{ref_link}</code>",
         reply_markup=referral_keyboard(share_url),
     )
     await callback.answer()

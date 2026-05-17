@@ -9,6 +9,8 @@ import logging
 from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, renewal_success_keyboard, stars_back_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
+from app.repositories.promo import PromoRepository
+from app.services.promo import apply_discount, validate_promo
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.idempotency import IdempotencyRepository
@@ -139,7 +141,9 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext, db: Database
         if active_count >= 5:
             await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5. Продлите существующий ключ.", show_alert=True)
             return
-    await state.update_data(tariff_code=tariff_code, email=None)
+    data = await state.get_data()
+    discount_percent = int(data.get("discount_percent") or 0)
+    await state.update_data(tariff_code=tariff_code, email=None, payment_message_id=callback.message.message_id)
     await state.set_state(PurchaseState.waiting_payment)
     plan = get_plan_by_tariff_code(tariff_code)
     if not plan:
@@ -151,12 +155,19 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext, db: Database
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
     balance = int((user or {}).get("balance") or 0)
-    price = int(plan["price_rub"])
+    base_price = int(plan["price_rub"])
+    price = apply_discount(base_price, discount_percent)
+    title = plan.get("name", plan.get("title", ""))
+    price_line = (
+        f"💰 К оплате: <s>{base_price} ₽</s> → <b>{price} ₽</b>  (−{discount_percent}% промокод)"
+        if discount_percent > 0 else f"💰 К оплате: <b>{price} ₽</b>"
+    )
     await callback.message.edit_text(
-        f"💰 К оплате: {float(price):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(
             platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
             show_test_pay=is_admin, balance=balance, price_rub=price,
+            discount_percent=discount_percent,
         ),
     )
     await callback.answer()
@@ -184,7 +195,9 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, 
         if active_count >= 5:
             await callback.answer(f"У вас уже {active_count} активных ключей. Максимум — 5. Продлите существующий ключ.", show_alert=True)
             return
-    await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"], email=None)
+    data = await state.get_data()
+    discount_percent = int(data.get("discount_percent") or 0)
+    await state.update_data(plan_id=plan_id, tariff_code=plan["tariff_code"], email=None, payment_message_id=callback.message.message_id)
     await state.set_state(PurchaseState.waiting_payment)
     platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
     platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
@@ -208,15 +221,108 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, 
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
     balance = int((user or {}).get("balance") or 0)
-    price = int(plan["price_rub"])
+    base_price = int(plan["price_rub"])
+    price = apply_discount(base_price, discount_percent)
+    title = plan.get("name", plan.get("title", ""))
+    price_line = (
+        f"💰 К оплате: <s>{base_price} ₽</s> → <b>{price} ₽</b>  (−{discount_percent}% промокод)"
+        if discount_percent > 0 else f"💰 К оплате: <b>{price} ₽</b>"
+    )
     await callback.message.edit_text(
-        f"💰 К оплате: {float(price):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(
             platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
             show_test_pay=is_admin, balance=balance, price_rub=price,
+            discount_percent=discount_percent,
         ),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "pay:promo", PurchaseState.waiting_payment)
+async def promo_enter(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PurchaseState.waiting_promo_code)
+    await callback.message.answer(
+        "🎁 Введите промокод для скидки на покупку:\n\n"
+        "(Промокоды на бесплатные дни вводятся в разделе <b>Профиль → Промокод</b>)"
+    )
+    await callback.answer()
+
+
+@router.message(PurchaseState.waiting_promo_code)
+async def promo_code_input(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    code = (message.text or "").strip().upper()
+    if not code:
+        await message.answer("Введите код промокода.")
+        return
+
+    promo_repo = PromoRepository()
+    result = await validate_promo(code, promo_repo)
+
+    if not result.ok:
+        error_map = {
+            "not_found": "❌ Промокод не найден.",
+            "inactive": "❌ Промокод неактивен.",
+            "max_uses_reached": "❌ Промокод уже использован максимальное количество раз.",
+            "expired": "❌ Срок действия промокода истёк.",
+        }
+        await message.answer(error_map.get(result.error or "", "❌ Промокод недействителен."))
+        await state.set_state(PurchaseState.waiting_payment)
+        return
+
+    if result.promo_type == "days":
+        await message.answer(
+            f"ℹ️ Этот промокод даёт <b>{result.days} дней</b> подписки бесплатно.\n\n"
+            "Введи его в разделе <b>Профиль → Промокод</b> чтобы активировать."
+        )
+        await state.set_state(PurchaseState.waiting_payment)
+        return
+
+    # Discount promo: store in FSM and re-render the payment message.
+    await state.update_data(
+        promo_code=code,
+        discount_percent=result.discount_percent,
+    )
+    await state.set_state(PurchaseState.waiting_payment)
+
+    data = await state.get_data()
+    plan = _selected_plan(data)
+    if not plan:
+        await message.answer(f"✅ Промокод применён: скидка {result.discount_percent}%. Выберите тариф.")
+        return
+
+    platega_on = bool(getattr(settings, "platega_merchant_id", "") and getattr(settings, "platega_api_key", ""))
+    platega_crypto_on = platega_on and bool(getattr(settings, "platega_crypto_method", 0))
+    is_admin = message.from_user.id in settings.admin_ids
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(message.from_user.id)
+    balance = int((user or {}).get("balance") or 0)
+    base_price = int(plan["price_rub"])
+    final_price = apply_discount(base_price, result.discount_percent)
+    title = plan.get("name", plan.get("title", ""))
+    price_line = f"💰 К оплате: <s>{base_price} ₽</s> → <b>{final_price} ₽</b>  (−{result.discount_percent}% промокод)"
+
+    # Try to edit the original payment message (stored in FSM).
+    payment_msg_id = data.get("payment_message_id")
+    new_markup = payment_keyboard(
+        platega_enabled=platega_on,
+        platega_crypto_enabled=platega_crypto_on,
+        show_test_pay=is_admin,
+        balance=balance,
+        price_rub=final_price,
+        discount_percent=result.discount_percent,
+    )
+    if payment_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=payment_msg_id,
+                text=f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
+                reply_markup=new_markup,
+            )
+        except Exception:
+            pass
+    await message.answer(f"✅ Промокод <b>{code}</b> применён — скидка {result.discount_percent}%!")
 
 
 @router.callback_query(F.data.in_({"pay:sbp", "pay:crypto"}))
@@ -507,7 +613,8 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
     users_repo = UsersRepository(db)
     user = await users_repo.get_by_tg_id(callback.from_user.id)
     balance = int((user or {}).get("balance") or 0)
-    price = int(plan["price_rub"])
+    discount_percent = int(data.get("discount_percent") or 0)
+    price = apply_discount(int(plan["price_rub"]), discount_percent)
 
     if balance <= 0:
         await callback.answer("На балансе нет средств", show_alert=True)
@@ -556,7 +663,21 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
     async def _process_balance_payment() -> dict:
         if payment.get("status") not in ("paid", "provisioning", "active"):
             await payments_repo.mark_paid(payload=payload, telegram_charge_id="balance")
-            await users_repo.deduct_balance(int(payment["tg_id"]), price)
+            deducted = await users_repo.deduct_balance(int(payment["tg_id"]), price)
+            if not deducted:
+                logger.error(
+                    "event=BALANCE_DEDUCT_FAILED tg_id=%s amount=%s payload=%s",
+                    payment["tg_id"], price, payload,
+                )
+                from app.utils.admin_notify import notify_admins
+                await notify_admins(
+                    callback.bot, settings.admin_ids,
+                    f"⚠️ <b>Списание баланса не прошло</b>\n\n"
+                    f"👤 <code>{payment['tg_id']}</code>\n"
+                    f"💰 Сумма: {price} ₽\n"
+                    f"🔑 payload: <code>{payload}</code>\n\n"
+                    "Проверьте баланс и платёж вручную."
+                )
             base_limit = int(plan["traffic_gb"])
             if purchase_type == "renewal":
                 months = max(1, int(plan["duration_days"]) // 30)
@@ -716,9 +837,12 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database, se
         await users_repo.get_or_create(callback.from_user.id)
         payload = generate_payload(callback.from_user.id, tariff_code)
         idempotency_key = f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
+        discount_percent = int(data.get("discount_percent") or 0)
+        discounted_rub = apply_discount(int(plan["price_rub"]), discount_percent)
+        discounted_stars = apply_discount(int(plan["price_stars"]), discount_percent)
         payment = await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=int(plan["price_rub"]),
+            amount=discounted_rub,
             tariff_code=tariff_code,
             email=email,
             payload=payload,
@@ -742,13 +866,13 @@ async def pay_stars(callback: CallbackQuery, state: FSMContext, db: Database, se
         description=f"Подписка ZyberVPN на {plan['name']}",
         payload=payload,
         currency="XTR",
-        prices=[LabeledPrice(label=plan["name"], amount=int(plan["price_stars"]))],
+        prices=[LabeledPrice(label=plan["name"], amount=discounted_stars)],
         provider_token="",
         reply_markup=stars_back_keyboard(
             tariff_code=str(tariff_code),
             purchase_type=str(purchase_type),
             renew_key_id=str(renew_key_id or 0),
-            stars=int(plan["price_stars"]),
+            stars=discounted_stars,
         ),
     )
     await callback.answer()
@@ -864,7 +988,8 @@ async def _pay_via_platega(
             return_url=return_url,
             failed_url=return_url,
         )
-        full_price = int(plan["price_rub"])
+        discount_percent = int(data.get("discount_percent") or 0)
+        full_price = apply_discount(int(plan["price_rub"]), discount_percent)
         platega_amount = max(1, full_price - balance_applied)
         result = await client.create_payment(
             amount=platega_amount,

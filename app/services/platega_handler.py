@@ -152,9 +152,13 @@ async def process_confirmed_platega_payment(
                 base_limit = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
                 await users_repo.add_traffic_limit(tg_id, base_limit)
             # Balance deduction inside idempotency — runs at most once per payment.
-            # balance_applied will be non-zero once platega_amount is tracked separately.
             if balance_applied > 0:
-                await users_repo.deduct_balance(tg_id, balance_applied)
+                deducted = await users_repo.deduct_balance(tg_id, balance_applied)
+                if not deducted:
+                    logger.error(
+                        "event=BALANCE_DEDUCT_FAILED tg_id=%s amount=%s transaction_id=%s",
+                        tg_id, balance_applied, transaction_id,
+                    )
         return {
             "tg_id": tg_id,
             "tariff_code": tariff_code,

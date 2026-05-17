@@ -19,7 +19,7 @@ class PromoRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("promo_codes")
-                    .select("id,code,days,max_uses,used_count,expires_at,is_active,created_at")
+                    .select("id,code,days,discount_percent,max_uses,used_count,expires_at,is_active,created_at")
                     .eq("code", code)
                     .limit(1)
                     .execute()

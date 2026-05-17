@@ -122,6 +122,7 @@ def payment_keyboard(
     balance: int = 0,
     price_rub: int = 0,
     admin_plan: bool = False,
+    discount_percent: int = 0,
 ) -> InlineKeyboardMarkup:
     rows = []
     if admin_plan:
@@ -145,6 +146,10 @@ def payment_keyboard(
     if platega_crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
     rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars")])
+    if discount_percent > 0:
+        rows.append([InlineKeyboardButton(text=f"✅ Промокод −{discount_percent}% применён | Сменить", callback_data="pay:promo")])
+    else:
+        rows.append([InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="pay:promo")])
     if show_test_pay:
         rows.append([InlineKeyboardButton(text="🧪 Тестовая оплата [Admin]", callback_data="pay:sbp")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
