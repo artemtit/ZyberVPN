@@ -477,25 +477,33 @@ class UsersRepository:
         rows = response.data or []
         return [int(r["tg_id"]) for r in rows if isinstance(r, dict) and r.get("tg_id") is not None]
 
-    async def count_all(self) -> int:
+    async def count_all(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
         response = await execute_with_retry(
             lambda: self._supabase.table("users").select("tg_id").execute(),
             operation="users.count_all",
         )
-        return len(response.data or [])
+        data = response.data or []
+        if exclude_tg_ids:
+            excl = set(exclude_tg_ids)
+            data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
+        return len(data)
 
-    async def count_active(self) -> int:
+    async def count_active(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
         response = await execute_with_retry(
             lambda: self._supabase.table("users").select("tg_id").eq("is_active", True).execute(),
             operation="users.count_active",
         )
-        return len(response.data or [])
+        data = response.data or []
+        if exclude_tg_ids:
+            excl = set(exclude_tg_ids)
+            data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
+        return len(data)
 
-    async def count_new_last_7d(self) -> int:
+    async def count_new_last_7d(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
         cutoff = (utc_now() - timedelta(days=7)).isoformat()
@@ -504,12 +512,16 @@ class UsersRepository:
                 lambda: self._supabase.table("users").select("tg_id").gte("created_at", cutoff).execute(),
                 operation="users.count_new_last_7d",
             )
-            return len(response.data or [])
+            data = response.data or []
+            if exclude_tg_ids:
+                excl = set(exclude_tg_ids)
+                data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
+            return len(data)
         except Exception:
             logger.exception("Supabase count_new_last_7d failed")
             return 0
 
-    async def count_new_last_24h(self) -> int:
+    async def count_new_last_24h(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
         cutoff = (utc_now() - timedelta(hours=24)).isoformat()
@@ -518,7 +530,11 @@ class UsersRepository:
                 lambda: self._supabase.table("users").select("tg_id").gte("created_at", cutoff).execute(),
                 operation="users.count_new_last_24h",
             )
-            return len(response.data or [])
+            data = response.data or []
+            if exclude_tg_ids:
+                excl = set(exclude_tg_ids)
+                data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
+            return len(data)
         except Exception:
             logger.exception("Supabase count_new_last_24h failed")
             return 0

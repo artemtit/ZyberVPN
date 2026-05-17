@@ -167,20 +167,21 @@ async def admin_stats(message: Message, db: Database, settings: Settings) -> Non
     keys_repo = KeysRepository(db)
     servers_repo = ServersRepository(db)
 
+    excl = list(settings.admin_ids) if settings.admin_ids else []
     (
         total_users, active_users, new_24h, new_7d,
         unique_payers, total_revenue, stars_revenue,
         active_keys, disabled_keys,
     ) = await asyncio.gather(
-        users_repo.count_all(),
-        users_repo.count_active(),
-        users_repo.count_new_last_24h(),
-        users_repo.count_new_last_7d(),
-        payments_repo.count_unique_payers(),
-        payments_repo.total_revenue(),
-        payments_repo.revenue_stars(),
-        keys_repo.count_active(),
-        keys_repo.count_disabled(),
+        users_repo.count_all(exclude_tg_ids=excl),
+        users_repo.count_active(exclude_tg_ids=excl),
+        users_repo.count_new_last_24h(exclude_tg_ids=excl),
+        users_repo.count_new_last_7d(exclude_tg_ids=excl),
+        payments_repo.count_unique_payers(exclude_tg_ids=excl),
+        payments_repo.total_revenue(exclude_tg_ids=excl),
+        payments_repo.revenue_stars(exclude_tg_ids=excl),
+        keys_repo.count_active(exclude_tg_ids=excl),
+        keys_repo.count_disabled(exclude_tg_ids=excl),
     )
 
     inactive_users = total_users - active_users

@@ -232,7 +232,7 @@ class PaymentsRepository:
         rows = response.data or []
         return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
 
-    async def count_unique_payers(self) -> int:
+    async def count_unique_payers(self, exclude_tg_ids: list[int] | None = None) -> int:
         """Distinct users who paid at least once (excl. topups)."""
         if not self._supabase:
             return 0
@@ -248,12 +248,16 @@ class PaymentsRepository:
                 operation="payments.count_unique_payers",
             )
             rows = response.data or []
-            return len({r.get("tg_id") for r in rows if isinstance(r, dict) and r.get("tg_id")})
+            excl = set(exclude_tg_ids or [])
+            return len({
+                r.get("tg_id") for r in rows
+                if isinstance(r, dict) and r.get("tg_id") and int(r.get("tg_id") or 0) not in excl
+            })
         except Exception:
             logger.exception("payments.count_unique_payers failed")
             return 0
 
-    async def revenue_stars(self) -> int:
+    async def revenue_stars(self, exclude_tg_ids: list[int] | None = None) -> int:
         """Revenue from Telegram Stars (have telegram_payment_charge_id)."""
         if not self._supabase:
             return 0
@@ -261,7 +265,7 @@ class PaymentsRepository:
             response = await execute_with_retry(
                 lambda: (
                     self._supabase.table("payments")
-                    .select("amount")
+                    .select("tg_id,amount")
                     .in_("status", list(_PAID_STATUSES))
                     .not_.is_("telegram_payment_charge_id", "null")
                     .neq("purchase_type", "topup")
@@ -270,22 +274,32 @@ class PaymentsRepository:
                 operation="payments.revenue_stars",
             )
             rows = response.data or []
-            return sum(int((r or {}).get("amount") or 0) for r in rows if isinstance(r, dict))
+            excl = set(exclude_tg_ids or [])
+            return sum(
+                int((r or {}).get("amount") or 0)
+                for r in rows
+                if isinstance(r, dict) and int(r.get("tg_id") or 0) not in excl
+            )
         except Exception:
             logger.exception("payments.revenue_stars failed")
             return 0
 
-    async def total_revenue(self) -> int:
+    async def total_revenue(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
         response = await execute_with_retry(
             lambda: (
                 self._supabase.table("payments")
-                .select("amount")
+                .select("tg_id,amount")
                 .in_("status", list(_PAID_STATUSES))
                 .execute()
             ),
             operation="payments.total_revenue",
         )
         rows = response.data or []
-        return sum(int((row or {}).get("amount") or 0) for row in rows if isinstance(row, dict))
+        excl = set(exclude_tg_ids or [])
+        return sum(
+            int((row or {}).get("amount") or 0)
+            for row in rows
+            if isinstance(row, dict) and int(row.get("tg_id") or 0) not in excl
+        )
