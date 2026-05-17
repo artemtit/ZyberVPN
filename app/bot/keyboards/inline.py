@@ -189,40 +189,15 @@ def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew
     ])
 
 
-def profile_keyboard(auto_renew_active: bool = False) -> InlineKeyboardMarkup:
-    renew_label = "🔄 Авто-продление ✅" if auto_renew_active else "🔄 Авто-продление ⭐"
+def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=renew_label, callback_data="profile_autorenew")],
             [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref")],
             [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_menu")],
         ]
     )
-
-
-def auto_renew_keys_keyboard(keys: list[dict]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for i, k in enumerate(keys, start=1):
-        key_id = k.get("id", 0)
-        rows.append([InlineKeyboardButton(text=f"🔑 Ключ #{i}", callback_data=f"autorenew_confirm:{key_id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def auto_renew_confirm_keyboard(stars: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⭐ Подписаться {stars} Stars/мес.", pay=True)],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="profile_autorenew")],
-    ])
-
-
-def auto_renew_active_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚫 Отключить авто-продление", callback_data="autorenew_disable")],
-        [InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data="menu_profile")],
-    ])
 
 
 def subscription_info_keyboard() -> InlineKeyboardMarkup:

@@ -403,44 +403,21 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
 
             expiring_3d = await users_repo.get_users_expiring_soon(72)
             for user in expiring_3d:
-                # Trial users handled separately
                 if str(user.get("plan") or "") == "trial":
                     continue
                 if user.get("notified_3d_at"):
                     continue
                 tg_id = int(user["tg_id"])
                 expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
-                # Check auto-renew: fetch full user for auto_renew_stars_key_id
-                full_user = await users_repo.get_by_tg_id(tg_id)
-                auto_renew_key_id = int((full_user or {}).get("auto_renew_stars_key_id") or 0)
                 try:
-                    if auto_renew_key_id:
-                        from app.services.plans import get_plan_by_tariff_code
-                        from aiogram.types import LabeledPrice
-                        plan = get_plan_by_tariff_code("m1")
-                        stars = int((plan or {}).get("price_stars") or 39)
-                        await bot.send_invoice(
-                            chat_id=tg_id,
-                            title="ZyberVPN — Продление подписки",
-                            description=f"Продление VPN-ключа #{auto_renew_key_id} на 1 месяц",
-                            payload=f"sub:m1:{tg_id}:{auto_renew_key_id}",
-                            currency="XTR",
-                            prices=[LabeledPrice(label="1 месяц VPN", amount=stars)],
-                            provider_token="",
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text=f"⭐ Оплатить {stars} Stars", pay=True)],
-                                [InlineKeyboardButton(text="⏭ Позже", callback_data="noop")],
-                            ]),
-                        )
-                    else:
-                        await bot.send_message(
-                            tg_id,
-                            f"⚠️ Ваша подписка ZyberVPN истекает {expires_str}.\n\n"
-                            "Продлите её, чтобы не потерять доступ.",
-                            reply_markup=InlineKeyboardMarkup(
-                                inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
-                            ),
-                        )
+                    await bot.send_message(
+                        tg_id,
+                        f"⚠️ Ваша подписка ZyberVPN истекает {expires_str}.\n\n"
+                        "Продлите её, чтобы не потерять доступ.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                        ),
+                    )
                     await users_repo.set_notified(tg_id, "3d")
                 except TelegramForbiddenError:
                     pass
