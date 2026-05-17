@@ -381,6 +381,8 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
         try:
             expiring_7d = await users_repo.get_users_expiring_soon(168)
             for user in expiring_7d:
+                if str(user.get("plan") or "") == "trial":
+                    continue  # trial users get their own notifications
                 if user.get("notified_7d_at"):
                     continue
                 tg_id = int(user["tg_id"])
@@ -425,7 +427,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                     logging.exception("Failed to send 3d expiry notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
-            # Trial expiry warning: 6 hours before trial ends (uses notified_1d_at slot for dedup)
+            # Trial expiry warning: 6h before (uses notified_1d_at slot)
             expiring_trial_6h = await users_repo.get_users_expiring_soon(6)
             for user in expiring_trial_6h:
                 if str(user.get("plan") or "") != "trial":
@@ -433,13 +435,13 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_1d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y %H:%M")
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"⏰ <b>Ваш пробный период заканчивается!</b>\n\n"
-                        f"Доступ будет отключён в {expires_str} МСК.\n\n"
-                        "Оформите подписку, чтобы продолжить пользоваться ZyberVPN без перерыва.",
+                        f"⏰ <b>Пробный период заканчивается!</b>\n\n"
+                        f"Доступ отключится в {expires_str} МСК (через ~6 часов).\n\n"
+                        "Оформите подписку, чтобы не потерять VPN.",
                         reply_markup=InlineKeyboardMarkup(
                             inline_keyboard=[[InlineKeyboardButton(text="💳 Оформить подписку", callback_data="buy_open")]]
                         ),
@@ -448,7 +450,58 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 except TelegramForbiddenError:
                     pass
                 except Exception:
-                    logging.exception("Failed to send trial expiry notification tg_id=%s", tg_id)
+                    logging.exception("Failed to send trial 6h notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+
+            # Trial expiry warning: 3h before (uses notified_3d_at slot)
+            expiring_trial_3h = await users_repo.get_users_expiring_soon(3)
+            for user in expiring_trial_3h:
+                if str(user.get("plan") or "") != "trial":
+                    continue
+                if user.get("notified_3d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"🔔 <b>До конца пробного периода осталось ~3 часа</b>\n\n"
+                        f"Доступ отключится в {expires_str} МСК.\n\n"
+                        "Оформите подписку прямо сейчас:",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="💳 Оформить подписку", callback_data="buy_open")]]
+                        ),
+                    )
+                    await users_repo.set_notified(tg_id, "3d")
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send trial 3h notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+
+            # Trial expiry warning: ~1h before (uses notified_7d_at slot, 2h window)
+            expiring_trial_1h = await users_repo.get_users_expiring_soon(2)
+            for user in expiring_trial_1h:
+                if str(user.get("plan") or "") != "trial":
+                    continue
+                if user.get("notified_7d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        f"🔴 <b>Пробный период истекает в {expires_str} МСК!</b>\n\n"
+                        "Последний шанс — оформите подписку, чтобы VPN продолжил работать.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="⚡ Оформить сейчас", callback_data="buy_open")]]
+                        ),
+                    )
+                    await users_repo.set_notified(tg_id, "7d")
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send trial 1h notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
             expiring_1d = await users_repo.get_users_expiring_soon(24)

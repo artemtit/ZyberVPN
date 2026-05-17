@@ -37,10 +37,12 @@ def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
 
 
 
-def _key_label(is_primary: bool, num: int, days_left: int, is_active: bool) -> str:
+def _key_label(is_primary: bool, num: int, days_left: int, hours_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
     if not is_active:
         status = "истёк"
+    elif days_left == 0:
+        status = f"{hours_left} ч."
     elif days_left < 30:
         status = f"{days_left} дн."
     else:
@@ -79,11 +81,11 @@ async def keys_command(message: Message, db: Database) -> None:
         exp_raw = key_data.get("expires_at") or (active_sub["expires_at"] if active_sub else None)
         if exp_raw:
             exp_dt = parse_iso_utc(exp_raw)
-            days, _, _ = _remaining_parts(exp_dt)
+            days, hours, _ = _remaining_parts(exp_dt)
             is_active_key = exp_dt > utc_now()
         else:
-            days, is_active_key = 0, False
-        label = _key_label(is_primary, num, days, is_active_key)
+            days, hours, is_active_key = 0, 0, False
+        label = _key_label(is_primary, num, days, hours, is_active_key)
         key_rows.append((label, str(key_data["id"])))
     await message.answer("🔑 <b>Мои ключи</b>", reply_markup=keys_list_keyboard(key_rows))
 
@@ -127,17 +129,17 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
         key_expires_raw = key_data.get("expires_at")
         if key_expires_raw:
             key_expires_at = parse_iso_utc(key_expires_raw)
-            key_days, _, _ = _remaining_parts(key_expires_at)
-            key_is_active = key_days > 0
+            key_days, key_hours, _ = _remaining_parts(key_expires_at)
+            key_is_active = key_expires_at > utc_now()
         elif active_sub:
             sub_expires_at = parse_iso_utc(active_sub["expires_at"])
-            key_days, _, _ = _remaining_parts(sub_expires_at)
+            key_days, key_hours, _ = _remaining_parts(sub_expires_at)
             key_is_active = True
         else:
-            key_days = 0
+            key_days, key_hours = 0, 0
             key_is_active = False
 
-        label = _key_label(is_primary, num, key_days, key_is_active)
+        label = _key_label(is_primary, num, key_days, key_hours, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
     await photo_to_text(
