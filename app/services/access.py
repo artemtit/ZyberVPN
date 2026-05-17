@@ -23,6 +23,10 @@ MAX_SUB_AUTO_CREATE_AGE = timedelta(days=7)
 MAX_KEYS_PER_USER = 5
 T = TypeVar("T")
 
+# Module-level singleton — sessions and login cookies are cached here
+# and shared across all build_vpn_manager() calls in the process lifetime.
+_xui_provider = XUIProvider()
+
 
 class AccessEnsureError(RuntimeError):
     pass
@@ -58,7 +62,7 @@ def build_vpn_manager(db: Database, settings: Settings, bot: Bot | None = None) 
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     vpn_devices_repo = VpnDevicesRepository(db)
-    providers = {"xui": XUIProvider()}
+    providers = {"xui": _xui_provider}
     return VPNManager(
         providers=providers,
         servers_repo=servers_repo,
