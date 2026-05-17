@@ -62,10 +62,15 @@ def legal_keyboard(privacy_policy_url: str, terms_url: str) -> InlineKeyboardMar
     )
 
 
-def keys_list_keyboard(key_rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+def keys_list_keyboard(
+    key_rows: list[tuple[str, str]],
+    expired_trial_rows: list[tuple[str, str]] | None = None,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for text, key_id in key_rows:
         rows.append([InlineKeyboardButton(text=text, callback_data=f"key_open:{key_id}")])
+    for text, _ in (expired_trial_rows or []):
+        rows.append([InlineKeyboardButton(text=text, callback_data="buy_open")])
     rows.append([InlineKeyboardButton(text="🛒 Купить ключ", callback_data="buy_open")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -50,19 +50,30 @@ def _key_label(is_primary: bool, num: int, days_left: int, hours_left: int, is_a
     return f"{icon} Ключ #{num} — {status}"
 
 
+def _get_expired_trial_keys(all_keys: list[dict]) -> list[dict]:
+    return [
+        k for k in all_keys
+        if k.get("disabled_at") and str(k.get("key") or "").startswith("vless://")
+    ]
+
+
 @router.message(Command("keys"))
 async def keys_command(message: Message, db: Database) -> None:
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
     await users_repo.get_or_create(message.from_user.id)
-    keys = [k for k in await keys_repo.list_by_user(message.from_user.id) if not k.get("disabled_at")]
-    if not keys:
-        user = await users_repo.get_by_tg_id(message.from_user.id)
+    all_keys_raw = await keys_repo.list_by_user(message.from_user.id)
+    keys = [k for k in all_keys_raw if not k.get("disabled_at")]
+
+    user = await users_repo.get_by_tg_id(message.from_user.id)
+    is_trial = str((user or {}).get("plan") or "") == "trial"
+    expired_trial = _get_expired_trial_keys(all_keys_raw) if is_trial and not keys else []
+
+    if not keys and not expired_trial:
         if user and user.get("trial_used"):
             await message.answer(
                 "⏰ <b>Пробный период завершён</b>\n\n"
-                "Ваш бесплатный день подошёл к концу.\n"
                 "Выберите тариф, чтобы продолжить:",
                 reply_markup=trial_expired_keyboard(),
             )
@@ -74,6 +85,7 @@ async def keys_command(message: Message, db: Database) -> None:
                 reply_markup=keys_list_keyboard([]),
             )
         return
+
     active_sub = await subs_repo.get_active(message.from_user.id)
     key_rows: list[tuple[str, str]] = []
     for num, key_data in enumerate(keys, start=1):
@@ -87,7 +99,12 @@ async def keys_command(message: Message, db: Database) -> None:
             days, hours, is_active_key = 0, 0, False
         label = _key_label(is_primary, num, days, hours, is_active_key)
         key_rows.append((label, str(key_data["id"])))
-    await message.answer("🔑 <b>Мои ключи</b>", reply_markup=keys_list_keyboard(key_rows))
+
+    expired_trial_rows = [
+        (f"🔴 Ключ #{len(keys)+i+1} — истёк (пробный, нажмите для продления)", str(k["id"]))
+        for i, k in enumerate(expired_trial)
+    ]
+    await message.answer("🔑 <b>Мои ключи</b>", reply_markup=keys_list_keyboard(key_rows, expired_trial_rows))
 
 
 @router.callback_query(F.data == "menu_keys")
@@ -96,15 +113,18 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
     keys_repo = KeysRepository(db)
     subs_repo = SubscriptionsRepository(db)
     await users_repo.get_or_create(callback.from_user.id)
-    keys = [k for k in await keys_repo.list_by_user(callback.from_user.id) if not k.get("disabled_at")]
+    all_keys_raw = await keys_repo.list_by_user(callback.from_user.id)
+    keys = [k for k in all_keys_raw if not k.get("disabled_at")]
 
-    if not keys:
-        user = await users_repo.get_by_tg_id(callback.from_user.id)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    is_trial = str((user or {}).get("plan") or "") == "trial"
+    expired_trial = _get_expired_trial_keys(all_keys_raw) if is_trial and not keys else []
+
+    if not keys and not expired_trial:
         if user and user.get("trial_used"):
             await photo_to_text(
                 callback.message,
                 "⏰ <b>Пробный период завершён</b>\n\n"
-                "Ваш бесплатный день подошёл к концу.\n"
                 "Выберите тариф, чтобы продолжить:",
                 reply_markup=trial_expired_keyboard(),
             )
@@ -142,10 +162,14 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
         label = _key_label(is_primary, num, key_days, key_hours, key_is_active)
         key_rows.append((label, str(key_data["id"])))
 
+    expired_trial_rows = [
+        (f"🔴 Ключ #{len(keys)+i+1} — истёк (пробный, нажмите для продления)", str(k["id"]))
+        for i, k in enumerate(expired_trial)
+    ]
     await photo_to_text(
         callback.message,
         "🔑 <b>Мои ключи</b>",
-        reply_markup=keys_list_keyboard(key_rows),
+        reply_markup=keys_list_keyboard(key_rows, expired_trial_rows),
     )
     await callback.answer()
 
