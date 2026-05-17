@@ -1077,15 +1077,36 @@ async def admin_del_key(message: Message, db: Database, settings: Settings) -> N
         await message.answer(f"❌ Ключ #{key_id} для пользователя {target_id} не найден.")
         return
 
-    manager = build_vpn_manager(db, settings)
+    if key_row.get("disabled_at"):
+        await message.answer(
+            f"⚠️ Ключ #{key_id} уже отключён (disabled_at={key_row['disabled_at'][:10]})."
+        )
+        return
+
+    # Disable in XUI
+    xui_ok = False
+    manager = build_vpn_manager(db, settings, bot=message.bot)
     try:
         await manager.disable_key_access(target_id, key_id)
+        xui_ok = True
     except Exception:
         logger.exception("admin_del_key: disable_key_access failed key_id=%s", key_id)
+
+    # Mark disabled in DB regardless of XUI result
     await keys_repo.mark_disabled(key_id, target_id)
-    logger.warning("ADMIN DELKEY | admin=%s target=%s key_id=%s", message.from_user.id, target_id, key_id)
+    logger.warning("ADMIN DELKEY | admin=%s target=%s key_id=%s xui_ok=%s",
+                   message.from_user.id, target_id, key_id, xui_ok)
+
+    # Count remaining active keys
+    all_keys = await keys_repo.list_by_user(target_id)
+    remaining = sum(1 for k in all_keys if not k.get("disabled_at"))
+
+    xui_line = "✅ XUI: клиент отключён" if xui_ok else "⚠️ XUI: не удалось отключить (проверьте вручную)"
     await message.answer(
-        f"✅ Ключ #{key_id} пользователя <code>{target_id}</code> отключён и помечен как удалённый."
+        f"🗑 <b>Ключ #{key_id}</b> пользователя <code>{target_id}</code> удалён\n\n"
+        f"{xui_line}\n"
+        f"🗄 БД: disabled_at проставлен\n\n"
+        f"Осталось активных ключей: <b>{remaining}</b>"
     )
 
 
