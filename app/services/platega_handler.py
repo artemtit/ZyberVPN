@@ -236,27 +236,30 @@ async def process_confirmed_platega_payment(
             )
 
         # XUI first — only write keys.expires_at after XUI confirms success.
-        await payments_repo.mark_provisioning(transaction_id)
-        xui_ok = False
-        try:
+        # Separate idempotency key ensures Platega webhook retries don't call
+        # renew_user_access more than once.
+        renewal_idem_key = f"xui-renewal:{transaction_id}"
+        renewal_idem = IdempotencyService(IdempotencyRepository())
+
+        async def _renew_xui() -> dict:
             await manager.renew_user_access(tg_id, expiry_ms, key_id=renew_key_id, traffic_limit_gb=key_traffic_gb)
-            xui_ok = True
+            await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
+            return {"renewed": True}
+
+        await payments_repo.mark_provisioning(transaction_id)
+        try:
+            await renewal_idem.execute("xui_renewal", renewal_idem_key, _renew_xui)
         except Exception:
             logger.exception(
                 "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s transaction_id=%s",
                 tg_id, renew_key_id, transaction_id,
             )
-        if not xui_ok:
             failed_payment = await payments_repo.mark_failed(transaction_id, "renewal_xui")
             if failed_payment:
                 await notify_provisioning_failed(bot, tg_id, transaction_id, settings.admin_ids)
             return
-        if xui_ok:
-            try:
-                await keys_repo.update_expires_at(renew_key_id, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.exception("Platega: failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
-            await payments_repo.mark_active(transaction_id)
+
+        await payments_repo.mark_active(transaction_id)
         balance_applied = int(processed.get("balance_applied") or 0)
         balance_line = f"\n💰 Баланс списан: {balance_applied} ₽" if balance_applied > 0 else ""
         text = (

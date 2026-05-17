@@ -373,30 +373,33 @@ async def process_successful_payment(message: Message, db: Database, settings: S
             )
 
         # XUI first — only update keys.expires_at in DB after XUI succeeds.
-        await payments_repo.mark_provisioning(payment_info.invoice_payload)
-        xui_ok = False
-        try:
-            manager = build_vpn_manager(db, settings, bot=message.bot)
-            await manager.renew_user_access(
+        # Separate idempotency key ensures Telegram retries don't call
+        # renew_user_access more than once.
+        renewal_idem_key = f"xui-renewal:{payment_info.invoice_payload}"
+        renewal_idem = IdempotencyService(IdempotencyRepository())
+
+        async def _renew_xui() -> dict:
+            mgr = build_vpn_manager(db, settings, bot=message.bot)
+            await mgr.renew_user_access(
                 tg_id, expiry_ms, key_id=key_id_int, traffic_limit_gb=per_key_traffic_gb
             )
-            xui_ok = True
+            await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
+            return {"renewed": True}
+
+        await payments_repo.mark_provisioning(payment_info.invoice_payload)
+        try:
+            await renewal_idem.execute("xui_renewal", renewal_idem_key, _renew_xui)
         except Exception:
             logger.exception(
                 "event=RENEWAL_XUI_FAILED tg_id=%s key_id=%s payload=%s",
                 tg_id, key_id_int, payment_info.invoice_payload,
             )
-        if not xui_ok:
             failed_payment = await payments_repo.mark_failed(payment_info.invoice_payload, "renewal_xui")
             if failed_payment:
                 await notify_provisioning_failed(message.bot, tg_id, payment_info.invoice_payload, settings.admin_ids)
             return
-        if xui_ok:
-            try:
-                await keys_repo.update_expires_at(key_id_int, tg_id, expires_dt.isoformat())
-            except Exception:
-                logger.exception("Failed to update key expires_at tg_id=%s key_id=%s", tg_id, renew_key_id)
-            await payments_repo.mark_active(payment_info.invoice_payload)
+
+        await payments_repo.mark_active(payment_info.invoice_payload)
 
         text = (
             f"🎉 <b>Подписка продлена!</b>\n\n"
