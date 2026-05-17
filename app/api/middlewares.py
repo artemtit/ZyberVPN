@@ -23,6 +23,10 @@ class RateLimitConfig:
 
 
 class InMemoryRateLimiter:
+    # Cap the number of tracked IPs to bound memory under IP-rotation attacks.
+    # At ~200 bytes per bucket, 10 000 entries ≈ 2 MB worst-case.
+    _MAX_BUCKETS = 10_000
+
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._window = 60.0
@@ -32,13 +36,19 @@ class InMemoryRateLimiter:
         now = time.monotonic()
         bucket = self._buckets.get(key)
         if bucket is None:
+            if len(self._buckets) >= self._MAX_BUCKETS:
+                # Evict the oldest entry to keep memory bounded.
+                try:
+                    oldest_key = next(iter(self._buckets))
+                    self._buckets.pop(oldest_key, None)
+                except StopIteration:
+                    pass
             bucket = deque()
             self._buckets[key] = bucket
         while bucket and now - bucket[0] > self._window:
             bucket.popleft()
         bucket.append(now)
         allowed = len(bucket) <= self._limit
-        # Remove empty buckets to prevent unbounded dict growth.
         if not bucket:
             self._buckets.pop(key, None)
         return allowed

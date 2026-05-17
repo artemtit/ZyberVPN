@@ -25,9 +25,14 @@ logger = logging.getLogger(__name__)
 async def platega_webhook(request: web.Request) -> web.Response:
     settings = request.app["settings"]
 
-    # URL-based secret check (PLATEGA_WEBHOOK_SECRET must be set; deny all when missing).
+    # Secret check: prefer the X-Webhook-Secret header (secrets in URL query params
+    # appear in proxy/server access logs). Fall back to the legacy ?secret= query
+    # param for existing integrations that have not yet been updated.
     expected_secret = getattr(settings, "platega_webhook_secret", "")
-    incoming_secret = request.query.get("secret", "")
+    incoming_secret = (
+        request.headers.get("X-Webhook-Secret", "")
+        or request.query.get("secret", "")
+    )
     if not expected_secret or incoming_secret != expected_secret:
         logger.warning(
             "Platega webhook: invalid or missing secret from ip=%s", request.remote

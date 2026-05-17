@@ -58,6 +58,7 @@ class Settings:
     platega_webhook_secret: str
     platega_crypto_method: int  # paymentMethod code for crypto (0 = disabled)
     stars_rate: float  # RUB per 1 Telegram Star
+    metrics_token: str  # Required to access /metrics endpoint; empty = endpoint closed
 
 
 def load_settings() -> Settings:
@@ -136,4 +137,5 @@ def load_settings() -> Settings:
         platega_webhook_secret=os.getenv("PLATEGA_WEBHOOK_SECRET", "").strip(),
         platega_crypto_method=max(0, int(os.getenv("PLATEGA_CRYPTO_METHOD", "0"))),
         stars_rate=float(os.getenv("STARS_RATE", "1.69")),
+        metrics_token=os.getenv("METRICS_TOKEN", "").strip(),
     )

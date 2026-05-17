@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from html import escape
+from typing import Any
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
 
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
@@ -24,7 +25,17 @@ from app.services.vpn.manager import VPNManager
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
 from datetime import timedelta
 
+
+class IsAdmin(BaseFilter):
+    """Router-level guard: silently drops any update from non-admins."""
+    async def __call__(self, event: TelegramObject, settings: Settings, **_: Any) -> bool:  # type: ignore[override]
+        user = getattr(event, "from_user", None)
+        return user is not None and user.id in settings.admin_ids
+
+
 router = Router()
+router.message.filter(IsAdmin())
+router.callback_query.filter(IsAdmin())
 logger = logging.getLogger(__name__)
 
 # In-memory set of banned tg_ids. Survives until bot restart.
@@ -364,9 +375,9 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext, settings:
 async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
-    target_id = _parse_tg_id(message.text or "", "ban")
+    target_id, err = await _resolve_user(message.text or "", "ban", db)
     if not target_id:
-        await message.answer("Использование: /ban &lt;tg_id&gt;")
+        await message.answer(err or "Использование: /ban &lt;tg_id&gt; или @username")
         return
 
     users_repo = UsersRepository(db)
@@ -391,9 +402,10 @@ async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
 
     await users_repo.update_status(target_id, False)
     await users_repo.set_banned(target_id, True)
-    if xui_ok:
-        _BANNED_IDS.add(target_id)
-    logger.warning("ADMIN BAN | admin=%s target=%s", message.from_user.id, target_id)
+    # Always block in-memory set regardless of XUI result: the DB is the source of
+    # truth for ban state and the BanMiddleware must reflect it immediately.
+    _BANNED_IDS.add(target_id)
+    logger.warning("ADMIN BAN | admin=%s target=%s xui_ok=%s", message.from_user.id, target_id, xui_ok)
 
     # Notify the banned user.
     try:
@@ -416,9 +428,9 @@ async def admin_ban(message: Message, db: Database, settings: Settings) -> None:
 async def admin_unban(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
-    target_id = _parse_tg_id(message.text or "", "unban")
+    target_id, err = await _resolve_user(message.text or "", "unban", db)
     if not target_id:
-        await message.answer("Использование: /unban &lt;tg_id&gt;")
+        await message.answer(err or "Использование: /unban &lt;tg_id&gt; или @username")
         return
 
     users_repo = UsersRepository(db)

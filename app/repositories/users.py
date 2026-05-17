@@ -347,16 +347,34 @@ class UsersRepository:
             payload["promo_used"] = promo_used
         if last_activated_at is not None:
             payload["last_activated_at"] = last_activated_at
-        try:
-            response = await execute_with_retry(
-                lambda: self._supabase.table("users").update(payload).eq("tg_id", tg_id).execute(),
-                operation="users.set_expiry",
-            )
-            data = response.data or []
-            return data[0] if data else None
-        except Exception:
-            logger.exception("Supabase set_expiry failed")
-            return None
+        # Reset all expiry-notification flags whenever the subscription is activated
+        # or extended — ensures the user receives reminders for the new period
+        # instead of being silently skipped because flags were set in a prior period.
+        if is_active:
+            payload["notified_7d_at"] = None
+            payload["notified_3d_at"] = None
+            payload["notified_1d_at"] = None
+        # Try with notification columns first; fall back silently if they don't exist.
+        for attempt_payload in (
+            payload,
+            {k: v for k, v in payload.items() if k not in ("notified_7d_at", "notified_3d_at", "notified_1d_at")},
+        ):
+            if not attempt_payload:
+                break
+            try:
+                response = await execute_with_retry(
+                    lambda p=attempt_payload: self._supabase.table("users").update(p).eq("tg_id", tg_id).execute(),
+                    operation="users.set_expiry",
+                )
+                data = response.data or []
+                return data[0] if data else None
+            except Exception as exc:
+                if is_active and ("42703" in str(exc) or "does not exist" in str(exc)):
+                    # Notification columns missing — retry without them.
+                    continue
+                logger.exception("Supabase set_expiry failed")
+                return None
+        return None
 
     async def deactivate_expired_users(self) -> int:
         if not self._supabase:
@@ -480,28 +498,60 @@ class UsersRepository:
     async def count_all(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
+        # When admins are excluded we must fetch IDs to filter in Python.
+        # For the common case (no exclusions) use a server-side count to avoid
+        # pulling every row across the network.
+        if not exclude_tg_ids:
+            try:
+                response = await execute_with_retry(
+                    lambda: self._supabase.table("users").select("tg_id", count="exact").execute(),
+                    operation="users.count_all",
+                )
+                cnt = getattr(response, "count", None)
+                if cnt is not None:
+                    return int(cnt)
+            except Exception:
+                logger.exception("Supabase count_all failed")
+                return 0
         response = await execute_with_retry(
             lambda: self._supabase.table("users").select("tg_id").execute(),
             operation="users.count_all",
         )
-        data = response.data or []
-        if exclude_tg_ids:
-            excl = set(exclude_tg_ids)
-            data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
-        return len(data)
+        data = list(response.data or [])
+        excl: set[int] = set(exclude_tg_ids) if exclude_tg_ids else set()
+        if not excl:
+            return len(data)
+        return sum(1 for r in data if int(r.get("tg_id") or 0) not in excl)
 
     async def count_active(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
             return 0
+        if not exclude_tg_ids:
+            try:
+                response = await execute_with_retry(
+                    lambda: (
+                        self._supabase.table("users")
+                        .select("tg_id", count="exact")
+                        .eq("is_active", True)
+                        .execute()
+                    ),
+                    operation="users.count_active",
+                )
+                cnt = getattr(response, "count", None)
+                if cnt is not None:
+                    return int(cnt)
+            except Exception:
+                logger.exception("Supabase count_active failed")
+                return 0
         response = await execute_with_retry(
             lambda: self._supabase.table("users").select("tg_id").eq("is_active", True).execute(),
             operation="users.count_active",
         )
-        data = response.data or []
-        if exclude_tg_ids:
-            excl = set(exclude_tg_ids)
-            data = [r for r in data if int(r.get("tg_id") or 0) not in excl]
-        return len(data)
+        data = list(response.data or [])
+        excl: set[int] = set(exclude_tg_ids) if exclude_tg_ids else set()
+        if not excl:
+            return len(data)
+        return sum(1 for r in data if int(r.get("tg_id") or 0) not in excl)
 
     async def count_new_last_7d(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:
@@ -576,21 +626,33 @@ class UsersRepository:
             operation="users.add_balance",
         )
 
-    async def deduct_balance(self, tg_id: int, amount: int) -> None:
-        """Atomically deduct amount from balance. Amount must be > 0. Silently skips if balance insufficient."""
+    async def deduct_balance(self, tg_id: int, amount: int) -> bool:
+        """Atomically deduct amount from balance. Returns True on success, False if insufficient.
+
+        Uses a DB-level CAS to eliminate the read-then-write TOCTOU race that
+        allowed concurrent payments to double-spend the same balance credit.
+        Requires the deduct_user_balance_safe RPC (migration 2026_05_atomic_balance_deduct.sql).
+        """
         if not self._supabase or amount <= 0:
-            return
-        user = await self.get_by_tg_id(tg_id)
-        current = int((user or {}).get("balance") or 0)
-        if current < amount:
-            logger.warning("deduct_balance skipped: insufficient balance tg_id=%s balance=%s amount=%s", tg_id, current, amount)
-            return
-        await execute_with_retry(
-            lambda: self._supabase.rpc(
-                "increment_user_balance", {"p_tg_id": tg_id, "p_amount": -amount}
-            ).execute(),
-            operation="users.deduct_balance",
-        )
+            return True
+        try:
+            response = await execute_with_retry(
+                lambda: self._supabase.rpc(
+                    "deduct_user_balance_safe", {"p_tg_id": tg_id, "p_amount": amount}
+                ).execute(),
+                operation="users.deduct_balance",
+            )
+            new_balance = response.data
+            if new_balance is None or int(new_balance) < 0:
+                logger.warning(
+                    "deduct_balance: insufficient balance or user not found tg_id=%s amount=%s",
+                    tg_id, amount,
+                )
+                return False
+            return True
+        except Exception:
+            logger.exception("Supabase deduct_balance failed tg_id=%s amount=%s", tg_id, amount)
+            return False
 
     async def set_traffic_limit(self, tg_id: int, traffic_limit_gb: int) -> None:
         if not self._supabase:
@@ -656,6 +718,32 @@ class UsersRepository:
             )
         except Exception:
             logger.exception("Supabase add_traffic_limit failed tg_id=%s", tg_id)
+
+    async def reset_notifications(self, tg_id: int) -> None:
+        """Clear all expiry notification flags so the user receives reminders for the new period."""
+        if not self._supabase:
+            return
+        payload = {
+            "notified_7d_at": None,
+            "notified_3d_at": None,
+            "notified_1d_at": None,
+        }
+        for fields_attempt in (payload, {"notified_3d_at": None, "notified_1d_at": None}, {}):
+            if not fields_attempt:
+                return
+            try:
+                await execute_with_retry(
+                    lambda p=fields_attempt: (
+                        self._supabase.table("users").update(p).eq("tg_id", tg_id).execute()
+                    ),
+                    operation="users.reset_notifications",
+                )
+                return
+            except Exception as exc:
+                if "42703" in str(exc) or "does not exist" in str(exc):
+                    continue
+                logger.exception("Supabase reset_notifications failed tg_id=%s", tg_id)
+                return
 
     async def is_trial_available(self, tg_id: int) -> bool:
         user = await self.get_by_tg_id(tg_id)

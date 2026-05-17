@@ -78,7 +78,7 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     async def metrics(request: web.Request) -> web.Response:
         # Require a secret token so metrics are not publicly accessible.
         # If METRICS_TOKEN is not configured, deny all access rather than open it.
-        expected = os.getenv("METRICS_TOKEN", "").strip()
+        expected = request.app["settings"].metrics_token
         if not expected or request.headers.get("X-Metrics-Token", "") != expected:
             return web.json_response({"error": "forbidden"}, status=403)
         manager = build_vpn_manager(request.app["db"], request.app["settings"])
@@ -119,6 +119,11 @@ async def _start_health_server(db: Database, settings) -> web.AppRunner:
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
     logging.info("Health server started on 0.0.0.0:%s", port)
+    if not settings.metrics_token:
+        logging.warning(
+            "METRICS_TOKEN is not set — /metrics endpoint is disabled. "
+            "Set METRICS_TOKEN env var to enable it."
+        )
     return runner
 
 
@@ -207,16 +212,36 @@ async def _provisioning_reconciliation_loop(db: Database, settings, bot: Bot, in
                         )
                         continue
 
-                # Check if user already has a ready VPN (provisioning succeeded but
-                # mark_active was never called due to crash).
+                # Check if provisioning succeeded but mark_active never ran (crash).
+                # Match precisely: for renewals check the specific key; for new keys
+                # check only rows created after this payment to avoid matching
+                # pre-existing ready rows from previous payments.
+                purchase_type = str(payment.get("purchase_type") or "new")
+                renew_key_id_raw = payment.get("renew_key_id")
+                renew_key_id = int(renew_key_id_raw) if renew_key_id_raw else None
+
                 vpn_rows = await user_vpn_repo.list_user_vpns(tg_id)
-                has_ready = any(r.get("status") == "ready" for r in vpn_rows)
+                has_ready = False
+                if purchase_type == "renewal" and renew_key_id:
+                    # Renewal — must match the specific key being renewed.
+                    has_ready = any(
+                        r.get("status") == "ready" and int(r.get("key_id") or 0) == renew_key_id
+                        for r in vpn_rows
+                    )
+                else:
+                    # New key — only count rows created after this payment started,
+                    # so we don't mistake an older key for a successful provision.
+                    has_ready = any(
+                        r.get("status") == "ready"
+                        and str(r.get("created_at") or "") > created_at_raw
+                        for r in vpn_rows
+                    )
 
                 if has_ready:
                     await payments_repo.mark_active(payload)
                     logging.info(
-                        "event=PROV_RESOLVED payload=%s tg_id=%s status_was=%s",
-                        payload, tg_id, status,
+                        "event=PROV_RESOLVED payload=%s tg_id=%s status_was=%s purchase_type=%s",
+                        payload, tg_id, status, purchase_type,
                     )
                     continue
 
@@ -275,10 +300,22 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
             key_id = int(key_row.get("id") or 0)
             if not tg_id or not key_id:
                 continue
+            xui_ok = False
             try:
                 await manager.disable_key_access(tg_id, key_id)
+                xui_ok = True
             except Exception:
                 logging.exception("per_key_expiry_loop: disable_key_access failed tg_id=%s key_id=%s", tg_id, key_id)
+            # Only write disabled_at after XUI confirms the client is actually
+            # disabled — otherwise the key becomes an orphan: invisible in UI
+            # but still active in XUI.
+            if not xui_ok:
+                logging.warning(
+                    "per_key_expiry_loop: skipping mark_disabled because XUI failed "
+                    "tg_id=%s key_id=%s — will retry next cycle",
+                    tg_id, key_id,
+                )
+                continue
             try:
                 await keys_repo.mark_disabled(key_id, tg_id)
             except Exception:
@@ -427,7 +464,11 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                     logging.exception("Failed to send 3d expiry notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
-            # Trial expiry warning: 6h before (uses notified_1d_at slot)
+            # Trial expiry warnings reuse the regular notification slots because trial
+            # users are always excluded from regular 7d/3d/1d checks above.
+            # Slot mapping: trial-6h → notified_1d_at, trial-3h → notified_3d_at,
+            #               trial-1h → notified_7d_at.  All three are reset by
+            #               set_expiry(is_active=True) when the user buys a subscription.
             expiring_trial_6h = await users_repo.get_users_expiring_soon(6)
             for user in expiring_trial_6h:
                 if str(user.get("plan") or "") != "trial":
@@ -582,7 +623,11 @@ async def run() -> None:
         if banned_ids:
             logging.info("Loaded %d banned user IDs from DB", len(banned_ids))
     except Exception:
-        logging.exception("Failed to load banned IDs from DB on startup")
+        logging.exception(
+            "CRITICAL: Failed to load banned IDs from DB on startup — "
+            "all previously banned users can interact with the bot until next restart. "
+            "Check Supabase connectivity."
+        )
 
     await bot.delete_webhook(drop_pending_updates=True)
     await _register_commands(bot, settings)

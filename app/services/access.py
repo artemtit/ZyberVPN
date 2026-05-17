@@ -96,18 +96,18 @@ async def ensure_user_access(
     require_active: bool = True,
     require_recent_activation_for_key_creation: bool = False,
     idempotency_key: str | None = None,  # kept for API compatibility; no longer used
-    force_new_key: bool = False,
+    force_new_key: bool = False,          # deprecated: use action="create" instead
     action: str | None = None,
     traffic_limit_gb: int | None = None,
 ) -> dict:
     settings = settings or load_settings()
     db = db or Database(settings.db_path)
-    access_action = action or ("create" if force_new_key else "existing")
-    if force_new_key and access_action != "create":
-        raise AccessEnsureError("force_new_key requires action=create")
-    if access_action not in {"create", "existing"}:
-        raise AccessEnsureError(f"Unsupported access action: {access_action}")
-    force_new_key = access_action == "create"
+    # Resolve the single action flag from either parameter; action= takes precedence.
+    if action is None:
+        action = "create" if force_new_key else "existing"
+    if action not in {"create", "existing"}:
+        raise AccessEnsureError(f"Unsupported access action: {action}")
+    force_new_key = action == "create"
 
     users_repo = UsersRepository(db)
     if not users_repo.has_supabase:
