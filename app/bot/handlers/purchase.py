@@ -364,9 +364,11 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         idempotency_key = (
             f"payment-create:{callback.from_user.id}:{tariff_code}:{str(email or '').lower()}:{purchase_type}:{renew_key_id}"
         )
+        discount_percent = int(data.get("discount_percent") or 0)
+        discounted_price = apply_discount(int(plan["price_rub"]), discount_percent)
         payment = await payments_repo.create_pending(
             tg_id=callback.from_user.id,
-            amount=int(plan["price_rub"]),
+            amount=discounted_price,
             tariff_code=tariff_code,
             email=email,
             payload=payload,
@@ -901,6 +903,8 @@ async def payment_select_back(callback: CallbackQuery, state: FSMContext, db: Da
 
     # Restore FSM context so the payment buttons work again.
     renew_key_id = int(renew_raw) if renew_raw.isdigit() and int(renew_raw) > 0 else None
+    existing_data = await state.get_data()
+    discount_percent = int(existing_data.get("discount_percent") or 0)
     await state.update_data(tariff_code=tariff_code, purchase_type=purchase_type, renew_key_id=renew_key_id)
     await state.set_state(PurchaseState.waiting_payment)
 
@@ -910,16 +914,23 @@ async def payment_select_back(callback: CallbackQuery, state: FSMContext, db: Da
     users_repo = UsersRepository(db)
     back_user = await users_repo.get_by_tg_id(callback.from_user.id)
     balance = int((back_user or {}).get("balance") or 0)
-    price_rub = int(plan["price_rub"])
+    base_price = int(plan["price_rub"])
+    price_rub = apply_discount(base_price, discount_percent)
+    title = plan.get("name", plan.get("title", ""))
+    price_line = (
+        f"💰 К оплате: <s>{base_price} ₽</s> → <b>{price_rub} ₽</b>  (−{discount_percent}% промокод)"
+        if discount_percent > 0 else f"💰 К оплате: <b>{price_rub} ₽</b>"
+    )
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.message.answer(
-        f"💰 К оплате: {float(price_rub):.2f} RUB\n\nВыберите удобный способ оплаты:",
+        f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(
             platega_enabled=platega_on, platega_crypto_enabled=platega_crypto_on,
             show_test_pay=is_admin, balance=balance, price_rub=price_rub,
+            discount_percent=discount_percent,
         ),
     )
     await callback.answer()

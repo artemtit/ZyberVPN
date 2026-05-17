@@ -338,19 +338,21 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext, db: Data
     users_repo = UsersRepository(db)
     active_tg_ids = await users_repo.list_active_tg_ids()
     sent = failed = 0
+    from aiogram.enums import ParseMode
+    from aiogram.exceptions import TelegramBadRequest
     for tg_id in active_tg_ids:
         try:
-            await callback.bot.send_message(tg_id, text)
+            await callback.bot.send_message(tg_id, text, parse_mode=ParseMode.HTML)
             sent += 1
-        except Exception as exc:
-            if "can't parse" in str(exc).lower():
-                try:
-                    await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
-                    sent += 1
-                except Exception:
-                    failed += 1
-            else:
+        except TelegramBadRequest:
+            # HTML failed — send as plain text (admin may have forgotten to escape).
+            try:
+                await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
+                sent += 1
+            except Exception:
                 failed += 1
+        except Exception:
+            failed += 1
         await asyncio.sleep(0.05)
 
     await callback.message.answer(f"✅ Рассылка завершена: {sent} отправлено, {failed} ошибок.")
@@ -537,19 +539,20 @@ async def broadcastall_confirm(callback: CallbackQuery, state: FSMContext, db: D
     # Fetch ALL tg_ids (not just active subscribers)
     all_tg_ids = await users_repo.list_all_tg_ids()
     sent = failed = 0
+    from aiogram.enums import ParseMode
+    from aiogram.exceptions import TelegramBadRequest
     for tg_id in all_tg_ids:
         try:
-            await callback.bot.send_message(tg_id, text)
+            await callback.bot.send_message(tg_id, text, parse_mode=ParseMode.HTML)
             sent += 1
-        except Exception as exc:
-            if "can't parse" in str(exc).lower():
-                try:
-                    await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
-                    sent += 1
-                except Exception:
-                    failed += 1
-            else:
+        except TelegramBadRequest:
+            try:
+                await callback.bot.send_message(tg_id, escape(text), parse_mode=None)
+                sent += 1
+            except Exception:
                 failed += 1
+        except Exception:
+            failed += 1
         await asyncio.sleep(0.05)
 
     await callback.message.answer(
