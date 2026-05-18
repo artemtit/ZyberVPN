@@ -36,6 +36,14 @@ def _remaining_parts(expires_at: datetime) -> tuple[int, int, int]:
     return days, hours, minutes
 
 
+def _fmt_remaining(days: int, hours: int, minutes: int) -> str:
+    if days > 0:
+        return f"{days}д. {hours}ч. {minutes}мин."
+    if hours > 0:
+        return f"{hours}ч. {minutes}мин."
+    return f"{minutes}мин."
+
+
 
 def _key_label(is_primary: bool, num: int, days_left: int, hours_left: int, is_active: bool) -> str:
     icon = "⭐" if is_primary else "🔑"
@@ -209,7 +217,7 @@ async def _build_key_card(
             status_text = "Истек"
             status_emoji = "🔴"
 
-    days, hours, _ = _remaining_parts(expires_at)
+    days, hours, minutes = _remaining_parts(expires_at)
 
     # Per-key traffic limit (stored in keys table); fall back to users.traffic_limit_gb.
     traffic_limit_gb = int((key_data or {}).get("traffic_limit_gb") or 0)
@@ -261,7 +269,8 @@ async def _build_key_card(
     text = (
         f"🔑 Ключ #{display_num}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
-        f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК ({days}д. {hours}ч.)\n"
+        f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК "
+        f"({_fmt_remaining(days, hours, minutes)})\n"
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ"
         f"{comment_line}"
