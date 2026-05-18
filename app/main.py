@@ -320,10 +320,19 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
                 await keys_repo.mark_disabled(key_id, tg_id)
             except Exception:
                 logging.exception("per_key_expiry_loop: mark_disabled failed tg_id=%s key_id=%s", tg_id, key_id)
+            try:
+                user_row = await users_repo.get_by_tg_id(tg_id)
+            except Exception:
+                user_row = None
+            is_trial = str((user_row or {}).get("plan") or "") == "trial"
+            if is_trial:
+                try:
+                    await keys_repo.delete_by_id(key_id, tg_id)
+                    logging.info("per_key_expiry_loop: deleted expired trial key tg_id=%s key_id=%s", tg_id, key_id)
+                except Exception:
+                    logging.warning("per_key_expiry_loop: delete trial key failed tg_id=%s key_id=%s", tg_id, key_id)
             if bot is not None:
                 try:
-                    user_row = await users_repo.get_by_tg_id(tg_id)
-                    is_trial = str((user_row or {}).get("plan") or "") == "trial"
                     if is_trial:
                         msg_text = (
                             "⏰ <b>Ваш пробный период завершён.</b>\n\n"

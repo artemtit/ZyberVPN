@@ -292,6 +292,20 @@ class KeysRepository:
             logger.exception("keys.count_disabled failed")
             return 0
 
+    async def delete_by_id(self, key_id: int, tg_id: int) -> None:
+        if not self._supabase:
+            return
+        await execute_with_retry(
+            lambda: (
+                self._supabase.table("keys")
+                .delete()
+                .eq("id", key_id)
+                .eq("tg_id", tg_id)
+                .execute()
+            ),
+            operation="keys.delete_by_id",
+        )
+
     async def exists_for_user(self, tg_id: int, key: str) -> bool:
         if not self._supabase:
             return False
