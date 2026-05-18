@@ -45,16 +45,18 @@ def _fmt_remaining(days: int, hours: int, minutes: int) -> str:
 
 
 
-def _key_label(is_primary: bool, num: int, days_left: int, hours_left: int, is_active: bool) -> str:
+def _key_label(is_primary: bool, num: int, days_left: int, hours_left: int, is_active: bool, minutes_left: int = 0) -> str:
     icon = "⭐" if is_primary else "🔑"
     if not is_active:
         status = "истёк"
+    elif days_left == 0 and hours_left == 0:
+        status = f"{minutes_left}мин."
     elif days_left == 0:
-        status = f"{hours_left} ч."
+        status = f"{hours_left}ч. {minutes_left}мин."
     elif days_left < 30:
-        status = f"{days_left} дн."
+        status = f"{days_left}д. {hours_left}ч."
     else:
-        status = f"{days_left // 30} мес."
+        status = f"{days_left // 30}мес."
     return f"{icon} Ключ #{num} — {status}"
 
 
@@ -101,11 +103,11 @@ async def keys_command(message: Message, db: Database) -> None:
         exp_raw = key_data.get("expires_at") or (active_sub["expires_at"] if active_sub else None)
         if exp_raw:
             exp_dt = parse_iso_utc(exp_raw)
-            days, hours, _ = _remaining_parts(exp_dt)
+            days, hours, minutes = _remaining_parts(exp_dt)
             is_active_key = exp_dt > utc_now()
         else:
-            days, hours, is_active_key = 0, 0, False
-        label = _key_label(is_primary, num, days, hours, is_active_key)
+            days, hours, minutes, is_active_key = 0, 0, 0, False
+        label = _key_label(is_primary, num, days, hours, is_active_key, minutes)
         key_rows.append((label, str(key_data["id"])))
 
     expired_trial_rows = [
@@ -157,17 +159,17 @@ async def keys_list(callback: CallbackQuery, db: Database) -> None:
         key_expires_raw = key_data.get("expires_at")
         if key_expires_raw:
             key_expires_at = parse_iso_utc(key_expires_raw)
-            key_days, key_hours, _ = _remaining_parts(key_expires_at)
+            key_days, key_hours, key_minutes = _remaining_parts(key_expires_at)
             key_is_active = key_expires_at > utc_now()
         elif active_sub:
             sub_expires_at = parse_iso_utc(active_sub["expires_at"])
-            key_days, key_hours, _ = _remaining_parts(sub_expires_at)
+            key_days, key_hours, key_minutes = _remaining_parts(sub_expires_at)
             key_is_active = True
         else:
-            key_days, key_hours = 0, 0
+            key_days, key_hours, key_minutes = 0, 0, 0
             key_is_active = False
 
-        label = _key_label(is_primary, num, key_days, key_hours, key_is_active)
+        label = _key_label(is_primary, num, key_days, key_hours, key_is_active, key_minutes)
         key_rows.append((label, str(key_data["id"])))
 
     expired_trial_rows = [
