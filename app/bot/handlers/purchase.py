@@ -113,8 +113,18 @@ async def buy_new_key(callback: CallbackQuery, state: FSMContext, settings: Sett
 
 
 @router.callback_query(F.data.startswith("key_renew:"))
-async def buy_renew_key(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+async def buy_renew_key(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     key_id = int(callback.data.split(":")[1])
+
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(callback.from_user.id)
+    if str((user or {}).get("plan") or "") == "trial":
+        await callback.answer(
+            "Пробный ключ нельзя продлить. Купите подписку — она заменит пробный период.",
+            show_alert=True,
+        )
+        return
+
     await state.clear()
     await state.update_data(purchase_type="renewal", renew_key_id=key_id)
     is_admin = callback.from_user.id in settings.admin_ids

@@ -248,6 +248,9 @@ async def _build_key_card(
         status_text = "Заблокирован (лимит трафика)"
         status_emoji = "🔴"
 
+    supabase_user_for_plan = await users_repo.get_by_tg_id(tg_id)
+    is_trial = str((supabase_user_for_plan or {}).get("plan") or "") == "trial"
+
     is_primary = bool(key_data.get("is_primary", False))
     comment = str(key_data.get("comment") or "").strip()
     sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""
@@ -261,7 +264,7 @@ async def _build_key_card(
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ"
         f"{comment_line}"
     )
-    return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment))
+    return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment), is_trial=is_trial)
 
 
 async def _show_key_card_edit(

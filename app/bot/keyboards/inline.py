@@ -80,10 +80,16 @@ def key_card_keyboard(
     key_id: int,
     is_primary: bool = False,
     has_comment: bool = False,
+    is_trial: bool = False,
 ) -> InlineKeyboardMarkup:
+    renew_btn = (
+        InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")
+        if is_trial
+        else InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")
+    )
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
-        [InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")],
+        [renew_btn],
         [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
         [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
     ]
