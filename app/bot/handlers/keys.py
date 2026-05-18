@@ -256,6 +256,8 @@ async def _build_key_card(
     sub_line = f"\n🔗 Subscription URL:\n<code>{escape(sub_url)}</code>\n" if sub_url else ""
     comment_line = f"\n📝 Комментарий: {escape(comment)}" if comment else ""
 
+    trial_notice = "\n\n⚠️ <i>Пробный ключ — продление недоступно.\nКупите подписку, чтобы продолжить пользоваться VPN.</i>" if is_trial else ""
+
     text = (
         f"🔑 Ключ #{display_num}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
@@ -263,6 +265,7 @@ async def _build_key_card(
         f"{sub_line}\n"
         f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ"
         f"{comment_line}"
+        f"{trial_notice}"
     )
     return text, key_card_keyboard(key_id, is_primary=is_primary, has_comment=bool(comment), is_trial=is_trial)
 
