@@ -97,7 +97,7 @@ class XUIProvider(VPNProvider):
                 # Setting a per-client limit in XUI would give the user 2× the intended allowance.
                 ws_limits = ClientLimits(
                     limit_ip=limits.limit_ip,
-                    total_gb=limits.total_gb,
+                    total_gb=0,
                     expiry_time=limits.expiry_time,
                 )
                 if existing_ws and ws_uuid and existing_ws != ws_uuid:
@@ -123,7 +123,7 @@ class XUIProvider(VPNProvider):
 
             await self._ensure_client_live(session, server, reality_email, final_reality_uuid)
 
-            profiles = self._build_profiles(server, ctx, final_reality_uuid, final_ws_uuid, user_id)
+            profiles = self._build_profiles(server, ctx, final_reality_uuid, final_ws_uuid, user_id, key_id)
             return CreateClientResult(
                 server_id=server.id,
                 reality_uuid=final_reality_uuid,
@@ -679,13 +679,15 @@ class XUIProvider(VPNProvider):
         reality_uuid: str,
         ws_uuid: str | None,
         user_id: int,
+        key_id: int | None = None,
     ) -> list[VpnProfile]:
-        profiles: list[VpnProfile] = [self._build_reality_link(server, ctx, reality_uuid, user_id)]
+        profiles: list[VpnProfile] = [self._build_reality_link(server, ctx, reality_uuid, user_id, key_id)]
         if ws_uuid:
-            profiles.append(self._build_ws_tls_link(server, ctx, ws_uuid, user_id))
+            profiles.append(self._build_ws_tls_link(server, ctx, ws_uuid, user_id, key_id))
         return profiles
 
-    def _build_reality_link(self, server: ServerInfo, ctx: InboundContext, client_uuid: str, user_id: int) -> VpnProfile:
+    def _build_reality_link(self, server: ServerInfo, ctx: InboundContext, client_uuid: str, user_id: int, key_id: int | None = None) -> VpnProfile:
+        key_suffix = f"_{key_id}" if key_id is not None else ""
         config = (
             f"vless://{client_uuid}@{server.host}:{ctx.port}"
             f"?security=reality"
@@ -696,12 +698,13 @@ class XUIProvider(VPNProvider):
             f"&type=tcp"
             f"&flow=xtls-rprx-vision"
             f"&sni={ctx.sni}"
-            f"#ZyberVPN-{server.country}-REALITY-{user_id}"
+            f"#ZyberVPN-{server.country}-REALITY-{user_id}{key_suffix}"
         )
         return VpnProfile(protocol="vless-reality", config=config, server_name=server.name)
 
-    def _build_ws_tls_link(self, server: ServerInfo, ctx: InboundContext, client_uuid: str, user_id: int) -> VpnProfile:
+    def _build_ws_tls_link(self, server: ServerInfo, ctx: InboundContext, client_uuid: str, user_id: int, key_id: int | None = None) -> VpnProfile:
         host = server.ws_host or server.host
+        key_suffix = f"_{key_id}" if key_id is not None else ""
         config = (
             f"vless://{client_uuid}@{host}:443"
             f"?security=tls"
@@ -711,6 +714,6 @@ class XUIProvider(VPNProvider):
             f"&host={host}"
             f"&path={ctx.ws_path}"
             f"&sni={ctx.sni}"
-            f"#ZyberVPN-{server.country}-WS-{user_id}"
+            f"#ZyberVPN-{server.country}-WS-{user_id}{key_suffix}"
         )
         return VpnProfile(protocol="vless-ws-tls", config=config, server_name=server.name)

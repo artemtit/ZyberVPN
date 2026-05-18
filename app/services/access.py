@@ -115,7 +115,7 @@ async def ensure_user_access(
     keys_repo = KeysRepository(db)
     manager = build_vpn_manager(db, settings)
 
-    logger.info("Ensuring access tg_id=%s action=%s force_new_key=%s", tg_id, access_action, force_new_key)
+    logger.info("Ensuring access tg_id=%s action=%s force_new_key=%s", tg_id, action, force_new_key)
     ensured = await _safe_repo_call("users.get_or_create", lambda: users_repo.get_or_create(tg_id), fallback=None, tg_id=tg_id)
     if not ensured:
         raise AccessEnsureError("Failed to initialize user")
