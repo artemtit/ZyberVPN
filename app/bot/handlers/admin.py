@@ -16,6 +16,7 @@ from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.payments import PaymentsRepository
+from app.repositories.referral_links import ReferralLinksRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.user_vpn import UserVpnRepository
@@ -118,6 +119,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/broadcastall &lt;текст&gt; — рассылка ВСЕМ\n\n"
         "<b>🔗 Реферальные метки</b>\n"
         "/reflink &lt;метка&gt; — сгенерировать уникальную ссылку для друга\n"
+        "/reflinks — список всех созданных ссылок\n"
         "/refstats — статистика по реферальным меткам",
     )
 
@@ -1136,7 +1138,7 @@ async def admin_del_key(message: Message, db: Database, settings: Settings) -> N
 # /reflink <label>  — сгенерировать ссылку с меткой
 # ──────────────────────────────────────────
 @router.message(Command("reflink"))
-async def admin_reflink(message: Message, settings: Settings) -> None:
+async def admin_reflink(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
     parts = (message.text or "").split(maxsplit=1)
@@ -1149,15 +1151,80 @@ async def admin_reflink(message: Message, settings: Settings) -> None:
         return
     label = parts[1].strip().replace(" ", "_")[:50]
     admin_tg_id = message.from_user.id
+
+    ref_links_repo = ReferralLinksRepository(db)
+    existing = await ref_links_repo.get_by_label(label)
+    if existing:
+        bot_info = await message.bot.get_me()
+        bot_username = bot_info.username
+        link = f"https://t.me/{bot_username}?start=refl_{label}"
+        owner = existing.get("admin_tg_id")
+        owner_note = "" if owner == admin_tg_id else f" (создана другим администратором: <code>{owner}</code>)"
+        await message.answer(
+            f"⚠️ Ссылка с меткой <b>{escape(label)}</b> уже существует{owner_note}:\n\n"
+            f"<code>{link}</code>"
+        )
+        return
+
     bot_info = await message.bot.get_me()
     bot_username = bot_info.username
     link = f"https://t.me/{bot_username}?start=refl_{label}"
+    await ref_links_repo.create(admin_tg_id, label)
     await message.answer(
         f"🔗 <b>Реферальная ссылка для «{escape(label)}»:</b>\n\n"
         f"<code>{link}</code>\n\n"
         "Все, кто перейдут по этой ссылке, будут помечены меткой "
         f"<b>{escape(label)}</b> в базе. Смотри статистику через /refstats."
     )
+
+
+# ──────────────────────────────────────────
+# /reflinks — список всех созданных ссылок
+# ──────────────────────────────────────────
+@router.message(Command("reflinks"))
+async def admin_reflinks(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    admin_tg_id = message.from_user.id
+    ref_links_repo = ReferralLinksRepository(db)
+    users_repo = UsersRepository(db)
+
+    links = await ref_links_repo.list_by_admin(admin_tg_id)
+    if not links:
+        await message.answer("🔗 Вы ещё не создавали реферальных ссылок.\n\nИспользуйте /reflink &lt;метка&gt;")
+        return
+
+    referrals = await users_repo.list_referrals_with_labels(admin_tg_id)
+    clicks_by_label: dict[str, int] = {}
+    active_by_label: dict[str, int] = {}
+    for r in referrals:
+        lbl = str(r.get("ref_label") or "")
+        if not lbl:
+            continue
+        clicks_by_label[lbl] = clicks_by_label.get(lbl, 0) + 1
+        if r.get("is_active"):
+            active_by_label[lbl] = active_by_label.get(lbl, 0) + 1
+
+    bot_info = await message.bot.get_me()
+    bot_username = bot_info.username
+
+    lines = [f"🔗 <b>Реферальные ссылки</b> (всего: {len(links)})\n"]
+    for entry in links:
+        lbl = entry["label"]
+        created_raw = entry.get("created_at")
+        try:
+            created_str = to_moscow(parse_iso_utc(created_raw)).strftime("%d.%m.%Y") if created_raw else "—"
+        except Exception:
+            created_str = "—"
+        total = clicks_by_label.get(lbl, 0)
+        active = active_by_label.get(lbl, 0)
+        link = f"https://t.me/{bot_username}?start=refl_{lbl}"
+        lines.append(
+            f"🏷 <b>{escape(lbl)}</b> — {total} переходов ({active} активных) · {created_str}\n"
+            f"   <code>{link}</code>"
+        )
+
+    await message.answer("\n".join(lines))
 
 
 # ──────────────────────────────────────────
