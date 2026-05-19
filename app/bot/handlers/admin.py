@@ -1151,7 +1151,7 @@ async def admin_reflink(message: Message, settings: Settings) -> None:
     admin_tg_id = message.from_user.id
     bot_info = await message.bot.get_me()
     bot_username = bot_info.username
-    link = f"https://t.me/{bot_username}?start=refl_{admin_tg_id}_{label}"
+    link = f"https://t.me/{bot_username}?start=refl_{label}"
     await message.answer(
         f"🔗 <b>Реферальная ссылка для «{escape(label)}»:</b>\n\n"
         f"<code>{link}</code>\n\n"

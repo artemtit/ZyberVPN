@@ -19,23 +19,21 @@ from app.utils.tg import is_trial_eligible, send_main_menu
 router = Router()
 
 
-def _extract_ref_info(start_arg: str | None) -> tuple[int | None, str | None]:
-    """Parse start arg. Returns (ref_tg_id, ref_label).
-
-    Formats:
-      ref_123456789           — legacy, no label
-      refl_123456789_name     — labeled referral link
-    """
+def _extract_ref_info(start_arg: str | None, admin_ids: list[int] | None = None) -> tuple[int | None, str | None]:
     if not start_arg:
         return None, None
-    # Labeled format: refl_<tg_id>_<label>  (must check first — it also starts with "ref")
     if start_arg.startswith("refl_"):
         rest = start_arg.removeprefix("refl_")
+        # Старый формат с tg_id: refl_123456789_label (обратная совместимость)
         parts = rest.split("_", 1)
         if len(parts) == 2 and parts[0].isdigit() and parts[1]:
             return int(parts[0]), parts[1][:50]
+        # Новый чистый формат: refl_label
+        label = rest[:50]
+        if label:
+            ref_tg_id = admin_ids[0] if admin_ids else None
+            return ref_tg_id, label
         return None, None
-    # Legacy format: ref_<tg_id>
     if start_arg.startswith("ref_"):
         raw = start_arg.removeprefix("ref_")
         return (int(raw) if raw.isdigit() else None), None
@@ -46,7 +44,10 @@ def _extract_ref_info(start_arg: str | None) -> tuple[int | None, str | None]:
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, db: Database, settings: Settings) -> None:
     users_repo = UsersRepository(db)
-    ref_tg_id, ref_label = _extract_ref_info(command.args if command else None)
+    ref_tg_id, ref_label = _extract_ref_info(
+        command.args if command else None,
+        admin_ids=list(settings.admin_ids) if settings.admin_ids else None,
+    )
 
     existing = await users_repo.get_by_tg_id(message.from_user.id)
     is_new = existing is None
