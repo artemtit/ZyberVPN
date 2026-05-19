@@ -28,7 +28,7 @@ class UsersRepository:
     def last_supabase_error(self) -> bool:
         return self._last_supabase_error
 
-    _BASE_FIELDS = "id,tg_id,ref_tg_id,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
+    _BASE_FIELDS = "id,tg_id,ref_tg_id,ref_label,balance,trial_used,vpn_key,sub_token,expires_at,is_active,is_banned,plan,promo_used,last_activated_at,created_at,traffic_limit_gb"
 
     async def get_by_tg_id(self, tg_id: int) -> Optional[dict]:
         if not self._supabase:
@@ -73,6 +73,7 @@ class UsersRepository:
         plan: str = "trial",
         last_activated_at: str | None = None,
         ref_tg_id: int | None = None,
+        ref_label: str | None = None,
     ) -> Optional[dict]:
         if not self._supabase:
             return None
@@ -84,6 +85,8 @@ class UsersRepository:
             "plan": plan,
             "ref_tg_id": ref_tg_id,
         }
+        if ref_label:
+            payload["ref_label"] = ref_label[:50]
         if expires_at:
             payload["expires_at"] = expires_at
         if last_activated_at:
@@ -99,7 +102,7 @@ class UsersRepository:
             logger.info("Supabase create user conflict/failure tg_id=%s", tg_id)
             return None
 
-    async def get_or_create(self, tg_id: int, ref_tg_id: int | None = None) -> dict:
+    async def get_or_create(self, tg_id: int, ref_tg_id: int | None = None, ref_label: str | None = None) -> dict:
         existing = await self.get_by_tg_id(tg_id)
         if existing:
             return existing
@@ -111,6 +114,7 @@ class UsersRepository:
             is_active=False,
             plan="none",
             ref_tg_id=ref_tg_id,
+            ref_label=ref_label,
         )
         if created:
             return created
@@ -494,6 +498,26 @@ class UsersRepository:
         )
         rows = response.data or []
         return [int(r["tg_id"]) for r in rows if isinstance(r, dict) and r.get("tg_id") is not None]
+
+    async def list_referrals_with_labels(self, inviter_tg_id: int) -> list[dict]:
+        """Return all users referred by inviter_tg_id with their ref_label, is_active, created_at."""
+        if not self._supabase:
+            return []
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select("tg_id,ref_label,is_active,created_at")
+                    .eq("ref_tg_id", inviter_tg_id)
+                    .order("created_at", desc=False)
+                    .execute()
+                ),
+                operation="users.list_referrals_with_labels",
+            )
+            return list(response.data or [])
+        except Exception:
+            logger.exception("Supabase list_referrals_with_labels failed inviter=%s", inviter_tg_id)
+            return []
 
     async def count_all(self, exclude_tg_ids: list[int] | None = None) -> int:
         if not self._supabase:

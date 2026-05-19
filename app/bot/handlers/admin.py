@@ -115,7 +115,10 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/servers — список серверов\n"
         "/sync_servers — синхронизировать серверы\n"
         "/broadcast &lt;текст&gt; — рассылка активным\n"
-        "/broadcastall &lt;текст&gt; — рассылка ВСЕМ",
+        "/broadcastall &lt;текст&gt; — рассылка ВСЕМ\n\n"
+        "<b>🔗 Реферальные метки</b>\n"
+        "/reflink &lt;метка&gt; — сгенерировать уникальную ссылку для друга\n"
+        "/refstats — статистика по реферальным меткам",
     )
 
 
@@ -1129,6 +1132,62 @@ async def admin_del_key(message: Message, db: Database, settings: Settings) -> N
 # ──────────────────────────────────────────
 # /payments <tg_id>
 # ──────────────────────────────────────────
+# ──────────────────────────────────────────
+# /reflink <label>  — сгенерировать ссылку с меткой
+# ──────────────────────────────────────────
+@router.message(Command("reflink"))
+async def admin_reflink(message: Message, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(
+            "Использование: /reflink &lt;метка&gt;\n\n"
+            "Метка — любое слово без пробелов, например: /reflink vixti\n"
+            "Получите уникальную ссылку для этого человека."
+        )
+        return
+    label = parts[1].strip().replace(" ", "_")[:50]
+    admin_tg_id = message.from_user.id
+    bot_info = await message.bot.get_me()
+    bot_username = bot_info.username
+    link = f"https://t.me/{bot_username}?start=refl_{admin_tg_id}_{label}"
+    await message.answer(
+        f"🔗 <b>Реферальная ссылка для «{escape(label)}»:</b>\n\n"
+        f"<code>{link}</code>\n\n"
+        "Все, кто перейдут по этой ссылке, будут помечены меткой "
+        f"<b>{escape(label)}</b> в базе. Смотри статистику через /refstats."
+    )
+
+
+# ──────────────────────────────────────────
+# /refstats — статистика по меткам
+# ──────────────────────────────────────────
+@router.message(Command("refstats"))
+async def admin_refstats(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    users_repo = UsersRepository(db)
+    rows = await users_repo.list_referrals_with_labels(message.from_user.id)
+    if not rows:
+        await message.answer("📊 Пока нет рефералов по твоим ссылкам.")
+        return
+
+    # Group by label (None → «без метки»)
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        label = str(row.get("ref_label") or "без метки")
+        groups[label].append(row)
+
+    lines = [f"📊 <b>Реферальная статистика</b> (всего: {len(rows)})\n"]
+    for label, members in sorted(groups.items(), key=lambda x: -len(x[1])):
+        active = sum(1 for m in members if m.get("is_active"))
+        lines.append(f"🏷 <b>{escape(label)}</b>: {len(members)} чел. ({active} активных)")
+
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("payments"))
 async def admin_payments(message: Message, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
