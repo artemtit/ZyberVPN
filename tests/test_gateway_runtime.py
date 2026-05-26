@@ -260,6 +260,54 @@ class GatewayRuntimeApplierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(storage["content"]), BASE_XUI_CONFIG)
         self.assertEqual(restarts, ["zybervpn-gateway", "zybervpn-gateway"])
 
+    async def test_xui_db_target_uses_restart_xray(self) -> None:
+        restarts: list[str] = []
+        xray_restarts: list[str] = []
+
+        async def restart_service(service_name: str) -> None:
+            restarts.append(service_name)
+
+        async def restart_xray(service_name: str) -> None:
+            xray_restarts.append(service_name)
+
+        async def service_is_active(_: str) -> bool:
+            return True
+
+        server = ServerInfo(
+            id=1,
+            name="gateway",
+            host="gateway.example",
+            api_url="http://127.0.0.1:2053",
+            username="u",
+            password="p",
+            inbound_id=1,
+            public_key="pk",
+            short_id="sid",
+            country="NL",
+            is_active=True,
+            server_role="gateway",
+            gateway_config_path="xui-db:/tmp/x-ui.db#xrayTemplateConfig",
+            gateway_service_name="x-ui",
+        )
+
+        storage = {"content": json.dumps(BASE_XUI_CONFIG)}
+
+        applier = GatewayRuntimeApplier(
+            file_reader=lambda _: storage["content"],
+            file_writer=lambda _, content: storage.__setitem__("content", content),
+            restart_service=restart_service,
+            restart_xray=restart_xray,
+            service_is_active=service_is_active,
+        )
+        await applier.apply(
+            server=server,
+            rendered_config=GatewayConfigRenderer().render(server, VALID_UPSTREAM),
+            config_hash="hash-a",
+        )
+
+        self.assertEqual(restarts, [])
+        self.assertEqual(xray_restarts, ["x-ui"])
+
 
 class GatewayConfigMergeTests(unittest.TestCase):
     def test_merge_preserves_xui_inbounds_and_api(self) -> None:

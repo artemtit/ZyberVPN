@@ -49,12 +49,14 @@ class GatewayRuntimeApplier:
         restart_service=None,
         service_is_active=None,
         config_merger=None,
+        restart_xray=None,
     ) -> None:
         self._file_reader = file_reader or self._default_file_reader
         self._file_writer = file_writer or self._default_file_writer
         self._restart_service = restart_service or self._default_restart_service
         self._service_is_active = service_is_active or self._default_service_is_active
         self._config_merger = config_merger or build_effective_gateway_config
+        self._restart_xray = restart_xray or self._default_restart_xray
 
     async def apply(
         self,
@@ -71,13 +73,14 @@ class GatewayRuntimeApplier:
         if not service_name:
             raise RuntimeError(f"Gateway server {server.id} has empty gateway_service_name")
 
+        storage_kind, _, _ = _parse_config_target(config_path)
         current = await asyncio.to_thread(self._file_reader, config_path)
         effective_config = await asyncio.to_thread(self._config_merger, current, rendered_config)
         changed = force or current != effective_config
         if changed:
             await asyncio.to_thread(self._file_writer, config_path, effective_config)
             try:
-                await self._restart_service(service_name)
+                await self._restart_target(storage_kind=storage_kind, service_name=service_name)
                 is_active = await self._service_is_active(service_name)
             except Exception:
                 await self._rollback_config(
@@ -145,6 +148,20 @@ class GatewayRuntimeApplier:
             raise RuntimeError(stderr.decode("utf-8", errors="replace").strip() or "systemctl restart failed")
 
     @staticmethod
+    async def _default_restart_xray(_: str) -> None:
+        if os.name != "posix":
+            raise RuntimeError("Gateway xray reload requires a Linux host")
+        proc = await asyncio.create_subprocess_exec(
+            "x-ui",
+            "restart-xray",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", errors="replace").strip() or "x-ui restart-xray failed")
+
+    @staticmethod
     async def _default_service_is_active(service_name: str) -> bool:
         if os.name != "posix":
             return False
@@ -160,9 +177,16 @@ class GatewayRuntimeApplier:
     async def _rollback_config(self, *, config_path: str, service_name: str, previous_config: str) -> None:
         try:
             await asyncio.to_thread(self._file_writer, config_path, previous_config)
-            await self._restart_service(service_name)
+            storage_kind, _, _ = _parse_config_target(config_path)
+            await self._restart_target(storage_kind=storage_kind, service_name=service_name)
         except Exception:
             logger.exception("Gateway rollback failed service=%s path=%s", service_name, config_path)
+
+    async def _restart_target(self, *, storage_kind: str, service_name: str) -> None:
+        if storage_kind == "xui-db":
+            await self._restart_xray(service_name)
+            return
+        await self._restart_service(service_name)
 
 
 def _parse_config_target(path: str) -> tuple[str, str, str]:
