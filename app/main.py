@@ -31,6 +31,7 @@ from app.db.database import Database
 from app.repositories.keys import KeysRepository
 from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
+from app.repositories.vpn_devices import VpnDevicesRepository
 from app.services.access import build_vpn_manager
 from app.services.subscription import build_subscription_service
 from app.utils.datetime import parse_iso_utc, to_moscow
@@ -277,6 +278,48 @@ async def _disable_expired_access_loop(db: Database, settings, interval_seconds:
         await asyncio.sleep(interval_seconds)
 
 
+def _support_button(settings) -> InlineKeyboardButton:
+    if getattr(settings, "support_url", ""):
+        return InlineKeyboardButton(text="🆘 Помощь", url=settings.support_url)
+    return InlineKeyboardButton(text="🆘 Помощь", callback_data="back_menu")
+
+
+def _trial_unused_keyboard(settings, key_id: int = 0) -> InlineKeyboardMarkup:
+    instruction_callback = f"key_connect:{key_id}" if key_id > 0 else "connect_instruction"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📘 Инструкция", callback_data=instruction_callback)],
+            [_support_button(settings)],
+        ]
+    )
+
+
+def _buy_keyboard(text: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="buy_open")]])
+
+
+async def _get_trial_key_id(keys_repo: KeysRepository, tg_id: int) -> int:
+    try:
+        key_rows = await keys_repo.list_by_user(tg_id)
+    except Exception:
+        logging.exception("trial notification: failed to list keys tg_id=%s", tg_id)
+        return 0
+    for key_row in key_rows:
+        if key_row.get("disabled_at"):
+            continue
+        if not str(key_row.get("key") or "").startswith("vless://"):
+            continue
+        try:
+            return int(key_row.get("id") or 0)
+        except Exception:
+            return 0
+    return 0
+
+
+async def _has_trial_connected(vpn_devices_repo: VpnDevicesRepository, tg_id: int, key_id: int = 0) -> bool:
+    return await vpn_devices_repo.has_seen_device(user_id=tg_id, key_id=key_id if key_id > 0 else None)
+
+
 async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, interval_seconds: int = 120) -> None:
     """Disable individual expired keys without touching other active keys for the same user.
 
@@ -286,6 +329,7 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
     """
     keys_repo = KeysRepository(db)
     users_repo = UsersRepository(db)
+    vpn_devices_repo = VpnDevicesRepository(db)
     manager = build_vpn_manager(db, settings)
     while True:
         try:
@@ -325,6 +369,12 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
             except Exception:
                 user_row = None
             is_trial = str((user_row or {}).get("plan") or "") == "trial"
+            has_connected = False
+            if is_trial:
+                try:
+                    has_connected = await _has_trial_connected(vpn_devices_repo, tg_id, key_id)
+                except Exception:
+                    logging.exception("per_key_expiry_loop: trial usage lookup failed tg_id=%s key_id=%s", tg_id, key_id)
             if is_trial:
                 try:
                     await keys_repo.delete_by_id(key_id, tg_id)
@@ -334,24 +384,34 @@ async def _per_key_expiry_loop(db: Database, settings, bot: Bot | None = None, i
             if bot is not None:
                 try:
                     if is_trial:
-                        msg_text = (
-                            "⏰ <b>Ваш пробный период завершён.</b>\n\n"
-                            "Оформите подписку, чтобы продолжить пользоваться ZyberVPN без ограничений."
-                        )
-                        btn_text = "💳 Оформить подписку"
+                        if has_connected:
+                            msg_text = (
+                                "⏰ <b>Пробный период завершён.</b>\n\n"
+                                "Вернуть доступ можно в один клик."
+                            )
+                            reply_markup = _buy_keyboard("💳 Оформить подписку")
+                            log_event = "trial_expired_used"
+                        else:
+                            msg_text = (
+                                "⏰ <b>Пробный период завершён.</b>\n\n"
+                                "Похоже, подключение так и не было выполнено."
+                            )
+                            reply_markup = _trial_unused_keyboard(settings)
+                            log_event = "trial_expired_unused"
                     else:
                         msg_text = (
                             "⏰ <b>Ваш VPN-ключ заблокирован: истёк срок действия.</b>\n\n"
                             "Для продления нажмите кнопку ниже."
                         )
-                        btn_text = "🔄 Продлить подписку"
+                        reply_markup = _buy_keyboard("🔄 Продлить подписку")
+                        log_event = ""
                     await bot.send_message(
                         tg_id,
                         msg_text,
-                        reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data="buy_open")]]
-                        ),
+                        reply_markup=reply_markup,
                     )
+                    if log_event:
+                        logging.info("%s tg_id=%s key_id=%s", log_event, tg_id, key_id)
                 except TelegramForbiddenError:
                     pass
                 except Exception:
@@ -423,6 +483,8 @@ async def _register_commands(bot: Bot, settings) -> None:
 
 async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+    vpn_devices_repo = VpnDevicesRepository(db)
     while True:
         try:
             expiring_7d = await users_repo.get_users_expiring_soon(168)
@@ -473,11 +535,10 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                     logging.exception("Failed to send 3d expiry notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
-            # Trial expiry warnings reuse the regular notification slots because trial
-            # users are always excluded from regular 7d/3d/1d checks above.
-            # Slot mapping: trial-6h → notified_1d_at, trial-3h → notified_3d_at,
-            #               trial-1h → notified_7d_at.  All three are reset by
-            #               set_expiry(is_active=True) when the user buys a subscription.
+            # Trial expiry warnings reuse regular notification slots because trial
+            # users are excluded from regular 7d/3d/1d checks above.
+            # Slot mapping: trial-6h → notified_1d_at, trial-1h → notified_7d_at.
+            # These slots are reset by set_expiry(is_active=True) when the user buys.
             expiring_trial_6h = await users_repo.get_users_expiring_soon(6)
             for user in expiring_trial_6h:
                 if str(user.get("plan") or "") != "trial":
@@ -485,69 +546,59 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_1d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
+                key_id = await _get_trial_key_id(keys_repo, tg_id)
+                has_connected = await _has_trial_connected(vpn_devices_repo, tg_id, key_id)
+                if has_connected:
+                    msg_text = (
+                        "⏰ <b>До конца пробного периода осталось ~6 часов</b>\n\n"
+                        "Вижу, VPN уже использовался.\n\n"
+                        "Можно сохранить доступ за 69 ₽/мес."
+                    )
+                    reply_markup = _buy_keyboard("💳 Оформить подписку")
+                    log_event = "trial_notify_6h_used"
+                else:
+                    msg_text = (
+                        "⏰ <b>Пробный период скоро закончится</b>\n\n"
+                        "Похоже, VPN пока не использовался.\n\n"
+                        "Если не получилось подключиться — можно попробовать сейчас."
+                    )
+                    reply_markup = _trial_unused_keyboard(settings, key_id)
+                    log_event = "trial_notify_6h_unused"
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"⏰ <b>Пробный период заканчивается!</b>\n\n"
-                        f"Доступ отключится в {expires_str} МСК (через ~6 часов).\n\n"
-                        "Оформите подписку, чтобы не потерять VPN.",
-                        reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="💳 Оформить подписку", callback_data="buy_open")]]
-                        ),
+                        msg_text,
+                        reply_markup=reply_markup,
                     )
                     await users_repo.set_notified(tg_id, "1d")
+                    logging.info("%s tg_id=%s key_id=%s", log_event, tg_id, key_id)
                 except TelegramForbiddenError:
                     pass
                 except Exception:
                     logging.exception("Failed to send trial 6h notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
-            # Trial expiry warning: 3h before (uses notified_3d_at slot)
-            expiring_trial_3h = await users_repo.get_users_expiring_soon(3)
-            for user in expiring_trial_3h:
-                if str(user.get("plan") or "") != "trial":
-                    continue
-                if user.get("notified_3d_at"):
-                    continue
-                tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
-                try:
-                    await bot.send_message(
-                        tg_id,
-                        f"🔔 <b>До конца пробного периода осталось ~3 часа</b>\n\n"
-                        f"Доступ отключится в {expires_str} МСК.\n\n"
-                        "Оформите подписку прямо сейчас:",
-                        reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="💳 Оформить подписку", callback_data="buy_open")]]
-                        ),
-                    )
-                    await users_repo.set_notified(tg_id, "3d")
-                except TelegramForbiddenError:
-                    pass
-                except Exception:
-                    logging.exception("Failed to send trial 3h notification tg_id=%s", tg_id)
-                await asyncio.sleep(0.1)
-
-            # Trial expiry warning: ~1h before (uses notified_7d_at slot, 2h window)
-            expiring_trial_1h = await users_repo.get_users_expiring_soon(2)
+            # Trial expiry warning: ~1h before (uses notified_7d_at slot)
+            expiring_trial_1h = await users_repo.get_users_expiring_soon(1)
             for user in expiring_trial_1h:
                 if str(user.get("plan") or "") != "trial":
                     continue
                 if user.get("notified_7d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%H:%M")
+                key_id = await _get_trial_key_id(keys_repo, tg_id)
+                has_connected = await _has_trial_connected(vpn_devices_repo, tg_id, key_id)
+                if not has_connected:
+                    continue
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"🔴 <b>Пробный период истекает в {expires_str} МСК!</b>\n\n"
-                        "Последний шанс — оформите подписку, чтобы VPN продолжил работать.",
-                        reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="⚡ Оформить сейчас", callback_data="buy_open")]]
-                        ),
+                        "⏳ <b>Доступ скоро закончится.</b>\n\n"
+                        "Продление займёт несколько секунд.",
+                        reply_markup=_buy_keyboard("🛡 Продлить"),
                     )
                     await users_repo.set_notified(tg_id, "7d")
+                    logging.info("trial_notify_1h tg_id=%s key_id=%s", tg_id, key_id)
                 except TelegramForbiddenError:
                     pass
                 except Exception:
@@ -556,7 +607,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
 
             expiring_1d = await users_repo.get_users_expiring_soon(24)
             for user in expiring_1d:
-                # Trial users get their own 6h notification above
+                # Trial users get their own notification flow above.
                 if str(user.get("plan") or "") == "trial":
                     continue
                 if user.get("notified_1d_at"):

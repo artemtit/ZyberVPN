@@ -197,10 +197,24 @@ async def connect_open(callback: CallbackQuery, state: FSMContext, db: Database,
     await callback.answer()
 
 
+@router.callback_query(F.data == "connect_instruction")
+async def connect_instruction_open(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ConnectFlowState.choosing_device)
+    await state.update_data(instruction_only=True)
+
+    await callback.message.edit_text(
+        "📲 <b>Подключение к ZyberVPN</b>\n\nНа каком устройстве хотите посмотреть инструкцию?",
+        reply_markup=connect_devices_keyboard(),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("device_"))
 async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if not data.get("vpn_key"):
+    instruction_only = bool(data.get("instruction_only"))
+    if not data.get("vpn_key") and not instruction_only:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
@@ -233,8 +247,9 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
     device_code = data.get("device_code")
     device_name = data.get("device_name")
     vpn_configs = [str(item) for item in (data.get("vpn_configs") or []) if str(item).startswith("vless://")]
+    instruction_only = bool(data.get("instruction_only"))
 
-    if not vpn_key or not device_code or not device_name:
+    if (not vpn_key and not instruction_only) or not device_code or not device_name:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
@@ -254,7 +269,13 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
     await state.set_state(ConnectFlowState.done)
     await state.update_data(app_callback=app_callback, app_name=app_name)
 
-    if app_callback == "app_cli":
+    if instruction_only:
+        text = (
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 {escape(device_name)} · <b>{escape(app_name)}</b>\n\n"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
+        )
+    elif app_callback == "app_cli":
         text = (
             f"📲 <b>Подключение ZyberVPN</b>\n"
             f"📱 {escape(device_name)} · <b>{escape(app_name)}</b>\n\n"
@@ -308,13 +329,15 @@ async def connect_copy_key(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "connect_back_devices")
 async def connect_back_devices(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if not data.get("vpn_key"):
+    instruction_only = bool(data.get("instruction_only"))
+    if not data.get("vpn_key") and not instruction_only:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
     await state.set_state(ConnectFlowState.choosing_device)
     await callback.message.edit_text(
-        "📲 <b>Подключение к ZyberVPN</b>\n\nНа каком устройстве хотите настроить VPN?",
+        "📲 <b>Подключение к ZyberVPN</b>\n\n"
+        f"На каком устройстве хотите {'посмотреть инструкцию' if instruction_only else 'настроить VPN'}?",
         reply_markup=connect_devices_keyboard(),
     )
     await callback.answer()

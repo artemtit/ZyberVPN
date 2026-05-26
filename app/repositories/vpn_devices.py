@@ -47,6 +47,26 @@ class VpnDevicesRepository:
             logger.exception("vpn_devices.count_recent_devices failed user_id=%s key_id=%s", user_id, key_id)
             return 0
 
+    async def has_seen_device(self, *, user_id: int, key_id: int | None = None) -> bool:
+        if not self._supabase:
+            return False
+        try:
+            query = (
+                self._supabase.table("vpn_devices")
+                .select("id")
+                .eq("user_id", user_id)
+            )
+            if key_id is not None:
+                query = query.eq("key_id", key_id)
+            response = await execute_with_retry(
+                lambda: query.limit(1).execute(),
+                operation="vpn_devices.has_seen_device",
+            )
+            return bool(response.data)
+        except Exception:
+            logger.exception("vpn_devices.has_seen_device failed user_id=%s key_id=%s", user_id, key_id)
+            return False
+
     async def batch_upsert(self, rows: list[dict], *, chunk_size: int = 1000) -> int:
         if not self._supabase or not rows:
             return 0
