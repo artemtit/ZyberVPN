@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urlparse, urlunparse
 
 from app.repositories.users import UsersRepository
+from app.services.vpn.base import ServerInfo
 from app.services.access import build_vpn_manager
 from app.utils.datetime import parse_iso_utc, utc_now
 
@@ -45,6 +46,15 @@ def _display_name_for_country(country_code: str) -> str:
     """Build display name from a known ISO-2 country code (authoritative source)."""
     flag, country_name = _COUNTRY_DISPLAY.get(country_code.upper(), ("", country_code.upper()))
     return f"{flag}ZyberVPN | {country_name}"
+
+
+def _display_name_for_server(server: ServerInfo | None) -> str:
+    if server is None:
+        return "ZyberVPN"
+    base = _display_name_for_country(server.country or server.name or "unknown")
+    if server.server_role == "gateway":
+        return f"{base} | Gateway"
+    return base
 
 
 def _apply_display_name(link: str, name: str) -> str:
@@ -157,10 +167,10 @@ class SubscriptionService:
             raise LookupError("vpn access not found for key")
 
         # Build server_id → country lookup from live server data.
-        server_country: dict[int, str] = {}
+        server_map: dict[int, ServerInfo] = {}
         try:
             servers = await self._vpn_manager._servers_repo.list_all()
-            server_country = {s.id: s.country for s in servers if s.country}
+            server_map = {s.id: s for s in servers}
         except Exception:
             pass
 
@@ -169,8 +179,8 @@ class SubscriptionService:
             config = config.strip()
             if not config.startswith("vless://"):
                 continue
-            country = server_country.get(server_id, "")
-            name = _display_name_for_country(country) if country else _server_display_name(config)
+            server = server_map.get(server_id)
+            name = _display_name_for_server(server) if server else _server_display_name(config)
             links.append(_apply_display_name(config, name))
         if not links:
             raise LookupError("vpn access not found for key")

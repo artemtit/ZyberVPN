@@ -20,4 +20,27 @@ SERVER_COLUMNS = [
     "health_errors",
     "last_error",
     "max_users",
+    "server_role",
+    "upstream_id",
+    "gateway_apply_status",
+    "gateway_apply_error",
+    "gateway_applied_at",
+    "gateway_config_path",
+    "gateway_service_name",
+]
+
+EXTERNAL_UPSTREAM_COLUMNS = [
+    "id",
+    "name",
+    "raw_json",
+    "config_hash",
+    "is_active",
+    "source_kind",
+    "source_path",
+    "default_route_mode",
+    "validation_status",
+    "validation_error",
+    "last_applied_at",
+    "created_at",
+    "updated_at",
 ]

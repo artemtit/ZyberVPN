@@ -12,6 +12,15 @@ from app.utils.crypto import decrypt_credential, encrypt_credential
 from app.utils.datetime import parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
+_LEGACY_SERVER_COLUMNS = [column for column in SERVER_COLUMNS if column not in {
+    "server_role",
+    "upstream_id",
+    "gateway_apply_status",
+    "gateway_apply_error",
+    "gateway_applied_at",
+    "gateway_config_path",
+    "gateway_service_name",
+}]
 
 
 class ServersRepository:
@@ -23,6 +32,9 @@ class ServersRepository:
 
     async def list_all(self) -> list[ServerInfo]:
         return await self._list_supabase(active_only=False)
+
+    async def list_gateways(self) -> list[ServerInfo]:
+        return [server for server in await self._list_supabase(active_only=False) if server.server_role == "gateway"]
 
     async def startup_probe(self) -> None:
         if not self._supabase:
@@ -38,6 +50,26 @@ class ServersRepository:
 
     async def set_active(self, server_id: int, is_active: bool) -> None:
         await self.update_health(server_id=server_id, is_active=is_active, ok=is_active, error_text=None)
+
+    async def update_gateway_apply(
+        self,
+        server_id: int,
+        *,
+        status: str,
+        error_text: str = "",
+        applied_at: str | None = None,
+    ) -> None:
+        if not self._supabase:
+            raise RuntimeError("Supabase is not configured")
+        payload = {
+            "gateway_apply_status": status,
+            "gateway_apply_error": error_text[:1000],
+            "gateway_applied_at": applied_at,
+        }
+        await execute_with_retry(
+            lambda: self._supabase.table("servers").update(payload).eq("id", server_id).execute(),
+            operation="servers.update_gateway_apply",
+        )
 
     async def update_health(self, server_id: int, is_active: bool, ok: bool, error_text: str | None) -> None:
         if not self._supabase:
@@ -82,6 +114,13 @@ class ServersRepository:
             "last_health_check": utc_now().isoformat(),
             "health_errors": 0,
             "last_error": "",
+            "server_role": "direct",
+            "upstream_id": None,
+            "gateway_apply_status": "idle",
+            "gateway_apply_error": "",
+            "gateway_applied_at": None,
+            "gateway_config_path": "",
+            "gateway_service_name": "",
         }
         if not self._supabase:
             raise RuntimeError("Supabase is not configured")
@@ -109,7 +148,13 @@ class ServersRepository:
                 "column" in str(error).lower(),
                 error,
             )
-            raise
+            legacy_query = self._supabase.table("servers").select(",".join(_LEGACY_SERVER_COLUMNS))
+            if active_only:
+                legacy_query = legacy_query.eq("is_active", True)
+            response = await execute_with_retry(
+                lambda: legacy_query.execute(),
+                operation="servers.list.legacy",
+            )
         rows = response.data or []
         return [self._map_row(item) for item in rows if isinstance(item, dict)]
 
@@ -121,6 +166,13 @@ class ServersRepository:
                 last_check = parse_iso_utc(raw_last)
             except Exception:
                 last_check = None
+        raw_gateway_applied = row.get("gateway_applied_at")
+        gateway_applied_at = None
+        if raw_gateway_applied:
+            try:
+                gateway_applied_at = parse_iso_utc(raw_gateway_applied)
+            except Exception:
+                gateway_applied_at = None
         return ServerInfo(
             id=int(row["id"]),
             name=str(row.get("name") or f"server-{row['id']}"),
@@ -140,4 +192,11 @@ class ServersRepository:
             last_health_check=last_check,
             health_errors=int(row.get("health_errors") or 0),
             max_users=int(row.get("max_users") or 0),
+            server_role=str(row.get("server_role") or "direct"),
+            upstream_id=int(row["upstream_id"]) if row.get("upstream_id") is not None else None,
+            gateway_apply_status=str(row.get("gateway_apply_status") or "idle"),
+            gateway_apply_error=str(row.get("gateway_apply_error") or ""),
+            gateway_applied_at=gateway_applied_at,
+            gateway_config_path=str(row.get("gateway_config_path") or ""),
+            gateway_service_name=str(row.get("gateway_service_name") or ""),
         )

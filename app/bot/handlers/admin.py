@@ -24,6 +24,7 @@ from app.repositories.subscriptions import SubscriptionsRepository
 from app.repositories.user_vpn import UserVpnRepository
 from app.repositories.users import UsersRepository
 from app.services.access import build_vpn_manager, ensure_user_access
+from app.services.gateway_runtime import build_gateway_runtime_manager
 from app.services.supabase import execute_with_retry, get_supabase_client
 from app.services.vpn.manager import VPNManager
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
@@ -278,6 +279,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "/stats — статистика проекта\n"
         "/newusers [N] — последние N пользователей\n"
         "/servers — список серверов\n"
+        "/sync_gateway — применить upstream на gateway\n"
         "/sync_servers — синхронизировать серверы\n"
         "/broadcast &lt;текст&gt; — рассылка активным\n"
         "/broadcastall &lt;текст&gt; — рассылка ВСЕМ\n\n"
@@ -786,6 +788,8 @@ async def admin_servers(message: Message, db: Database, settings: Settings) -> N
         status_emoji = "🟢" if srv.is_active else "🔴"
         errors = srv.health_errors or 0
         load = counts.get(srv.id, 0)
+        role_text = "gateway" if srv.server_role == "gateway" else "direct"
+        gateway_state = srv.gateway_apply_status if srv.server_role == "gateway" else "n/a"
         last_check = "—"
         if srv.last_health_check:
             try:
@@ -795,11 +799,36 @@ async def admin_servers(message: Message, db: Database, settings: Settings) -> N
         lines.append(
             f"{status_emoji} <b>{srv.name}</b> ({srv.country})\n"
             f"   🌐 {srv.host}:{srv.public_port}\n"
+            f"   🧭 Роль: {role_text} | Gateway: {gateway_state}\n"
             f"   👥 Нагрузка: {load} пользователей\n"
             f"   ⚠️ Ошибок: {errors} | Проверка: {last_check}\n"
         )
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("sync_gateway"))
+async def admin_sync_gateway(message: Message, db: Database, settings: Settings) -> None:
+    if not _is_admin(message.from_user.id, settings):
+        return
+    await message.answer("🔄 Применяю active external upstream на gateway...")
+    manager = build_gateway_runtime_manager(db, settings)
+    try:
+        summary = await manager.sync(force=True)
+    except Exception:
+        logger.exception("admin_sync_gateway failed")
+        await message.answer("❌ Не удалось синхронизировать gateway. Проверьте логи.")
+        return
+
+    await message.answer(
+        "✅ Gateway sync завершён.\n"
+        f"Gateway-серверов: <b>{summary.gateways_total}</b>\n"
+        f"Готово: <b>{summary.gateways_ready}</b>\n"
+        f"Ошибок: <b>{summary.gateways_failed}</b>\n"
+        f"Изменено конфигов: <b>{summary.changed}</b>\n"
+        f"Валидация upstream: <b>{summary.validation_status}</b>\n"
+        f"{escape(summary.validation_error) if summary.validation_error else 'Ошибок валидации нет'}"
+    )
 
 
 # ──────────────────────────────────────────
