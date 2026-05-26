@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from copy import deepcopy
 
 from app.services.vpn.base import ServerInfo
 
@@ -187,3 +188,129 @@ class GatewayConfigRenderer:
         )
         payload["meta"] = meta
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def build_effective_gateway_config(base_text: str, upstream_text: str) -> str:
+    upstream_payload = json.loads(upstream_text)
+    if not isinstance(upstream_payload, dict):
+        raise RuntimeError("Gateway upstream payload must be a JSON object")
+    if not base_text.strip():
+        return json.dumps(upstream_payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+    base_payload = json.loads(base_text)
+    if not isinstance(base_payload, dict):
+        raise RuntimeError("Existing gateway config must be a JSON object")
+
+    effective = deepcopy(base_payload)
+    effective["meta"] = _merge_dict(
+        _as_dict(base_payload.get("meta")),
+        _as_dict(upstream_payload.get("meta")),
+    )
+    effective["log"] = _merge_dict(
+        _as_dict(base_payload.get("log")),
+        _as_dict(upstream_payload.get("log")),
+    )
+    effective["outbounds"] = _merge_outbounds(
+        base_payload.get("outbounds"),
+        upstream_payload.get("outbounds"),
+    )
+    effective["routing"] = _merge_routing(
+        base_payload.get("routing"),
+        upstream_payload.get("routing"),
+    )
+
+    for key in (
+        "dns",
+        "transport",
+        "policy",
+        "api",
+        "stats",
+        "reverse",
+        "fakedns",
+        "observatory",
+        "burstObservatory",
+        "metrics",
+    ):
+        if key not in effective and key in upstream_payload:
+            effective[key] = deepcopy(upstream_payload[key])
+
+    return json.dumps(effective, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _as_dict(value: object) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _merge_dict(base: dict, override: dict) -> dict:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dict(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _merge_outbounds(base_value: object, upstream_value: object) -> list[dict]:
+    merged: list[dict] = []
+    by_tag: dict[str, int] = {}
+    for source in (base_value, upstream_value):
+        if not isinstance(source, list):
+            continue
+        for outbound in source:
+            if not isinstance(outbound, dict):
+                continue
+            item = deepcopy(outbound)
+            tag = str(item.get("tag") or "").strip()
+            if tag and tag in by_tag:
+                merged[by_tag[tag]] = item
+            else:
+                if tag:
+                    by_tag[tag] = len(merged)
+                merged.append(item)
+    return merged
+
+
+def _merge_routing(base_value: object, upstream_value: object) -> dict:
+    base = _as_dict(base_value)
+    upstream = _as_dict(upstream_value)
+    merged = deepcopy(base)
+    if "domainStrategy" in upstream:
+        merged["domainStrategy"] = upstream["domainStrategy"]
+
+    merged_balancers: list[dict] = []
+    balancer_positions: dict[str, int] = {}
+    for source in (base.get("balancers"), upstream.get("balancers")):
+        if not isinstance(source, list):
+            continue
+        for balancer in source:
+            if not isinstance(balancer, dict):
+                continue
+            item = deepcopy(balancer)
+            tag = str(item.get("tag") or "").strip()
+            if tag and tag in balancer_positions:
+                merged_balancers[balancer_positions[tag]] = item
+            else:
+                if tag:
+                    balancer_positions[tag] = len(merged_balancers)
+                merged_balancers.append(item)
+    if merged_balancers:
+        merged["balancers"] = merged_balancers
+
+    merged_rules: list[dict] = []
+    seen_rules: set[str] = set()
+    for source in (base.get("rules"), upstream.get("rules")):
+        if not isinstance(source, list):
+            continue
+        for rule in source:
+            if not isinstance(rule, dict):
+                continue
+            item = deepcopy(rule)
+            key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+            if key in seen_rules:
+                continue
+            seen_rules.add(key)
+            merged_rules.append(item)
+    if merged_rules:
+        merged["rules"] = merged_rules
+    return merged
