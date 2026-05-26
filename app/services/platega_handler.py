@@ -8,12 +8,11 @@ instead of message.answer (since there is no Telegram update to reply to).
 """
 
 import logging
-from html import escape
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
+from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
@@ -366,12 +365,8 @@ async def process_confirmed_platega_payment(
     balance_applied = int(processed.get("balance_applied") or 0)
     balance_line = f"\n💰 Баланс списан: {balance_applied} ₽" if balance_applied > 0 else ""
     if sub_url:
-        text = (
-            "🎉 <b>Готово! VPN активирован.</b>\n\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)"
-            f"{balance_line}\n\n"
-            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
-        )
+        traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+        text = access_activated_text(f"до {expires_str} ({days_remaining} дн.)", f"{traffic_gb} ГБ", sub_url)
         await _send(bot, tg_id, text, keyboard=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (

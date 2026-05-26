@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from html import escape
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard
+from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_success_keyboard
 from app.config import Settings
 from app.db.database import Database
 from app.repositories.keys import KeysRepository
@@ -95,14 +94,7 @@ async def trial_start(callback: CallbackQuery, db: Database, settings: Settings)
         pass
 
     if sub_url:
-        text = (
-            "🎁 <b>Пробный период активирован!</b>\n\n"
-            "⏳ Действует: <b>24 часа</b>\n"
-            f"📊 Трафик: <b>{TRIAL_TRAFFIC_GB} ГБ</b>\n\n"
-            "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{escape(sub_url)}</code>\n\n"
-            "Нажмите «Подключить» чтобы настроить VPN-клиент."
-        )
+        text = access_activated_text("24 часа", f"{TRIAL_TRAFFIC_GB} ГБ", sub_url)
         await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=key_id))
     else:
         text = (

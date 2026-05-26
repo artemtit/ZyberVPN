@@ -6,7 +6,7 @@ from html import escape
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
+from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
@@ -508,11 +508,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
 
     if sub_url:
-        text = (
-            "🎉 <b>Готово! VPN активирован.</b>\n\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
-            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
-        )
+        traffic_gb = int(tariff.get("traffic_gb", tariff.get("months", 1) * 60))
+        text = access_activated_text(f"до {expires_str} ({days_remaining} дн.)", f"{traffic_gb} ГБ", sub_url)
         await message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
         text = (

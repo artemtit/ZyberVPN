@@ -11,6 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards.inline import (
+    access_activated_text,
     payment_success_keyboard,
     profile_keyboard,
     promo_apply_target_keyboard,
@@ -721,10 +722,11 @@ async def _apply_promo(
     if sub_url:
         await reply(
             _promo_success_text(expires_dt)
-            + "🔗 <b>Ссылка для подключения:</b>\n"
-            f"<code>{sub_url}</code>\n\n"
-            "Нажмите «Подключить» чтобы открыть в VPN-клиенте,\n"
-            "или «Показать QR» для сканирования.",
+            + access_activated_text(
+                f"до {to_moscow(expires_dt).strftime('%d.%m.%Y')}",
+                "по промокоду",
+                sub_url,
+            ),
             reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id),
         )
     else:

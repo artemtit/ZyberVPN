@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
-from app.bot.keyboards.inline import main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, renewal_success_keyboard, stars_back_keyboard, tariffs_keyboard
+from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, renewal_success_keyboard, stars_back_keyboard, tariffs_keyboard
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.repositories.promo import PromoRepository
@@ -582,10 +582,10 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
     days_remaining = max(0, (expires_dt - utc_now()).days)
     sub_url = f"{settings.public_base_url}/sub/{sub_token}" if sub_token and settings.public_base_url else ""
     if sub_url:
-        text = (
-            "🎉 <b>Готово! VPN активирован.</b>\n\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n\n"
-            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
+        text = access_activated_text(
+            f"до {expires_str} ({days_remaining} дн.)",
+            f"{int(plan['traffic_gb'])} ГБ",
+            sub_url,
         )
         await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:
@@ -792,11 +792,10 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
         )
         await callback.message.answer(text, reply_markup=renewal_success_keyboard(int(renew_key_id)))
     elif sub_url:
-        text = (
-            "🎉 <b>Готово! VPN активирован.</b>\n\n"
-            f"📅 Действует до: <b>{expires_str}</b> ({days_remaining} дн.)\n"
-            f"💰 Списано с баланса: {price} ₽\n\n"
-            "Нажмите «📲 Подключить устройство» — настройка займёт 1 минуту."
+        text = access_activated_text(
+            f"до {expires_str} ({days_remaining} дн.)",
+            f"{int(plan['traffic_gb'])} ГБ",
+            sub_url,
         )
         await callback.message.answer(text, reply_markup=payment_success_keyboard(sub_url, key_id=provisioned_key_id))
     else:

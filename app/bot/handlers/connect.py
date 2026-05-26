@@ -296,9 +296,26 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
 
 
 @router.callback_query(F.data == "connect_copy_sub")
-async def connect_copy_sub(callback: CallbackQuery, state: FSMContext) -> None:
+async def connect_copy_sub(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
     data = await state.get_data()
     sub_url = data.get("sub_url")
+    if not sub_url:
+        try:
+            keys_repo = KeysRepository(db)
+            user_keys = await keys_repo.list_by_user(callback.from_user.id)
+            active_keys = [
+                k for k in user_keys
+                if not k.get("disabled_at") and str(k.get("key") or "").startswith("vless://")
+            ]
+            latest_key = active_keys[-1] if active_keys else None
+            if latest_key:
+                key_sub_token = str(latest_key.get("sub_token") or "")
+                if not key_sub_token:
+                    key_sub_token = await keys_repo.ensure_sub_token(int(latest_key["id"]), callback.from_user.id)
+                if key_sub_token and settings.public_base_url:
+                    sub_url = f"{settings.public_base_url}/sub/{key_sub_token}"
+        except Exception:
+            logger.exception("Failed to fetch subscription URL for copy tg_id=%s", callback.from_user.id)
     if not sub_url:
         await callback.answer("Subscription URL недоступен. Откройте ключ заново.", show_alert=True)
         return

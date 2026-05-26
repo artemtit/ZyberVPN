@@ -1,19 +1,32 @@
+from html import escape
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.services.plans import get_all_plans
 
 
-def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMarkup:
-    connect_button = (
-        InlineKeyboardButton(text="📲 Подключить устройство", callback_data=f"key_connect:{key_id}")
-        if key_id
-        else InlineKeyboardButton(text="📲 Подключить устройство", url=sub_url)
+def access_activated_text(access: str, traffic: str, sub_url: str) -> str:
+    return (
+        "✅ <b>Доступ активирован</b>\n\n"
+        "Ваш VPN уже готов.\n\n"
+        f"⏳ Доступ: <b>{escape(access)}</b>\n"
+        f"📊 Лимит: <b>{escape(traffic)}</b>\n\n"
+        "🔗 Ваша ссылка создана и готова к использованию.\n\n"
+        "Сейчас подробно покажем, как всё настроить — обычно это занимает меньше минуты.\n\n"
+        "Для ручного подключения:\n\n"
+        f"<code>{escape(sub_url)}</code>"
     )
-    qr_callback = f"key_qr:{key_id}" if key_id else "payment_show_qr"
+
+
+def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMarkup:
+    instruction_button = (
+        InlineKeyboardButton(text="📘 Инструкция", callback_data=f"key_connect:{key_id}")
+        if key_id
+        else InlineKeyboardButton(text="📘 Инструкция", url=sub_url)
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [connect_button],
-            [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=qr_callback)],
-            [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
+            [instruction_button],
+            [InlineKeyboardButton(text="📋 Скопировать ссылку", callback_data="connect_copy_sub")],
         ]
     )
 
