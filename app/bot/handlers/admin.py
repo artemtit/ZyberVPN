@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from html import escape
+from time import perf_counter
 from typing import Any
 
 from aiogram import F, Router
@@ -25,7 +27,6 @@ from app.services.access import build_vpn_manager, ensure_user_access
 from app.services.supabase import execute_with_retry, get_supabase_client
 from app.services.vpn.manager import VPNManager
 from app.utils.datetime import add_months, parse_iso_utc, to_moscow, utc_now
-from datetime import timedelta
 
 
 class IsAdmin(BaseFilter):
@@ -48,6 +49,7 @@ _BANNED_IDS: set[int] = set()
 class AdminState(StatesGroup):
     waiting_broadcast_confirm = State()
     waiting_broadcastall_confirm = State()
+    waiting_resetuser_confirm = State()
 
 
 def _is_admin(tg_id: int, settings: Settings) -> bool:
@@ -95,6 +97,160 @@ def _format_used_traffic(bytes_used: int) -> str:
     return f"{bytes_used / (1024 ** 3):.2f} ГБ"
 
 
+def _truncate_for_log(value: str, limit: int = 300) -> str:
+    text = (value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+async def _resolve_reset_user_with_reason(text: str, db: Database) -> tuple[int | None, str, str]:
+    """Parse '/resetuser <tg_id|@username> <reason>'."""
+    raw = text.removeprefix("/resetuser").strip() if text else ""
+    if not raw:
+        return None, "", (
+            "Использование: /resetuser &lt;tg_id|@username&gt; &lt;reason&gt;\n"
+            "Пример: /resetuser 123456789 повторная чистая проверка онбординга"
+        )
+    parts = raw.split(maxsplit=1)
+    target_raw = parts[0].strip() if parts else ""
+    reason = parts[1].strip() if len(parts) > 1 else ""
+    if not reason:
+        return None, "", (
+            "❌ Укажите причину сброса.\n"
+            "Использование: /resetuser &lt;tg_id|@username&gt; &lt;reason&gt;\n"
+            "Пример: /resetuser @username ручная регрессия после фикса"
+        )
+    target_id, err = await _resolve_user(f"/resetuser {target_raw}", "resetuser", db)
+    if not target_id:
+        return None, "", err or "❌ Не удалось определить пользователя."
+    return target_id, reason, ""
+
+
+def _resetuser_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="resetuser_confirm")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="resetuser_cancel")],
+        ]
+    )
+
+
+async def _perform_reset_user(db: Database, settings: Settings, target_id: int) -> tuple[dict[str, int], dict[str, int], bool]:
+    """Reset user rows and return (deleted_stats, verify_stats, existed_before)."""
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(target_id)
+    if not user:
+        return {}, {}, False
+
+    # Best-effort: disable current XUI clients before DB cleanup.
+    try:
+        manager = build_vpn_manager(db, settings)
+        await manager.disable_user_access(target_id)
+    except Exception:
+        logger.exception("admin_resetuser: disable_user_access failed tg_id=%s", target_id)
+
+    supabase = get_supabase_client()
+    if supabase is None:
+        raise RuntimeError("Supabase недоступен")
+
+    payments_resp = await execute_with_retry(
+        lambda: supabase.table("payments").select("payload,idempotency_key").eq("tg_id", target_id).execute(),
+        operation="admin.resetuser.fetch_payments",
+    )
+    payment_rows = [r for r in (payments_resp.data or []) if isinstance(r, dict)]
+    payloads = [str(r.get("payload") or "") for r in payment_rows if r.get("payload")]
+    idem_keys = [str(r.get("idempotency_key") or "") for r in payment_rows if r.get("idempotency_key")]
+
+    stats: dict[str, int] = {}
+
+    async def _delete_eq(table: str, column: str, value: int) -> None:
+        resp = await execute_with_retry(
+            lambda: supabase.table(table).delete().eq(column, value).execute(),
+            operation=f"admin.resetuser.delete.{table}",
+        )
+        stats[f"{table}.{column}"] = len(resp.data or [])
+
+    # Clear references where this user is inviter/admin.
+    upd_resp = await execute_with_retry(
+        lambda: supabase.table("users").update({"ref_tg_id": None, "ref_label": None}).eq("ref_tg_id", target_id).execute(),
+        operation="admin.resetuser.update_referrals",
+    )
+    stats["users.ref_tg_id.updated"] = len(upd_resp.data or [])
+
+    # Delete exact idempotency keys first.
+    exact_idem = set(idem_keys)
+    for payload in payloads:
+        exact_idem.update({
+            f"payment-success:{payload}",
+            f"vpn-provision:{payload}",
+            f"referral-bonus:{payload}",
+            f"topup_success:{payload}",
+        })
+    deleted_idem_exact = 0
+    for key in sorted(k for k in exact_idem if k):
+        resp = await execute_with_retry(
+            lambda k=key: supabase.table("idempotency_keys").delete().eq("idempotency_key", k).execute(),
+            operation="admin.resetuser.delete_idem_exact",
+        )
+        deleted_idem_exact += len(resp.data or [])
+    stats["idempotency_keys.exact"] = deleted_idem_exact
+
+    # Fallback delete by tg_id substring.
+    idem_like = await execute_with_retry(
+        lambda: supabase.table("idempotency_keys").delete().like("idempotency_key", f"%{target_id}%").execute(),
+        operation="admin.resetuser.delete_idem_like",
+    )
+    stats["idempotency_keys.like"] = len(idem_like.data or [])
+
+    await _delete_eq("vpn_devices", "user_id", target_id)
+    await _delete_eq("user_vpn", "user_id", target_id)
+    await _delete_eq("keys", "tg_id", target_id)
+    await _delete_eq("subscriptions", "tg_id", target_id)
+    await _delete_eq("payments", "tg_id", target_id)
+    try:
+        await _delete_eq("referral_links", "admin_tg_id", target_id)
+    except Exception:
+        # Optional table on some environments.
+        stats["referral_links.admin_tg_id"] = 0
+    await _delete_eq("users", "tg_id", target_id)
+    _BANNED_IDS.discard(target_id)
+
+    checks = {}
+    for table, column in (
+        ("users", "tg_id"),
+        ("keys", "tg_id"),
+        ("subscriptions", "tg_id"),
+        ("payments", "tg_id"),
+        ("user_vpn", "user_id"),
+        ("vpn_devices", "user_id"),
+    ):
+        resp = await execute_with_retry(
+            lambda t=table, c=column: supabase.table(t).select(c, count="exact").eq(c, target_id).execute(),
+            operation=f"admin.resetuser.verify.{table}",
+        )
+        checks[f"{table}.{column}"] = int(getattr(resp, "count", 0) or 0)
+    ref_resp = await execute_with_retry(
+        lambda: supabase.table("users").select("tg_id", count="exact").eq("ref_tg_id", target_id).execute(),
+        operation="admin.resetuser.verify.ref_tg_id",
+    )
+    checks["users.ref_tg_id"] = int(getattr(ref_resp, "count", 0) or 0)
+    return stats, checks, True
+
+
+def _render_resetuser_result(target_id: int, stats: dict[str, int], checks: dict[str, int]) -> str:
+    return (
+        f"🧹 Пользователь <code>{target_id}</code> сброшен как новый.\n\n"
+        f"Удалено: users={stats.get('users.tg_id', 0)}, keys={stats.get('keys.tg_id', 0)}, "
+        f"payments={stats.get('payments.tg_id', 0)}, subs={stats.get('subscriptions.tg_id', 0)}, "
+        f"user_vpn={stats.get('user_vpn.user_id', 0)}, vpn_devices={stats.get('vpn_devices.user_id', 0)}, "
+        f"idem_exact={stats.get('idempotency_keys.exact', 0)}, idem_like={stats.get('idempotency_keys.like', 0)}\n"
+        f"Проверка: users={checks['users.tg_id']}, keys={checks['keys.tg_id']}, "
+        f"payments={checks['payments.tg_id']}, user_vpn={checks['user_vpn.user_id']}, "
+        f"vpn_devices={checks['vpn_devices.user_id']}, referrals={checks['users.ref_tg_id']}"
+    )
+
+
 # ──────────────────────────────────────────
 # /admin
 # ──────────────────────────────────────────
@@ -106,7 +262,7 @@ async def admin_help(message: Message, settings: Settings) -> None:
         "🔧 <b>Admin commands:</b>\n\n"
         "<b>👤 Пользователи</b>\n"
         "/user &lt;tg_id|@username&gt; — профиль пользователя\n"
-        "/resetuser &lt;tg_id|@username&gt; — сбросить пользователя как нового\n"
+        "/resetuser &lt;tg_id|@username&gt; &lt;reason&gt; — сбросить пользователя как нового\n"
         "/payments &lt;tg_id|@username&gt; — история платежей\n"
         "/ban &lt;tg_id&gt; — заблокировать\n"
         "/unban &lt;tg_id&gt; — разблокировать\n\n"
@@ -322,12 +478,12 @@ async def admin_user(message: Message, db: Database, settings: Settings) -> None
 # /resetuser <tg_id|@username> — reset as new
 # ──────────────────────────────────────────
 @router.message(Command("resetuser"))
-async def admin_reset_user(message: Message, db: Database, settings: Settings) -> None:
+async def admin_reset_user(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
     if not _is_admin(message.from_user.id, settings):
         return
-    target_id, err = await _resolve_user(message.text or "", "resetuser", db)
+    target_id, reason, err = await _resolve_reset_user_with_reason(message.text or "", db)
     if not target_id:
-        await message.answer(err or "Использование: /resetuser &lt;tg_id&gt; или @username")
+        await message.answer(err or "Использование: /resetuser &lt;tg_id|@username&gt; &lt;reason&gt;")
         return
     if target_id in settings.admin_ids:
         await message.answer("❌ Нельзя сбрасывать администратора.")
@@ -339,110 +495,110 @@ async def admin_reset_user(message: Message, db: Database, settings: Settings) -
         await message.answer(f"ℹ️ Пользователь {target_id} не найден — уже чисто.")
         return
 
-    # Best-effort: disable current XUI clients before DB cleanup.
-    try:
-        manager = build_vpn_manager(db, settings)
-        await manager.disable_user_access(target_id)
-    except Exception:
-        logger.exception("admin_resetuser: disable_user_access failed tg_id=%s", target_id)
+    await state.set_state(AdminState.waiting_resetuser_confirm)
+    await state.update_data(
+        resetuser_target_id=target_id,
+        resetuser_reason=reason,
+        resetuser_requested_by=message.from_user.id,
+        resetuser_requested_at=utc_now().isoformat(),
+    )
+    logger.warning(
+        "event=ADMIN_RESETUSER_REQUESTED admin_id=%s target_id=%s reason=%s",
+        message.from_user.id,
+        target_id,
+        _truncate_for_log(reason),
+    )
+    await message.answer(
+        "Подтверждение сброса пользователя:\n\n"
+        f"target: <code>{target_id}</code>\n"
+        f"reason: <code>{escape(reason)}</code>\n\n"
+        "Будут удалены данные пользователя, ключи, подписки, платежные следы и VPN-связки.",
+        reply_markup=_resetuser_confirm_keyboard(),
+    )
 
-    supabase = get_supabase_client()
-    if supabase is None:
-        await message.answer("❌ Supabase недоступен.")
+
+@router.callback_query(F.data == "resetuser_confirm", AdminState.waiting_resetuser_confirm)
+async def admin_reset_user_confirm(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
         return
 
-    payments_resp = await execute_with_retry(
-        lambda: supabase.table("payments").select("payload,idempotency_key").eq("tg_id", target_id).execute(),
-        operation="admin.resetuser.fetch_payments",
+    data = await state.get_data()
+    target_id = int(data.get("resetuser_target_id") or 0)
+    reason = str(data.get("resetuser_reason") or "").strip()
+    requested_by = int(data.get("resetuser_requested_by") or 0)
+    await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if not target_id or not reason:
+        await callback.answer("Данные подтверждения потеряны", show_alert=True)
+        return
+    if requested_by and requested_by != callback.from_user.id:
+        await callback.answer("Подтвердить может только инициатор команды", show_alert=True)
+        return
+    if target_id in settings.admin_ids:
+        await callback.message.answer("❌ Нельзя сбрасывать администратора.")
+        await callback.answer()
+        return
+
+    logger.warning(
+        "event=ADMIN_RESETUSER_CONFIRMED admin_id=%s target_id=%s reason=%s",
+        callback.from_user.id,
+        target_id,
+        _truncate_for_log(reason),
     )
-    payment_rows = [r for r in (payments_resp.data or []) if isinstance(r, dict)]
-    payloads = [str(r.get("payload") or "") for r in payment_rows if r.get("payload")]
-    idem_keys = [str(r.get("idempotency_key") or "") for r in payment_rows if r.get("idempotency_key")]
 
-    stats: dict[str, int] = {}
-
-    async def _delete_eq(table: str, column: str, value: int) -> None:
-        resp = await execute_with_retry(
-            lambda: supabase.table(table).delete().eq(column, value).execute(),
-            operation=f"admin.resetuser.delete.{table}",
-        )
-        stats[f"{table}.{column}"] = len(resp.data or [])
-
-    # Clear references where this user is inviter/admin.
-    upd_resp = await execute_with_retry(
-        lambda: supabase.table("users").update({"ref_tg_id": None, "ref_label": None}).eq("ref_tg_id", target_id).execute(),
-        operation="admin.resetuser.update_referrals",
-    )
-    stats["users.ref_tg_id.updated"] = len(upd_resp.data or [])
-
-    # Delete exact idempotency keys first.
-    exact_idem = set(idem_keys)
-    for payload in payloads:
-        exact_idem.update({
-            f"payment-success:{payload}",
-            f"vpn-provision:{payload}",
-            f"referral-bonus:{payload}",
-            f"topup_success:{payload}",
-        })
-    deleted_idem_exact = 0
-    for key in sorted(k for k in exact_idem if k):
-        resp = await execute_with_retry(
-            lambda k=key: supabase.table("idempotency_keys").delete().eq("idempotency_key", k).execute(),
-            operation="admin.resetuser.delete_idem_exact",
-        )
-        deleted_idem_exact += len(resp.data or [])
-    stats["idempotency_keys.exact"] = deleted_idem_exact
-
-    # Fallback delete by tg_id substring.
-    idem_like = await execute_with_retry(
-        lambda: supabase.table("idempotency_keys").delete().like("idempotency_key", f"%{target_id}%").execute(),
-        operation="admin.resetuser.delete_idem_like",
-    )
-    stats["idempotency_keys.like"] = len(idem_like.data or [])
-
-    await _delete_eq("vpn_devices", "user_id", target_id)
-    await _delete_eq("user_vpn", "user_id", target_id)
-    await _delete_eq("keys", "tg_id", target_id)
-    await _delete_eq("subscriptions", "tg_id", target_id)
-    await _delete_eq("payments", "tg_id", target_id)
+    started = perf_counter()
     try:
-        await _delete_eq("referral_links", "admin_tg_id", target_id)
-    except Exception:
-        # Optional table on some environments.
-        stats["referral_links.admin_tg_id"] = 0
-    await _delete_eq("users", "tg_id", target_id)
-    _BANNED_IDS.discard(target_id)
-
-    checks = {}
-    for table, column in (
-        ("users", "tg_id"),
-        ("keys", "tg_id"),
-        ("subscriptions", "tg_id"),
-        ("payments", "tg_id"),
-        ("user_vpn", "user_id"),
-        ("vpn_devices", "user_id"),
-    ):
-        resp = await execute_with_retry(
-            lambda t=table, c=column: supabase.table(t).select(c, count="exact").eq(c, target_id).execute(),
-            operation=f"admin.resetuser.verify.{table}",
+        stats, checks, existed = await _perform_reset_user(db, settings, target_id)
+        duration_ms = int((perf_counter() - started) * 1000)
+        if not existed:
+            await callback.message.answer(f"ℹ️ Пользователь {target_id} не найден — уже чисто.")
+        else:
+            await callback.message.answer(_render_resetuser_result(target_id, stats, checks))
+        logger.warning(
+            "event=ADMIN_RESETUSER_COMPLETED admin_id=%s target_id=%s reason=%s duration_ms=%s deleted_counts=%s verify_counts=%s existed_before=%s",
+            callback.from_user.id,
+            target_id,
+            _truncate_for_log(reason),
+            duration_ms,
+            stats,
+            checks,
+            existed,
         )
-        checks[f"{table}.{column}"] = int(getattr(resp, "count", 0) or 0)
-    ref_resp = await execute_with_retry(
-        lambda: supabase.table("users").select("tg_id", count="exact").eq("ref_tg_id", target_id).execute(),
-        operation="admin.resetuser.verify.ref_tg_id",
-    )
-    checks["users.ref_tg_id"] = int(getattr(ref_resp, "count", 0) or 0)
+    except Exception:
+        duration_ms = int((perf_counter() - started) * 1000)
+        logger.exception(
+            "event=ADMIN_RESETUSER_FAILED admin_id=%s target_id=%s reason=%s duration_ms=%s",
+            callback.from_user.id,
+            target_id,
+            _truncate_for_log(reason),
+            duration_ms,
+        )
+        await callback.message.answer(
+            f"❌ Не удалось сбросить пользователя <code>{target_id}</code>. Подробности смотрите в логах."
+        )
+    await callback.answer()
 
-    await message.answer(
-        f"🧹 Пользователь <code>{target_id}</code> сброшен как новый.\n\n"
-        f"Удалено: users={stats.get('users.tg_id', 0)}, keys={stats.get('keys.tg_id', 0)}, "
-        f"payments={stats.get('payments.tg_id', 0)}, subs={stats.get('subscriptions.tg_id', 0)}, "
-        f"user_vpn={stats.get('user_vpn.user_id', 0)}, vpn_devices={stats.get('vpn_devices.user_id', 0)}, "
-        f"idem_exact={stats.get('idempotency_keys.exact', 0)}, idem_like={stats.get('idempotency_keys.like', 0)}\n"
-        f"Проверка: users={checks['users.tg_id']}, keys={checks['keys.tg_id']}, "
-        f"payments={checks['payments.tg_id']}, user_vpn={checks['user_vpn.user_id']}, "
-        f"vpn_devices={checks['vpn_devices.user_id']}, referrals={checks['users.ref_tg_id']}",
+
+@router.callback_query(F.data == "resetuser_cancel", AdminState.waiting_resetuser_confirm)
+async def admin_reset_user_cancel(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    if not _is_admin(callback.from_user.id, settings):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    data = await state.get_data()
+    target_id = int(data.get("resetuser_target_id") or 0)
+    reason = str(data.get("resetuser_reason") or "").strip()
+    await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    logger.warning(
+        "event=ADMIN_RESETUSER_CANCELLED admin_id=%s target_id=%s reason=%s",
+        callback.from_user.id,
+        target_id,
+        _truncate_for_log(reason),
     )
+    await callback.message.answer("❌ Сброс пользователя отменён.")
+    await callback.answer()
 
 
 # ──────────────────────────────────────────
