@@ -381,6 +381,36 @@ class VPNManager:
             logger.exception("get_client_stats failed user_id=%s key_id=%s", user_id, key_id)
             return 0, 0
 
+    async def is_client_online(self, user_id: int, key_id: int | None = None) -> bool:
+        """Return True if the client's reality/ws email is currently online on any server row for key_id."""
+        if key_id is None:
+            return False
+        provider = self._providers.get("xui")
+        if not isinstance(provider, XUIProvider):
+            return False
+        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        rows = [r for r in ([primary_row] + list(secondary_rows)) if r and int(r.get("server_id") or 0) > 0]
+        if not rows:
+            return False
+        servers = await self._servers_repo.list_all()
+        emails = {
+            XUIProvider._client_email(user_id, "reality", key_id),
+            XUIProvider._client_email(user_id, "ws", key_id),
+        }
+        for row in rows:
+            server_id = int(row.get("server_id") or 0)
+            server = next((s for s in servers if s.id == server_id), None)
+            if not server:
+                continue
+            try:
+                online = await provider.get_online_count(server, emails)
+                if online > 0:
+                    return True
+            except Exception:
+                logger.debug("is_client_online: get_online_count failed user_id=%s key_id=%s server_id=%s", user_id, key_id, server_id)
+        return False
+
     async def enforce_traffic_limit(self, user_id: int, key_id: int | None = None) -> bool:
         """Disable VPN client for (user_id, key_id) if traffic_limit_gb is exceeded.
 

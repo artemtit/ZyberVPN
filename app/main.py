@@ -459,6 +459,7 @@ async def _register_commands(bot: Bot, settings) -> None:
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="user", description="Профиль пользователя"),
         BotCommand(command="payments", description="История платежей"),
+        BotCommand(command="resetuser", description="Сбросить пользователя"),
         BotCommand(command="givekey", description="Выдать ключ"),
         BotCommand(command="delkey", description="Удалить ключ"),
         BotCommand(command="addbalance", description="Пополнить баланс"),
