@@ -221,7 +221,7 @@ def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref")],
+            [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref", style="success")],
             [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo", style="primary")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_menu", style="danger")],
