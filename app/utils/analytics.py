@@ -34,9 +34,10 @@ async def _send(event: str, tg_id: int, properties: dict) -> None:
 
 
 def track(tg_id: int, event: str, properties: dict | None = None) -> None:
-    """Fire-and-forget PostHog event. Safe to call from any async context."""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.create_task(_send(event, tg_id, properties or {}))
-    except Exception:
+    except RuntimeError:
         pass
+    except Exception:
+        logger.exception("analytics.track failed event=%s tg_id=%s", event, tg_id)
