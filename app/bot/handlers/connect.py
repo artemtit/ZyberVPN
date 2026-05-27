@@ -233,7 +233,7 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Для устройства пока нет приложений", show_alert=True)
         return
 
-    app_callback, app_name = apps[0]
+    app_name, app_callback = apps[0]
     instruction = INSTRUCTIONS.get(app_callback, "Инструкция скоро появится.")
 
     await state.set_state(ConnectFlowState.done)
