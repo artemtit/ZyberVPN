@@ -34,7 +34,7 @@ def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMar
 def renewal_success_keyboard(key_id: int = 0) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if key_id:
-        rows.append([InlineKeyboardButton(text="📲 Подключить", callback_data=f"key_connect:{key_id}")])
+        rows.append([InlineKeyboardButton(text="📲 Подключить", callback_data=f"key_connect:{key_id}", style="primary")])
     rows.append([InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -101,7 +101,7 @@ def key_card_keyboard(
         else InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}", style="success")
     )
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}", style="success")],
+        [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}", style="primary")],
         [renew_btn],
         [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
         [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
