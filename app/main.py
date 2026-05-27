@@ -295,7 +295,7 @@ def _trial_unused_keyboard(settings, key_id: int = 0) -> InlineKeyboardMarkup:
 
 
 def _buy_keyboard(text: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="buy_open", style="colored")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="buy_open")]])
 
 
 async def _get_trial_key_id(keys_repo: KeysRepository, tg_id: int) -> int:
@@ -504,7 +504,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                         msg_7d,
                         entities=[build_date_entity(msg_7d, expires_str, int(expires_dt.timestamp()))],
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open", style="colored")]]
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
                         ),
                     )
                     await users_repo.set_notified(tg_id, "7d")
@@ -530,7 +530,7 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                         msg_3d,
                         entities=[build_date_entity(msg_3d, expires_str, int(expires_dt.timestamp()))],
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open", style="colored")]]
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
                         ),
                     )
                     await users_repo.set_notified(tg_id, "3d")
