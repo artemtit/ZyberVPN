@@ -34,6 +34,7 @@ from app.repositories.users import UsersRepository
 from app.repositories.vpn_devices import VpnDevicesRepository
 from app.services.access import build_vpn_manager
 from app.services.subscription import build_subscription_service
+from app.utils.analytics import configure as configure_analytics
 from app.utils.datetime import build_date_entity, parse_iso_utc, to_moscow
 
 try:
@@ -639,9 +640,37 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
         await asyncio.sleep(3600)
 
 
+async def _trial_followup_loop(bot: Bot, db: Database, interval_seconds: int = 300) -> None:
+    users_repo = UsersRepository(db)
+    while True:
+        try:
+            users = await users_repo.get_trial_users_needing_followup()
+            for user in users:
+                tg_id = int(user["tg_id"])
+                try:
+                    await bot.send_message(
+                        tg_id,
+                        "Привет! Ты получил пробный период, но ещё не подключился к ZyberVPN 👀\n"
+                        "Это займёт 1 минуту — попробуй прямо сейчас!",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="📲 Подключиться", callback_data="connect_instruction"),
+                        ]]),
+                    )
+                    await users_repo.mark_trial_followup(tg_id)
+                except TelegramForbiddenError:
+                    await users_repo.mark_trial_followup(tg_id)
+                except Exception:
+                    logging.exception("trial_followup notify failed tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+        except Exception:
+            logging.exception("trial_followup loop error")
+        await asyncio.sleep(interval_seconds)
+
+
 async def run() -> None:
     configure_logging()
     settings = load_settings()
+    configure_analytics(settings.posthog_api_key)
     db = Database(settings.db_path)
     await db.init()
     await ServersRepository(db).startup_probe()
@@ -679,6 +708,7 @@ async def run() -> None:
     expiry_notification_task = asyncio.create_task(_expiry_notification_loop(bot, db, settings))
     disk_alert_task = asyncio.create_task(_disk_alert_loop(bot, settings))
     reconciliation_task = asyncio.create_task(_provisioning_reconciliation_loop(db, settings, bot))
+    trial_followup_task = asyncio.create_task(_trial_followup_loop(bot, db))
 
     # Restore banned-user set from DB so bans survive bot restarts.
     try:
@@ -709,6 +739,7 @@ async def run() -> None:
             expiry_notification_task,
             disk_alert_task,
             reconciliation_task,
+            trial_followup_task,
         ):
             task.cancel()
             try:

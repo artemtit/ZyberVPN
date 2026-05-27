@@ -14,6 +14,7 @@ from app.repositories.users import UsersRepository
 from app.services.access import ensure_user_access
 from app.utils.admin_notify import notify_admins
 from app.utils.datetime import utc_now
+from app.utils.analytics import track
 from app.utils.tg import is_trial_eligible
 
 router = Router()
@@ -114,3 +115,4 @@ async def trial_start(callback: CallbackQuery, db: Database, settings: Settings)
         f"🔑 Ключ #{key_id} | 24 часа / {TRIAL_TRAFFIC_GB} ГБ",
     )
     logger.info("event=TRIAL_ACTIVATED tg_id=%s key_id=%s", tg_id, key_id)
+    track(tg_id, "trial_started", {"key_id": key_id})

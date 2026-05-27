@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, LabeledPrice, Message
 import logging
 
 from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_back_keyboard, payment_keyboard, payment_success_keyboard, renewal_success_keyboard, stars_back_keyboard, tariffs_keyboard
+from app.utils.analytics import track
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.purchase import PurchaseState
 from app.repositories.promo import PromoRepository
@@ -424,6 +425,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         return
 
     tg_id = int(processed["tg_id"])
+    track(tg_id, "payment_completed", {"method": "sbp", "tariff_code": processed.get("tariff_code")})
     purchase_type = str(processed.get("purchase_type") or "new")
     renew_key_id = processed.get("renew_key_id")
     user = await users_repo.get_by_tg_id(tg_id)
@@ -714,6 +716,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
         return
 
     tg_id = int(processed["tg_id"])
+    track(tg_id, "payment_completed", {"method": "balance", "tariff_code": processed.get("tariff_code")})
     purchase_type = str(processed.get("purchase_type") or "new")
     renew_key_id = processed.get("renew_key_id")
     user = await users_repo.get_by_tg_id(tg_id)

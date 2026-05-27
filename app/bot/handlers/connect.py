@@ -5,9 +5,10 @@ from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.keyboards.inline import connect_apps_keyboard, connect_devices_keyboard, connect_result_keyboard
+from app.utils.analytics import track
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.bot.states.connect import ConnectFlowState
 from app.config import Settings
@@ -269,7 +270,13 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
             f"📋 <b>Инструкция:</b>\n{instruction}"
         )
 
-    await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
+    track(callback.from_user.id, "device_selected", {"device_code": device_code})
+    await callback.message.edit_text(text, reply_markup=connect_result_keyboard(
+        app_callback=app_callback,
+        sub_url=sub_url or "",
+        show_connected_btn=not instruction_only,
+    ))
+    track(callback.from_user.id, "instruction_shown", {"app_callback": app_callback, "device_code": device_code})
     await callback.answer()
 
 
@@ -325,7 +332,11 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
             f"📋 <b>Инструкция:</b>\n{instruction}"
         )
 
-    await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
+    await callback.message.edit_text(text, reply_markup=connect_result_keyboard(
+        app_callback=app_callback,
+        sub_url=sub_url or "",
+        show_connected_btn=not instruction_only,
+    ))
     await callback.answer()
 
 
@@ -390,5 +401,29 @@ async def connect_back_devices(callback: CallbackQuery, state: FSMContext) -> No
         "📲 <b>Подключение к ZyberVPN</b>\n\n"
         f"На каком устройстве хотите {'посмотреть инструкцию' if instruction_only else 'настроить VPN'}?",
         reply_markup=connect_devices_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "connect_confirmed")
+async def connect_confirmed(callback: CallbackQuery, db: Database) -> None:
+    tg_id = callback.from_user.id
+    track(tg_id, "connected_confirmed")
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(tg_id)
+    is_active = users_repo.is_user_active(user) if user else False
+    if is_active:
+        text = (
+            "🎉 Отлично! Надеюсь VPN работает хорошо.\n\n"
+            "Когда пробный период закончится, подписка стоит всего 69 ₽/мес — "
+            "это меньше чашки кофе ☕"
+        )
+    else:
+        text = "🎉 Отлично! Когда будете готовы продолжить — подписка стоит 69 ₽/мес."
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="success")
+        ]]),
     )
     await callback.answer()

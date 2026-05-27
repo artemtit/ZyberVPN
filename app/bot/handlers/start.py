@@ -14,6 +14,7 @@ from app.db.database import Database
 from app.repositories.users import UsersRepository
 from app.utils.admin_notify import notify_admins
 from app.utils.datetime import utc_now
+from app.utils.analytics import track
 from app.utils.tg import is_trial_eligible, send_main_menu
 
 router = Router()
@@ -53,6 +54,7 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
     is_new = existing is None
 
     await users_repo.get_or_create(message.from_user.id, ref_tg_id=ref_tg_id, ref_label=ref_label)
+    track(message.from_user.id, "bot_start", {"is_new": is_new})
     await users_repo.update_user_info(
         message.from_user.id,
         username=message.from_user.username,

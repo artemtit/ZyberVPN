@@ -303,10 +303,36 @@ def connect_apps_keyboard(apps: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def connect_result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices", style="success")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")],
-        ]
-    )
+_DEEPLINK: dict[str, tuple[str, str]] = {
+    "app_happ":         ("happ://add/{url}", "Happ"),
+    "app_happ_mac":     ("happ://add/{url}", "Happ"),
+    "app_happ_linux":   ("happ://add/{url}", "Happ"),
+    "app_happ_appletv": ("happ://add/{url}", "Happ"),
+    "app_happ_win":     ("happ://add/{url}", "Happ"),
+    "app_v2raytun":     ("v2rayng://install-config?name=ZyberVPN&url={url}", "V2RayTun"),
+    "app_v2rayng":      ("v2rayng://install-config?name=ZyberVPN&url={url}", "v2rayNG"),
+}
+
+
+def connect_result_keyboard(
+    app_callback: str = "",
+    sub_url: str = "",
+    show_connected_btn: bool = True,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if app_callback and sub_url and app_callback in _DEEPLINK:
+        tmpl, label = _DEEPLINK[app_callback]
+        rows.append([InlineKeyboardButton(
+            text=f"📲 Добавить в {label}",
+            url=tmpl.format(url=sub_url),
+            style="primary",
+        )])
+    if show_connected_btn:
+        rows.append([InlineKeyboardButton(
+            text="✅ Я подключился!",
+            callback_data="connect_confirmed",
+            style="success",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices", style="success")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

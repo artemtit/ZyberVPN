@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, PreCheckoutQuery
 
 from app.bot.keyboards.inline import access_activated_text, main_menu_keyboard, payment_success_keyboard, renewal_success_keyboard
+from app.utils.analytics import track
 from app.bot.keyboards.main import get_main_menu_keyboard
 from app.config import Settings
 from app.db.database import Database
@@ -289,6 +290,7 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     logger.info("Payment processed idempotently payload=%s tg_id=%s", payment_info.invoice_payload, processed["tg_id"])
     tg_id = int(processed["tg_id"])
+    track(tg_id, "payment_completed", {"method": "stars", "tariff_code": processed.get("tariff_code")})
     purchase_type = str(processed.get("purchase_type") or "new")
     renew_key_id = processed.get("renew_key_id")
 

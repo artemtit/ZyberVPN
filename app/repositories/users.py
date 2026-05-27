@@ -819,6 +819,52 @@ class UsersRepository:
             if not await self._supabase_token_exists(candidate):
                 return candidate
 
+    async def get_trial_users_needing_followup(self) -> list[dict]:
+        if not self._supabase:
+            return []
+        now = utc_now()
+        window_start = (now - timedelta(minutes=40)).isoformat()
+        window_end = (now - timedelta(minutes=30)).isoformat()
+        try:
+            response = await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .select("tg_id")
+                    .eq("plan", "trial")
+                    .eq("is_active", True)
+                    .is_("trial_followup_at", "null")
+                    .gte("last_activated_at", window_start)
+                    .lte("last_activated_at", window_end)
+                    .execute()
+                ),
+                operation="users.get_trial_users_needing_followup",
+            )
+            return list(response.data or [])
+        except Exception as exc:
+            if "42703" in str(exc) or "does not exist" in str(exc):
+                return []
+            logger.exception("get_trial_users_needing_followup failed")
+            return []
+
+    async def mark_trial_followup(self, tg_id: int) -> None:
+        if not self._supabase:
+            return
+        try:
+            await execute_with_retry(
+                lambda: (
+                    self._supabase.table("users")
+                    .update({"trial_followup_at": utc_now().isoformat()})
+                    .eq("tg_id", tg_id)
+                    .execute()
+                ),
+                operation="users.mark_trial_followup",
+            )
+        except Exception as exc:
+            if "42703" in str(exc) or "does not exist" in str(exc):
+                logger.debug("mark_trial_followup: column not yet in schema")
+            else:
+                logger.exception("mark_trial_followup failed tg_id=%s", tg_id)
+
     async def _supabase_token_exists(self, token: str) -> bool:
         if not self._supabase:
             return False
