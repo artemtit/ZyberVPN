@@ -36,8 +36,8 @@ APPS: dict[str, list[tuple[str, str]]] = {
     "android_tv": [("v2rayNG", "app_v2rayng"), ("V2RayTun", "app_v2raytun")],
     "ios": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
     "apple_tv": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
-    "windows": [("v2rayN", "app_v2rayn")],
-    "macos": [("V2RayX", "app_v2rayx")],
+    "windows": [("Happ", "app_happ_win")],
+    "macos": [("Happ", "app_happ_mac")],
     "linux": [("CLI", "app_cli")],
 }
 
@@ -68,20 +68,20 @@ INSTRUCTIONS: dict[str, str] = {
         "3️⃣ Профиль добавится автоматически\n"
         "4️⃣ Нажмите <b>Connect</b> — готово!"
     ),
-    "app_v2rayn": (
-        "1️⃣ Установите <b>v2rayN</b>\n"
-        "2️⃣ В меню выберите <b>Server → Import from clipboard</b>\n"
-        "3️⃣ Вставьте ссылку и нажмите <b>OK</b>\n"
-        "4️⃣ Нажмите <b>▶ Старт</b> — готово!"
+    "app_happ_win": (
+        "1️⃣ <a href=\"https://github.com/Happ-proxy/happ-desktop/releases/latest/download/setup-Happ.x64.exe\">Скачайте и установите Happ</a>\n"
+        "2️⃣ Нажмите <b>«+»</b> → <b>«From clipboard»</b>\n"
+        "3️⃣ Профиль добавится автоматически\n"
+        "4️⃣ Нажмите <b>Connect</b> — готово!"
     ),
-    "app_v2rayx": (
-        "1️⃣ Установите <b>V2RayX</b>\n"
-        "2️⃣ Откройте меню <b>Configure → Import</b>\n"
-        "3️⃣ Вставьте ссылку и сохраните\n"
-        "4️⃣ Нажмите <b>Turn V2RayX On</b> — готово!"
+    "app_happ_mac": (
+        "1️⃣ <a href=\"https://github.com/Happ-proxy/happ-desktop/releases/latest\">Скачайте и установите Happ</a>\n"
+        "2️⃣ Нажмите <b>«+»</b> → <b>«From clipboard»</b>\n"
+        "3️⃣ Профиль добавится автоматически\n"
+        "4️⃣ Нажмите <b>Connect</b> — готово!"
     ),
     "app_cli": (
-        "1️⃣ Установите <b>xray</b> или <b>v2ray</b>\n"
+        "1️⃣ <a href=\"https://github.com/XTLS/Xray-core/releases/latest\">Скачайте Xray</a>\n"
         "2️⃣ Создайте файл <code>config.json</code>\n"
         "3️⃣ Добавьте ключ как <code>outbound</code>\n"
         "4️⃣ Запустите: <code>xray run -c config.json</code>"
