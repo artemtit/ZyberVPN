@@ -142,26 +142,19 @@ class ServersRepository:
                 operation="servers.list",
             )
         except Exception as error:
+            logger.error(
+                "Supabase servers.list failed query=%s missing_column_likely=%s error=%s",
+                select_query,
+                "column" in str(error).lower(),
+                error,
+            )
             legacy_query = self._supabase.table("servers").select(",".join(_LEGACY_SERVER_COLUMNS))
             if active_only:
                 legacy_query = legacy_query.eq("is_active", True)
-            try:
-                response = await execute_with_retry(
-                    lambda: legacy_query.execute(),
-                    operation="servers.list.legacy",
-                )
-                logger.debug(
-                    "Supabase servers.list fell back to legacy schema query=%s error=%s",
-                    select_query,
-                    error,
-                )
-            except Exception:
-                logger.error(
-                    "Supabase servers.list failed query=%s legacy_fallback_failed=true error=%s",
-                    select_query,
-                    error,
-                )
-                raise
+            response = await execute_with_retry(
+                lambda: legacy_query.execute(),
+                operation="servers.list.legacy",
+            )
         rows = response.data or []
         return [self._map_row(item) for item in rows if isinstance(item, dict)]
 
