@@ -168,7 +168,7 @@ def payment_keyboard(
     if discount_percent > 0:
         rows.append([InlineKeyboardButton(text=f"✅ Промокод −{discount_percent}% применён | Сменить", callback_data="pay:promo")])
     else:
-        rows.append([InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="pay:promo")])
+        rows.append([InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="pay:promo", style="primary")])
     if show_test_pay:
         rows.append([InlineKeyboardButton(text="🧪 Тестовая оплата [Admin]", callback_data="pay:sbp")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open", style="danger")])
@@ -222,7 +222,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref")],
-            [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo")],
+            [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo", style="primary")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_menu", style="danger")],
         ]
