@@ -26,7 +26,7 @@ def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMar
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [instruction_button],
-            [InlineKeyboardButton(text="📋 Скопировать ссылку", callback_data="connect_copy_sub")],
+            [InlineKeyboardButton(text="📋 Скопировать ссылку", copy_text={"text": sub_url})],
         ]
     )
 
