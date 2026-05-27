@@ -220,3 +220,5 @@ BUGS.md
 # Telethon session file (bot automation tester)
 tests/bot_test_session.session*
 tests/bot_automation_results.json
+
+summer_sprint.md
