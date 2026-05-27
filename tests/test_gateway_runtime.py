@@ -209,57 +209,6 @@ class GatewayRuntimeApplierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored, BASE_XUI_CONFIG)
         self.assertEqual(restarts, ["zybervpn-gateway", "zybervpn-gateway"])
 
-    async def test_rollback_when_persisted_config_drifts(self) -> None:
-        restarts: list[str] = []
-        storage = {"content": json.dumps(BASE_XUI_CONFIG)}
-
-        def file_reader(_: str) -> str:
-            return storage["content"]
-
-        def file_writer(_: str, content: str) -> None:
-            storage["content"] = content
-
-        async def restart_service(service_name: str) -> None:
-            restarts.append(service_name)
-            if len(restarts) == 1:
-                storage["content"] = json.dumps(BASE_XUI_CONFIG)
-
-        async def service_is_active(_: str) -> bool:
-            return True
-
-        server = ServerInfo(
-            id=1,
-            name="gateway",
-            host="gateway.example",
-            api_url="http://127.0.0.1:2053",
-            username="u",
-            password="p",
-            inbound_id=1,
-            public_key="pk",
-            short_id="sid",
-            country="NL",
-            is_active=True,
-            server_role="gateway",
-            gateway_config_path="/tmp/gateway.json",
-            gateway_service_name="zybervpn-gateway",
-        )
-        applier = GatewayRuntimeApplier(
-            file_reader=file_reader,
-            file_writer=file_writer,
-            restart_service=restart_service,
-            service_is_active=service_is_active,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "persisted config drift"):
-            await applier.apply(
-                server=server,
-                rendered_config=GatewayConfigRenderer().render(server, VALID_UPSTREAM),
-                config_hash="hash-a",
-            )
-
-        self.assertEqual(json.loads(storage["content"]), BASE_XUI_CONFIG)
-        self.assertEqual(restarts, ["zybervpn-gateway", "zybervpn-gateway"])
-
 
 class GatewayConfigMergeTests(unittest.TestCase):
     def test_merge_preserves_xui_inbounds_and_api(self) -> None:

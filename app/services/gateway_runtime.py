@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from app.services.vpn.base import ServerInfo
 from app.utils.datetime import utc_now
 
 logger = logging.getLogger(__name__)
-_XUI_DB_PREFIX = "xui-db:"
 
 
 @dataclass(slots=True)
@@ -88,15 +86,6 @@ class GatewayRuntimeApplier:
                 raise
         else:
             is_active = await self._service_is_active(service_name)
-        persisted = await asyncio.to_thread(self._file_reader, config_path)
-        if persisted != effective_config:
-            if changed:
-                await self._rollback_config(
-                    config_path=config_path,
-                    service_name=service_name,
-                    previous_config=current,
-                )
-            raise RuntimeError(f"Gateway persisted config drift detected for '{config_path}'")
         if not is_active:
             if changed:
                 await self._rollback_config(
@@ -109,21 +98,14 @@ class GatewayRuntimeApplier:
 
     @staticmethod
     def _default_file_reader(path: str) -> str:
-        storage_kind, target_path, setting_key = _parse_config_target(path)
-        if storage_kind == "xui-db":
-            return _read_xui_db_setting(target_path, setting_key)
         try:
-            return Path(target_path).read_text(encoding="utf-8")
+            return Path(path).read_text(encoding="utf-8")
         except FileNotFoundError:
             return ""
 
     @staticmethod
     def _default_file_writer(path: str, content: str) -> None:
-        storage_kind, target_path, setting_key = _parse_config_target(path)
-        if storage_kind == "xui-db":
-            _write_xui_db_setting(target_path, setting_key, content)
-            return
-        target = Path(target_path)
+        target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = target.with_suffix(target.suffix + ".tmp")
         tmp_path.write_text(content, encoding="utf-8")
@@ -163,42 +145,6 @@ class GatewayRuntimeApplier:
             await self._restart_service(service_name)
         except Exception:
             logger.exception("Gateway rollback failed service=%s path=%s", service_name, config_path)
-
-
-def _parse_config_target(path: str) -> tuple[str, str, str]:
-    cleaned = str(path or "").strip()
-    if cleaned.startswith(_XUI_DB_PREFIX):
-        payload = cleaned[len(_XUI_DB_PREFIX):]
-        db_path, _, setting_key = payload.partition("#")
-        return "xui-db", db_path.strip(), (setting_key.strip() or "xrayTemplateConfig")
-    return "file", cleaned, ""
-
-
-def _read_xui_db_setting(db_path: str, setting_key: str) -> str:
-    if not db_path:
-        raise RuntimeError("xui-db target has empty database path")
-    connection = sqlite3.connect(db_path)
-    try:
-        cursor = connection.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (setting_key,))
-        row = cursor.fetchone()
-        return str(row[0]) if row and row[0] is not None else ""
-    finally:
-        connection.close()
-
-
-def _write_xui_db_setting(db_path: str, setting_key: str, content: str) -> None:
-    if not db_path:
-        raise RuntimeError("xui-db target has empty database path")
-    connection = sqlite3.connect(db_path)
-    try:
-        cursor = connection.cursor()
-        cursor.execute("UPDATE settings SET value = ? WHERE key = ?", (content, setting_key))
-        if cursor.rowcount <= 0:
-            raise RuntimeError(f"xui-db setting '{setting_key}' was not found in {db_path}")
-        connection.commit()
-    finally:
-        connection.close()
 
 
 class GatewayRuntimeManager:
