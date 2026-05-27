@@ -43,11 +43,11 @@ def renewal_success_keyboard(key_id: int = 0) -> InlineKeyboardMarkup:
 def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if show_trial:
-        rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start", style="success")])
+        rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start", style="danger")])
     rows.extend([
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="success")],
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="danger")],
         [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
-        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
+        [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile", style="success")],
         [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
         [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
     ])
@@ -60,7 +60,7 @@ def trial_expired_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="1 месяц — 69 ₽", callback_data="tariff:m1", style="success")],
             [InlineKeyboardButton(text="3 месяца — 189 ₽  (−9%)", callback_data="tariff:m3", style="success")],
             [InlineKeyboardButton(text="6 месяцев — 349 ₽  (−16%)", callback_data="tariff:m6", style="success")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")],
         ]
     )
 
@@ -70,7 +70,7 @@ def legal_keyboard(privacy_policy_url: str, terms_url: str) -> InlineKeyboardMar
         inline_keyboard=[
             [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=privacy_policy_url)],
             [InlineKeyboardButton(text="📋 Пользовательское соглашение", url=terms_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu", style="danger")],
         ]
     )
 
@@ -84,8 +84,8 @@ def keys_list_keyboard(
         rows.append([InlineKeyboardButton(text=text, callback_data=f"key_open:{key_id}")])
     for text, _ in (expired_trial_rows or []):
         rows.append([InlineKeyboardButton(text=text, callback_data="buy_open")])
-    rows.append([InlineKeyboardButton(text="🛒 Купить ключ", callback_data="buy_open")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")])
+    rows.append([InlineKeyboardButton(text="🛒 Купить ключ", callback_data="buy_open", style="primary")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -112,7 +112,7 @@ def key_card_keyboard(
         rows.append([InlineKeyboardButton(text="⭐ (Основной ключ)", callback_data="noop")])
     else:
         rows.append([InlineKeyboardButton(text="⭐ Сделать основным", callback_data=f"key_set_primary:{key_id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к списку ключей", callback_data="menu_keys", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -129,7 +129,7 @@ def tariffs_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             suffix = f"  (−{discount}%)" if discount > 0 else ""
             label = f"{plan['name']} — {plan['price_rub']} ₽{suffix}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"buy_plan:{plan['id']}", style="success")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -150,7 +150,7 @@ def payment_keyboard(
             rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega")])
         if platega_crypto_enabled:
             rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
-        rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
+        rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open", style="danger")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
     if balance > 0:
         if price_rub > 0 and balance >= price_rub:
@@ -171,7 +171,7 @@ def payment_keyboard(
         rows.append([InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="pay:promo")])
     if show_test_pay:
         rows.append([InlineKeyboardButton(text="🧪 Тестовая оплата [Admin]", callback_data="pay:sbp")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="buy_open", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -180,7 +180,7 @@ def payment_back_keyboard(redirect_url: str, tariff_code: str = "", purchase_typ
     back_data = f"payment_back:{tariff_code}:{purchase_type}:{renew_key_id}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
-        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data, style="danger")],
     ])
 
 
@@ -191,21 +191,21 @@ def topup_payment_keyboard(platega_enabled: bool = False, platega_crypto_enabled
         rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="topup_pay:platega")])
     if platega_crypto_enabled:
         rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="topup_pay:platega_crypto")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="profile_topup")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="profile_topup", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def topup_stars_keyboard(rub_amount: int, stars: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⭐ Оплатить {stars} Stars", pay=True)],
-        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=f"topup_method_back:{rub_amount}")],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=f"topup_method_back:{rub_amount}", style="danger")],
     ])
 
 
 def topup_platega_keyboard(redirect_url: str, rub_amount: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=redirect_url)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"topup_method_back:{rub_amount}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"topup_method_back:{rub_amount}", style="danger")],
     ])
 
 
@@ -214,7 +214,7 @@ def stars_back_keyboard(tariff_code: str = "", purchase_type: str = "new", renew
     pay_text = f"⭐ Оплатить {stars} Stars" if stars else "⭐ Оплатить Stars"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=pay_text, pay=True)],
-        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data)],
+        [InlineKeyboardButton(text="⬅️ Вернуться к способам оплаты", callback_data=back_data, style="danger")],
     ])
 
 
@@ -224,7 +224,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🤝 Реферальная программа", callback_data="profile_ref")],
             [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="profile_promo")],
             [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile_topup")],
-            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_menu", style="danger")],
         ]
     )
 
@@ -232,7 +232,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
 def subscription_info_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile", style="danger")],
         ]
     )
 
@@ -250,7 +250,7 @@ def topup_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="3 000 ₽", callback_data="topup_rub:3000"),
                 InlineKeyboardButton(text="5 000 ₽", callback_data="topup_rub:5000"),
             ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile", style="danger")],
         ]
     )
 
@@ -258,7 +258,7 @@ def topup_keyboard() -> InlineKeyboardMarkup:
 def promo_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile", style="danger")],
         ]
     )
 
@@ -277,7 +277,7 @@ def referral_keyboard(ref_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📤 Поделиться в Telegram", url=ref_url)],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_profile", style="danger")],
         ]
     )
 
@@ -292,21 +292,21 @@ def connect_devices_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🐧 Linux", callback_data="device_linux")],
             [InlineKeyboardButton(text="📺 Android TV", callback_data="device_android_tv")],
             [InlineKeyboardButton(text="🍏 Apple TV", callback_data="device_apple_tv")],
-            [InlineKeyboardButton(text="⬅️ Назад к ключу", callback_data="menu_keys")],
+            [InlineKeyboardButton(text="⬅️ Назад к ключу", callback_data="menu_keys", style="danger")],
         ]
     )
 
 
 def connect_apps_keyboard(apps: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=app_name, callback_data=app_callback)] for app_name, app_callback in apps]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="connect_back_devices")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="connect_back_devices", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def connect_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices", style="danger")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")],
         ]
     )
