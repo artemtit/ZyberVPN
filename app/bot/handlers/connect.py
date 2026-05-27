@@ -34,8 +34,8 @@ DEVICES: dict[str, str] = {
 APPS: dict[str, list[tuple[str, str]]] = {
     "android": [("v2rayNG", "app_v2rayng"), ("V2RayTun", "app_v2raytun")],
     "android_tv": [("v2rayNG", "app_v2rayng"), ("V2RayTun", "app_v2raytun")],
-    "ios": [("Shadowrocket", "app_shadowrocket"), ("Happ", "app_happ")],
-    "apple_tv": [("Shadowrocket", "app_shadowrocket"), ("Happ", "app_happ")],
+    "ios": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
+    "apple_tv": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
     "windows": [("v2rayN", "app_v2rayn")],
     "macos": [("V2RayX", "app_v2rayx")],
     "linux": [("CLI", "app_cli")],
