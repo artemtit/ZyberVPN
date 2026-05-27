@@ -19,9 +19,9 @@ def access_activated_text(access: str, traffic: str, sub_url: str) -> str:
 
 def payment_success_keyboard(sub_url: str, key_id: int = 0) -> InlineKeyboardMarkup:
     instruction_button = (
-        InlineKeyboardButton(text="📘 Инструкция", callback_data=f"key_connect:{key_id}")
+        InlineKeyboardButton(text="📘 Инструкция", callback_data=f"key_connect:{key_id}", style="primary")
         if key_id
-        else InlineKeyboardButton(text="📘 Инструкция", url=sub_url)
+        else InlineKeyboardButton(text="📘 Инструкция", url=sub_url, style="primary")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
