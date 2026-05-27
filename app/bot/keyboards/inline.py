@@ -46,7 +46,7 @@ def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyb
         rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start", style="danger")])
     rows.extend([
         [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="danger")],
-        [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
+        [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys", style="primary")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile", style="success")],
         [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
         [InlineKeyboardButton(text="📄 Документы", callback_data="legal_docs")],
