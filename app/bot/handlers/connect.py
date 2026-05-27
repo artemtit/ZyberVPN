@@ -405,25 +405,20 @@ async def connect_back_devices(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.callback_query(F.data == "connect_confirmed")
-async def connect_confirmed(callback: CallbackQuery, db: Database) -> None:
-    tg_id = callback.from_user.id
-    track(tg_id, "connected_confirmed")
-    users_repo = UsersRepository(db)
-    user = await users_repo.get_by_tg_id(tg_id)
-    is_active = users_repo.is_user_active(user) if user else False
-    if is_active:
-        text = (
-            "🎉 Отлично! Надеюсь VPN работает хорошо.\n\n"
-            "Когда пробный период закончится, подписка стоит всего 69 ₽/мес — "
-            "это меньше чашки кофе ☕"
-        )
-    else:
-        text = "🎉 Отлично! Когда будете готовы продолжить — подписка стоит 69 ₽/мес."
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="success")
-        ]]),
+@router.callback_query(F.data == "connect_issues")
+async def connect_issues(callback: CallbackQuery, settings: Settings) -> None:
+    track(callback.from_user.id, "connect_issues_opened")
+    text = (
+        "❓ <b>Проблемы с подключением?</b>\n\n"
+        "Частые причины:\n"
+        "• Убедитесь, что скопировали ссылку целиком\n"
+        "• Попробуйте другое приложение из списка\n"
+        "• Перезапустите приложение после добавления конфига\n\n"
+        "Если не помогло — напишите в поддержку, разберёмся быстро 👇"
     )
+    rows: list[list[InlineKeyboardButton]] = []
+    if settings.support_url:
+        rows.append([InlineKeyboardButton(text="💬 Написать в поддержку", url=settings.support_url)])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await callback.answer()

@@ -321,9 +321,9 @@ def connect_result_keyboard(
         )])
     if show_connected_btn:
         rows.append([InlineKeyboardButton(
-            text="✅ Я подключился!",
-            callback_data="connect_confirmed",
-            style="success",
+            text="❓ У меня проблема!",
+            callback_data="connect_issues",
+            style="danger",
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices", style="success")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")])
