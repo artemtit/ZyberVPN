@@ -32,13 +32,13 @@ DEVICES: dict[str, str] = {
 }
 
 APPS: dict[str, list[tuple[str, str]]] = {
-    "android": [("v2rayNG", "app_v2rayng"), ("V2RayTun", "app_v2raytun")],
-    "android_tv": [("v2rayNG", "app_v2rayng"), ("V2RayTun", "app_v2raytun")],
+    "android": [("V2RayTun", "app_v2raytun"), ("v2rayNG", "app_v2rayng")],
+    "android_tv": [("V2RayTun", "app_v2raytun"), ("v2rayNG", "app_v2rayng")],
     "ios": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
-    "apple_tv": [("Happ", "app_happ"), ("Shadowrocket", "app_shadowrocket")],
+    "apple_tv": [("Happ", "app_happ_appletv")],
     "windows": [("Happ", "app_happ_win")],
     "macos": [("Happ", "app_happ_mac")],
-    "linux": [("CLI", "app_cli")],
+    "linux": [("Happ", "app_happ_linux")],
 }
 
 INSTRUCTIONS: dict[str, str] = {
@@ -75,16 +75,24 @@ INSTRUCTIONS: dict[str, str] = {
         "4️⃣ Нажмите <b>Connect</b> — готово!"
     ),
     "app_happ_mac": (
-        "1️⃣ <a href=\"https://github.com/Happ-proxy/happ-desktop/releases/latest\">Скачайте и установите Happ</a>\n"
+        "1️⃣ <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Установите Happ из App Store</a>\n"
         "2️⃣ Нажмите <b>«+»</b> → <b>«From clipboard»</b>\n"
         "3️⃣ Профиль добавится автоматически\n"
         "4️⃣ Нажмите <b>Connect</b> — готово!"
     ),
-    "app_cli": (
-        "1️⃣ <a href=\"https://github.com/XTLS/Xray-core/releases/latest\">Скачайте Xray</a>\n"
-        "2️⃣ Создайте файл <code>config.json</code>\n"
-        "3️⃣ Добавьте ключ как <code>outbound</code>\n"
-        "4️⃣ Запустите: <code>xray run -c config.json</code>"
+    "app_happ_linux": (
+        "1️⃣ <a href=\"https://github.com/Happ-proxy/happ-desktop/releases/latest/download/Happ.linux.x64.deb\">Скачайте и установите Happ (.deb)</a>\n"
+        "2️⃣ Нажмите <b>«+»</b> → <b>«From clipboard»</b>\n"
+        "3️⃣ Профиль добавится автоматически\n"
+        "4️⃣ Нажмите <b>Connect</b> — готово!"
+    ),
+    "app_happ_appletv": (
+        "1️⃣ На iPhone/iPad откройте <b>App Store</b> → установите <a href=\"https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973\">Happ</a>\n"
+        "2️⃣ В Happ нажмите <b>«+»</b> → <b>«From clipboard»</b>, вставьте ссылку подписки\n"
+        "3️⃣ На <b>Apple TV</b> откройте <b>App Store</b> → найдите <b>Happ</b> → установите\n"
+        "4️⃣ На Apple TV откройте Happ → войдите в аккаунт или выберите <b>«Sync from iPhone»</b>\n"
+        "5️⃣ Конфиг синхронизируется автоматически → нажмите <b>Connect</b>\n"
+        "❓ Подробнее: <a href=\"https://www.happ.su/main/ru/faq/apple-tv-tvos\">инструкция на сайте Happ</a>"
     ),
 }
 
