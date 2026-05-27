@@ -10,6 +10,34 @@ from app.utils.datetime import parse_iso_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
+# Static VLESS links appended to every subscription (untracked external servers).
+_STATIC_LINKS: list[str] = [
+    (
+        "vless://2c0c4a3f-1ba1-4ac4-8813-02f720b9c192@84.201.151.157:443"
+        "?encryption=none&flow=xtls-rprx-vision&security=reality"
+        "&sni=static.rutube.ru&fp=chrome"
+        "&pbk=VAmZs6nifGz4osO4rc5z-Fo5NuKN1TOLJ79rOxcfMFk"
+        "&sid=edceec74d404e2b0&spx=%2F&type=tcp"
+        "#\U0001f1f7\U0001f1fa Авто | Обход"
+    ),
+    (
+        "vless://2c0c4a3f-1ba1-4ac4-8813-02f720b9c192@84.201.151.157:443"
+        "?encryption=none&security=reality"
+        "&sni=static.rutube.ru&fp=chrome"
+        "&pbk=pBN3EZ0V-elep_VRvP1JIN_CHmE1hb4GdeRH_-s89Bo"
+        "&sid=2cdb5f5afa3506b5&spx=%2F&type=tcp"
+        "#\U0001f1f7\U0001f1fa Авто | Обход-2"
+    ),
+    (
+        "vless://2c0c4a3f-1ba1-4ac4-8813-02f720b9c192@84.201.151.157:443"
+        "?encryption=none&security=reality"
+        "&sni=static.rutube.ru&fp=chrome"
+        "&pbk=396kN6u5K1Hkfm2JcLxjTM0cHjs4T5TwOukzwJir2wM"
+        "&sid=b15b0935607a5977&spx=%2Fapi%2Fv7&type=xhttp&mode=auto"
+        "#\U0001f1f7\U0001f1fa Авто | Обход-3"
+    ),
+]
+
 # ISO-2 country code → (flag emoji, display name)
 _COUNTRY_DISPLAY: dict[str, tuple[str, str]] = {
     "NL": ("🇳🇱", "Нидерланды"),
@@ -175,6 +203,8 @@ class SubscriptionService:
         if not links:
             raise LookupError("vpn access not found for key")
 
+        links.extend(_STATIC_LINKS)
+
         # Provision any active servers the user is missing — runs in background so
         # this request stays fast; the new server appears on the next subscription poll.
         try:
@@ -221,6 +251,7 @@ class SubscriptionService:
         ]
         if not links:
             raise LookupError("vpn access not found")
+        links.extend(_STATIC_LINKS)
         download_bytes = 0
         try:
             bytes_used, _ = await self._vpn_manager.get_client_stats(tg_id)
