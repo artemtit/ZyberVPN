@@ -54,6 +54,27 @@ def to_moscow(dt: datetime) -> datetime:
     return ensure_utc(dt).astimezone(_MOSCOW)
 
 
+def build_date_entity(message: str, date_str: str, unix_time: int):
+    """Return a date_time MessageEntity for date_str within message text.
+
+    Telegram Bot API 9.5: entity type 'date_time' displays the marked text
+    formatted for the user's locale and timezone.
+    Uses UTF-16 code unit offsets as required by Telegram Bot API.
+    """
+    from aiogram.types import MessageEntity
+
+    idx = message.index(date_str)
+    prefix = message[:idx]
+    offset = len(prefix.encode("utf-16-le")) // 2
+    length = len(date_str.encode("utf-16-le")) // 2
+    return MessageEntity.model_construct(
+        type="date_time",
+        offset=offset,
+        length=length,
+        unix_time=unix_time,
+    )
+
+
 def add_months(source: datetime, months: int) -> datetime:
     source_utc = ensure_utc(source)
     if source_utc.tzinfo is None:

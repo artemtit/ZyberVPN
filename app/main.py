@@ -34,7 +34,7 @@ from app.repositories.users import UsersRepository
 from app.repositories.vpn_devices import VpnDevicesRepository
 from app.services.access import build_vpn_manager
 from app.services.subscription import build_subscription_service
-from app.utils.datetime import parse_iso_utc, to_moscow
+from app.utils.datetime import build_date_entity, parse_iso_utc, to_moscow
 
 try:
     from aiogram.fsm.storage.redis import RedisStorage
@@ -295,7 +295,7 @@ def _trial_unused_keyboard(settings, key_id: int = 0) -> InlineKeyboardMarkup:
 
 
 def _buy_keyboard(text: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="buy_open")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="buy_open", style="colored")]])
 
 
 async def _get_trial_key_id(keys_repo: KeysRepository, tg_id: int) -> int:
@@ -495,14 +495,16 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_7d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
+                expires_dt = parse_iso_utc(user["expires_at"])
+                expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+                msg_7d = f"⏳ Ваша подписка ZyberVPN истекает {expires_str} — через неделю.\n\nПродлите заранее, чтобы не потерять доступ."
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"⏳ Ваша подписка ZyberVPN истекает {expires_str} — через неделю.\n\n"
-                        "Продлите заранее, чтобы не потерять доступ.",
+                        msg_7d,
+                        entities=[build_date_entity(msg_7d, expires_str, int(expires_dt.timestamp()))],
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open", style="colored")]]
                         ),
                     )
                     await users_repo.set_notified(tg_id, "7d")
@@ -519,14 +521,16 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                 if user.get("notified_3d_at"):
                     continue
                 tg_id = int(user["tg_id"])
-                expires_str = to_moscow(parse_iso_utc(user["expires_at"])).strftime("%d.%m.%Y")
+                expires_dt = parse_iso_utc(user["expires_at"])
+                expires_str = to_moscow(expires_dt).strftime("%d.%m.%Y")
+                msg_3d = f"⚠️ Ваша подписка ZyberVPN истекает {expires_str}.\n\nПродлите её, чтобы не потерять доступ."
                 try:
                     await bot.send_message(
                         tg_id,
-                        f"⚠️ Ваша подписка ZyberVPN истекает {expires_str}.\n\n"
-                        "Продлите её, чтобы не потерять доступ.",
+                        msg_3d,
+                        entities=[build_date_entity(msg_3d, expires_str, int(expires_dt.timestamp()))],
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open")]]
+                            inline_keyboard=[[InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_open", style="colored")]]
                         ),
                     )
                     await users_repo.set_notified(tg_id, "3d")

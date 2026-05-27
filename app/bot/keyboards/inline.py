@@ -43,9 +43,9 @@ def renewal_success_keyboard(key_id: int = 0) -> InlineKeyboardMarkup:
 def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if show_trial:
-        rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start")])
+        rows.append([InlineKeyboardButton(text="🎁 Попробовать бесплатно (1 день)", callback_data="trial_start", style="colored")])
     rows.extend([
-        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")],
+        [InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="colored")],
         [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="menu_keys")],
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="menu_profile")],
         [InlineKeyboardButton(text="🆘 Поддержка", url=support_url)],
@@ -57,9 +57,9 @@ def main_menu_keyboard(support_url: str, show_trial: bool = False) -> InlineKeyb
 def trial_expired_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="1 месяц — 69 ₽", callback_data="tariff:m1")],
-            [InlineKeyboardButton(text="3 месяца — 189 ₽  (−9%)", callback_data="tariff:m3")],
-            [InlineKeyboardButton(text="6 месяцев — 349 ₽  (−16%)", callback_data="tariff:m6")],
+            [InlineKeyboardButton(text="1 месяц — 69 ₽", callback_data="tariff:m1", style="colored")],
+            [InlineKeyboardButton(text="3 месяца — 189 ₽  (−9%)", callback_data="tariff:m3", style="colored")],
+            [InlineKeyboardButton(text="6 месяцев — 349 ₽  (−16%)", callback_data="tariff:m6", style="colored")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")],
         ]
     )
@@ -96,12 +96,12 @@ def key_card_keyboard(
     is_trial: bool = False,
 ) -> InlineKeyboardMarkup:
     renew_btn = (
-        InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open")
+        InlineKeyboardButton(text="💳 Купить подписку", callback_data="buy_open", style="colored")
         if is_trial
-        else InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}")
+        else InlineKeyboardButton(text="➕ Продлить этот ключ", callback_data=f"key_renew:{key_id}", style="colored")
     )
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}")],
+        [InlineKeyboardButton(text="📲 Подключиться", callback_data=f"key_connect:{key_id}", style="colored")],
         [renew_btn],
         [InlineKeyboardButton(text="📱 Показать QR-код", callback_data=f"key_qr:{key_id}")],
         [InlineKeyboardButton(text="📝 Комментарии", callback_data=f"key_comment:{key_id}")],
@@ -128,7 +128,7 @@ def tariffs_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             discount = round((1 - per_month / base_monthly_price) * 100)
             suffix = f"  (−{discount}%)" if discount > 0 else ""
             label = f"{plan['name']} — {plan['price_rub']} ₽{suffix}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy_plan:{plan['id']}")])
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy_plan:{plan['id']}", style="colored")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -159,12 +159,12 @@ def payment_keyboard(
             label = f"💰 Баланс: −{balance} руб. (доплатить {price_rub - balance} руб.)"
         else:
             label = f"💰 Оплатить с баланса ({balance} руб.)"
-        rows.append([InlineKeyboardButton(text=label, callback_data="pay:balance")])
+        rows.append([InlineKeyboardButton(text=label, callback_data="pay:balance", style="colored")])
     if platega_enabled:
-        rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega")])
+        rows.append([InlineKeyboardButton(text="💳 СБП / QR (Platega)", callback_data="pay:platega", style="colored")])
     if platega_crypto_enabled:
-        rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto")])
-    rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars")])
+        rows.append([InlineKeyboardButton(text="🪙 Криптовалюта (Platega)", callback_data="pay:platega_crypto", style="colored")])
+    rows.append([InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="pay:stars", style="colored")])
     if discount_percent > 0:
         rows.append([InlineKeyboardButton(text=f"✅ Промокод −{discount_percent}% применён | Сменить", callback_data="pay:promo")])
     else:
