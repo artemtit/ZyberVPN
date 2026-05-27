@@ -213,8 +213,12 @@ async def connect_instruction_open(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(F.data.startswith("device_"))
 async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    vpn_key = data.get("vpn_key")
+    sub_url = data.get("sub_url")
+    vpn_configs = [str(item) for item in (data.get("vpn_configs") or []) if str(item).startswith("vless://")]
     instruction_only = bool(data.get("instruction_only"))
-    if not data.get("vpn_key") and not instruction_only:
+
+    if not vpn_key and not instruction_only:
         await callback.answer("Сессия подключения истекла. Откройте ключ заново.", show_alert=True)
         return
 
@@ -229,13 +233,35 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Для устройства пока нет приложений", show_alert=True)
         return
 
-    await state.set_state(ConnectFlowState.choosing_app)
-    await state.update_data(device_code=device_code, device_name=device_name)
+    app_callback, app_name = apps[0]
+    instruction = INSTRUCTIONS.get(app_callback, "Инструкция скоро появится.")
 
-    await callback.message.edit_text(
-        f"📲 <b>Подключение к ZyberVPN</b>\n\n📱 Устройство: <b>{escape(device_name)}</b>\n\nВыберите приложение для VPN:",
-        reply_markup=connect_apps_keyboard(apps),
-    )
+    await state.set_state(ConnectFlowState.done)
+    await state.update_data(device_code=device_code, device_name=device_name, app_callback=app_callback, app_name=app_name)
+
+    if instruction_only:
+        text = (
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 <b>{escape(device_name)}</b>\n\n"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
+        )
+    elif app_callback == "app_cli":
+        text = (
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 <b>{escape(device_name)}</b>\n\n"
+            f"🔑 Ваш ключ:\n<code>{escape(vpn_key)}</code>\n\n"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
+        )
+    else:
+        connection_value = sub_url or vpn_key
+        text = (
+            f"📲 <b>Подключение ZyberVPN</b>\n"
+            f"📱 <b>{escape(device_name)}</b>\n\n"
+            f"🔗 <b>Ссылка для подключения:</b>\n<code>{escape(connection_value)}</code>\n\n"
+            f"📋 <b>Инструкция:</b>\n{instruction}"
+        )
+
+    await callback.message.edit_text(text, reply_markup=connect_result_keyboard())
     await callback.answer()
 
 
