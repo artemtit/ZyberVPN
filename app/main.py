@@ -33,7 +33,6 @@ from app.repositories.servers import ServersRepository
 from app.repositories.users import UsersRepository
 from app.repositories.vpn_devices import VpnDevicesRepository
 from app.services.access import build_vpn_manager
-from app.services.gateway_runtime import build_gateway_runtime_manager
 from app.services.subscription import build_subscription_service
 from app.utils.datetime import parse_iso_utc, to_moscow
 
@@ -160,25 +159,6 @@ async def _enforce_traffic_loop(db: Database, settings, bot, interval_seconds: i
         except Exception:
             logging.exception("Traffic enforcement loop failed")
         await asyncio.sleep(interval_seconds)
-
-
-async def _gateway_runtime_sync_loop(db: Database, settings) -> None:
-    manager = build_gateway_runtime_manager(db, settings)
-    while True:
-        try:
-            summary = await manager.sync(force=False)
-            if summary.gateways_total:
-                logging.info(
-                    "gateway sync done gateways_total=%s gateways_ready=%s gateways_failed=%s changed=%s validation=%s",
-                    summary.gateways_total,
-                    summary.gateways_ready,
-                    summary.gateways_failed,
-                    summary.changed,
-                    summary.validation_status,
-                )
-        except Exception:
-            logging.exception("Gateway runtime sync loop failed")
-        await asyncio.sleep(settings.gateway_sync_interval_seconds)
 
 
 async def _provisioning_reconciliation_loop(db: Database, settings, bot: Bot, interval_seconds: int = 600) -> None:
@@ -661,10 +641,6 @@ async def run() -> None:
     db = Database(settings.db_path)
     await db.init()
     await ServersRepository(db).startup_probe()
-    try:
-        await build_gateway_runtime_manager(db, settings).sync(force=False)
-    except Exception:
-        logging.exception("Initial gateway runtime sync failed")
 
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = _build_dispatcher(settings)
@@ -693,7 +669,6 @@ async def run() -> None:
     # Expose bot to the aiohttp app so the webhook handler can send Telegram messages.
     web_runner.app["bot"] = bot
     healthcheck_task = asyncio.create_task(_vpn_healthcheck_loop(db, settings))
-    gateway_sync_task = asyncio.create_task(_gateway_runtime_sync_loop(db, settings))
     disable_expired_task = asyncio.create_task(_disable_expired_access_loop(db, settings))
     enforce_traffic_task = asyncio.create_task(_enforce_traffic_loop(db, settings, bot))
     per_key_expiry_task = asyncio.create_task(_per_key_expiry_loop(db, settings, bot=bot))
@@ -724,7 +699,6 @@ async def run() -> None:
     finally:
         for task in (
             healthcheck_task,
-            gateway_sync_task,
             disable_expired_task,
             enforce_traffic_task,
             per_key_expiry_task,

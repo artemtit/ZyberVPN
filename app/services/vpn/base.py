@@ -47,13 +47,6 @@ class ServerInfo:
     last_health_check: datetime | None = None
     health_errors: int = 0
     max_users: int = 0  # 0 = unlimited
-    server_role: str = "direct"
-    upstream_id: int | None = None
-    gateway_apply_status: str = "idle"
-    gateway_apply_error: str = ""
-    gateway_applied_at: datetime | None = None
-    gateway_config_path: str = ""
-    gateway_service_name: str = ""
 
 
 class VPNProvider(Protocol):

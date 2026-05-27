@@ -32,16 +32,8 @@ def _health_age_seconds(server: ServerInfo) -> int:
     return int(utc_diff(utc_now(), ensure_utc(server.last_health_check)).total_seconds())
 
 
-def _can_provision_on_server(server: ServerInfo) -> bool:
-    if not server.is_active:
-        return False
-    if server.server_role == "gateway" and str(server.gateway_apply_status or "").lower() != "ready":
-        return False
-    return True
-
-
 def pick_server(servers: list[ServerInfo], user_counts: dict[int, int], block_minutes: int) -> list[ServerInfo]:
-    active = [item for item in servers if _can_provision_on_server(item)]
+    active = [item for item in servers if item.is_active]
     if not active:
         return []
     now = utc_now()
@@ -354,12 +346,16 @@ class VPNManager:
         if key_id is None:
             logger.debug("get_client_stats called without key_id user_id=%s — skipped", user_id)
             return 0, 0
-        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
-        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
-        rows = [row for row in ([primary_row] + list(secondary_rows)) if row and int(row.get("server_id") or 0) > 0]
-        if not rows:
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id)
+        if not vpn:
+            return 0, 0
+        server_id = int(vpn.get("server_id") or 0)
+        if server_id <= 0:
             return 0, 0
         servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server:
+            return 0, 0
         provider = self._providers.get("xui")
         if not isinstance(provider, XUIProvider):
             return 0, 0
@@ -367,17 +363,12 @@ class VPNManager:
             reality_email = XUIProvider._client_email(user_id, "reality", key_id)
             ws_email = XUIProvider._client_email(user_id, "ws", key_id)
             bytes_used = 0
-            for row in rows:
-                server_id = int(row.get("server_id") or 0)
-                server = next((s for s in servers if s.id == server_id), None)
-                if not server:
-                    continue
-                reality_traffic = await provider.get_client_traffic(server, reality_email)
-                if isinstance(reality_traffic, dict):
-                    bytes_used += int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
-                ws_traffic = await provider.get_client_traffic(server, ws_email)
-                if isinstance(ws_traffic, dict):
-                    bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
+            reality_traffic = await provider.get_client_traffic(server, reality_email)
+            if isinstance(reality_traffic, dict):
+                bytes_used += int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
+            ws_traffic = await provider.get_client_traffic(server, ws_email)
+            if isinstance(ws_traffic, dict):
+                bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
             unique_devices = 0
             if self._vpn_devices_repo is not None:
                 unique_devices = await self._vpn_devices_repo.count_recent_devices(
@@ -433,56 +424,51 @@ class VPNManager:
             logger.debug("enforce_traffic_limit called without key_id user_id=%s — skipped", user_id)
             return False
 
-        primary_row = await self._user_vpn_repo.get_user_vpn(user_id, key_id=key_id)
-        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
-        rows = [row for row in ([primary_row] + list(secondary_rows)) if row and int(row.get("server_id") or 0) > 0]
-        if not rows:
+        vpn = await self._user_vpn_repo.get_user_vpn(user_id, key_id=key_id)
+        if not vpn:
             return False
-        if primary_row and primary_row.get("status") != "ready":
+        if vpn.get("status") != "ready":
             logger.debug(
                 "skip (already blocked) user_id=%s key_id=%s status=%s",
-                user_id, key_id, primary_row.get("status"),
+                user_id, key_id, vpn.get("status"),
             )
             return False
 
+        row_key_id = vpn.get("key_id")  # int or None
+        server_id = int(vpn.get("server_id") or 0)
+        if server_id <= 0:
+            return False
+
         servers = await self._servers_repo.list_all()
+        server = next((s for s in servers if s.id == server_id), None)
+        if not server:
+            return False
 
         provider = self._providers.get("xui")
         if not isinstance(provider, XUIProvider):
             return False
 
-        traffic_limit_gb = 0
-        limit_bytes = 0
-        bytes_used = 0
-        any_enabled = False
         try:
             reality_email = XUIProvider._client_email(user_id, "reality", key_id)
             ws_email = XUIProvider._client_email(user_id, "ws", key_id)
-            xui_total_bytes = 0
-            for row in rows:
-                server_id = int(row.get("server_id") or 0)
-                server = next((s for s in servers if s.id == server_id), None)
-                if not server:
-                    continue
-                reality_traffic = await provider.get_client_traffic(server, reality_email)
-                if not isinstance(reality_traffic, dict):
-                    continue
-                any_enabled = any_enabled or bool(reality_traffic.get("enable", True))
-                bytes_used += int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
-                ws_traffic = await provider.get_client_traffic(server, ws_email)
-                if isinstance(ws_traffic, dict):
-                    bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
-                if not xui_total_bytes:
-                    xui_total_bytes = int(reality_traffic.get("total") or 0)
+            reality_traffic = await provider.get_client_traffic(server, reality_email)
+            if not isinstance(reality_traffic, dict):
+                return False
+            if not reality_traffic.get("enable", True):
+                await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
+                return False
+            # Sum reality + WS traffic so WS usage is not invisible to enforcement.
+            bytes_used = int(reality_traffic.get("up", 0)) + int(reality_traffic.get("down", 0))
+            ws_traffic = await provider.get_client_traffic(server, ws_email)
+            if isinstance(ws_traffic, dict):
+                bytes_used += int(ws_traffic.get("up", 0)) + int(ws_traffic.get("down", 0))
+            # Use reality client's XUI totalGB as the single shared limit.
+            xui_total_bytes = int(reality_traffic.get("total") or 0)
         except Exception as error:
             logger.warning(
                 "traffic fetch failed, skipping user_id=%s key_id=%s error=%s",
                 user_id, key_id, error,
             )
-            return False
-
-        if not any_enabled:
-            await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
             return False
 
         if xui_total_bytes > 0:
@@ -508,40 +494,57 @@ class VPNManager:
             "limit exceeded user_id=%s key_id=%s used_gb=%.2f limit_gb=%s",
             user_id, key_id, bytes_used / 1024 ** 3, traffic_limit_gb,
         )
+
+        reality_uuid = str(vpn.get("reality_uuid") or "").strip()
+        ws_uuid = str(vpn.get("ws_uuid") or "").strip()
+
+        if not reality_uuid:
+            logger.warning("uuid missing, cannot disable user_id=%s key_id=%s", user_id, key_id)
+            return False
+
         all_disabled = True
-        for row in rows:
-            server_id = int(row.get("server_id") or 0)
-            server = next((s for s in servers if s.id == server_id), None)
-            if not server:
-                continue
-            reality_uuid = str(row.get("reality_uuid") or "").strip()
-            ws_uuid = str(row.get("ws_uuid") or "").strip()
-            if not reality_uuid:
-                logger.warning("uuid missing, cannot disable user_id=%s key_id=%s server_id=%s", user_id, key_id, server_id)
-                all_disabled = False
-                continue
-            for uuid in filter(None, [reality_uuid, ws_uuid]):
-                for attempt in range(2):
-                    try:
-                        await provider.disable_client(server, uuid)
-                        logger.info(
-                            "client disabled user_id=%s key_id=%s server_id=%s uuid=%s",
-                            user_id, key_id, server_id, uuid,
+        for uuid in filter(None, [reality_uuid, ws_uuid]):
+            for attempt in range(2):
+                try:
+                    await provider.disable_client(server, uuid)
+                    logger.info("client disabled user_id=%s key_id=%s uuid=%s", user_id, key_id, uuid)
+                    break
+                except Exception as error:
+                    if attempt == 0:
+                        logger.warning(
+                            "disable_client failed, retrying user_id=%s key_id=%s uuid=%s error=%s",
+                            user_id, key_id, uuid, error,
                         )
-                        break
-                    except Exception as error:
-                        if attempt == 0:
-                            logger.warning(
-                                "disable_client failed, retrying user_id=%s key_id=%s server_id=%s uuid=%s error=%s",
-                                user_id, key_id, server_id, uuid, error,
-                            )
-                            await asyncio.sleep(1.0)
-                        else:
-                            logger.error(
-                                "disable_client failed after retry user_id=%s key_id=%s server_id=%s uuid=%s error=%s",
-                                user_id, key_id, server_id, uuid, error,
-                            )
-                            all_disabled = False
+                        await asyncio.sleep(1.0)
+                    else:
+                        logger.error(
+                            "disable_client failed after retry user_id=%s key_id=%s uuid=%s error=%s",
+                            user_id, key_id, uuid, error,
+                        )
+                        all_disabled = False
+
+        # Disable clients on secondary servers (e.g. PL when primary is NL, or vice versa).
+        secondary_rows = await self._user_vpn_repo.list_secondary_for_key(user_id, key_id)
+        for sec_row in secondary_rows:
+            sec_server_id = int(sec_row.get("server_id") or 0)
+            sec_server = next((s for s in servers if s.id == sec_server_id), None)
+            if not sec_server:
+                continue
+            for uuid in filter(None, [
+                str(sec_row.get("reality_uuid") or "").strip(),
+                str(sec_row.get("ws_uuid") or "").strip(),
+            ]):
+                try:
+                    await provider.disable_client(sec_server, uuid)
+                    logger.info(
+                        "secondary client disabled user_id=%s key_id=%s server_id=%s uuid=%s",
+                        user_id, key_id, sec_server_id, uuid,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "secondary disable_client failed user_id=%s server_id=%s error=%s",
+                        user_id, sec_server_id, error,
+                    )
 
         if all_disabled:
             await self._user_vpn_repo.set_status(user_id, "limit_exceeded", key_id=key_id)
@@ -720,12 +723,10 @@ class VPNManager:
         )
         last_error: Exception | None = None
         for server in candidates:
-            if not _can_provision_on_server(server):
+            if not server.is_active:
                 logger.error(
-                    "GUARD: unavailable server reached provisioning user_id=%s server_id=%s name=%s status=%s role=%s — skipping",
+                    "GUARD: inactive server reached provisioning user_id=%s server_id=%s name=%s — skipping",
                     user_id, server.id, server.name,
-                    server.gateway_apply_status,
-                    server.server_role,
                 )
                 continue
             logger.info(
@@ -779,7 +780,7 @@ class VPNManager:
         try:
             servers = await self._servers_repo.list_all()
             for server in servers:
-                if not _can_provision_on_server(server) or server.id == primary_server_id:
+                if not server.is_active or server.id == primary_server_id:
                     continue
                 try:
                     existing_uuid = await provider.get_client(server, user_id, key_id=key_id)
@@ -989,7 +990,7 @@ class VPNManager:
         import re
 
         servers = await self._servers_repo.list_all()
-        active_servers = [s for s in servers if _can_provision_on_server(s)]
+        active_servers = [s for s in servers if s.is_active]
         provider = self._providers.get("xui")
         if not isinstance(provider, XUIProvider) or not active_servers:
             return 0, len(key_rows)
@@ -1076,7 +1077,7 @@ class VPNManager:
 
         servers = await self._servers_repo.list_all()
         server = next((s for s in servers if s.id == server_id), None)
-        if not server or not _can_provision_on_server(server):
+        if not server or not server.is_active:
             return False
 
         provider = self._providers.get("xui")
@@ -1117,7 +1118,7 @@ class VPNManager:
             return
 
         all_servers = await self._servers_repo.list_all()
-        active_secondary = [s for s in all_servers if _can_provision_on_server(s) and s.id != primary_server_id]
+        active_secondary = [s for s in all_servers if s.is_active and s.id != primary_server_id]
         if not active_secondary:
             return
 

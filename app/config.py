@@ -51,7 +51,6 @@ class Settings:
     xray_parser_max_bytes_per_cycle: int
     xray_parser_max_lines_per_cycle: int
     xray_device_window_hours: int
-    gateway_sync_interval_seconds: int
     referral_friend_bonus_rub: int
     # Platega payment gateway (optional — leave empty to disable)
     platega_merchant_id: str
@@ -133,7 +132,6 @@ def load_settings() -> Settings:
         xray_parser_max_bytes_per_cycle=max(4096, int(os.getenv("XRAY_PARSER_MAX_BYTES_PER_CYCLE", str(512 * 1024)))),
         xray_parser_max_lines_per_cycle=max(100, int(os.getenv("XRAY_PARSER_MAX_LINES_PER_CYCLE", "5000"))),
         xray_device_window_hours=max(1, int(os.getenv("XRAY_DEVICE_WINDOW_HOURS", "24"))),
-        gateway_sync_interval_seconds=max(10, int(os.getenv("GATEWAY_SYNC_INTERVAL_SECONDS", "60"))),
         platega_merchant_id=os.getenv("PLATEGA_MERCHANT_ID", "").strip(),
         platega_api_key=os.getenv("PLATEGA_API_KEY", "").strip(),
         platega_webhook_secret=os.getenv("PLATEGA_WEBHOOK_SECRET", "").strip(),
