@@ -6,14 +6,10 @@ from app.services.plans import get_all_plans
 
 def access_activated_text(access: str, traffic: str, sub_url: str) -> str:
     return (
-        "✅ <b>Доступ активирован</b>\n\n"
-        "Ваш VPN уже готов.\n\n"
-        f"⏳ Доступ: <b>{escape(access)}</b>\n"
-        f"📊 Лимит: <b>{escape(traffic)}</b>\n\n"
-        "🔗 Ваша ссылка создана и готова к использованию.\n\n"
-        "Сейчас подробно покажем, как всё настроить — обычно это занимает меньше минуты.\n\n"
-        "Для ручного подключения:\n\n"
-        f"<code>{escape(sub_url)}</code>"
+        "✅ <b>VPN активирован!</b>\n\n"
+        f"⏳ <b>{escape(access)}</b> · 📊 <b>{escape(traffic)}</b>\n\n"
+        "Нажмите <b>«📘 Инструкция»</b> — настройка займёт меньше минуты.\n\n"
+        f"Ссылка для ручного импорта:\n<code>{escape(sub_url)}</code>"
     )
 
 
@@ -309,6 +305,7 @@ _DEEPLINK: dict[str, tuple[str, str]] = {}
 def connect_result_keyboard(
     app_callback: str = "",
     sub_url: str = "",
+    vpn_key: str = "",
     show_connected_btn: bool = True,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
@@ -319,12 +316,20 @@ def connect_result_keyboard(
             url=tmpl.format(url=sub_url),
             style="primary",
         )])
+    copy_text = sub_url or vpn_key
+    if copy_text:
+        rows.append([InlineKeyboardButton(text="📋 Скопировать ссылку", copy_text={"text": copy_text})])
     if show_connected_btn:
+        rows.append([InlineKeyboardButton(
+            text="✅ Подключился!",
+            callback_data="user_connected",
+            style="success",
+        )])
         rows.append([InlineKeyboardButton(
             text="❓ У меня проблема!",
             callback_data="connect_issues",
             style="danger",
         )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices", style="success")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="connect_back_devices")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

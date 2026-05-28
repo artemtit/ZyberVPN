@@ -274,6 +274,7 @@ async def connect_choose_device(callback: CallbackQuery, state: FSMContext) -> N
     await callback.message.edit_text(text, reply_markup=connect_result_keyboard(
         app_callback=app_callback,
         sub_url=sub_url or "",
+        vpn_key=vpn_key or "",
         show_connected_btn=not instruction_only,
     ))
     track(callback.from_user.id, "instruction_shown", {"app_callback": app_callback, "device_code": device_code})
@@ -335,6 +336,7 @@ async def connect_choose_app(callback: CallbackQuery, state: FSMContext) -> None
     await callback.message.edit_text(text, reply_markup=connect_result_keyboard(
         app_callback=app_callback,
         sub_url=sub_url or "",
+        vpn_key=vpn_key or "",
         show_connected_btn=not instruction_only,
     ))
     await callback.answer()
@@ -405,6 +407,33 @@ async def connect_back_devices(callback: CallbackQuery, state: FSMContext) -> No
         reply_markup=connect_devices_keyboard(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "user_connected")
+async def user_connected(callback: CallbackQuery, db: Database) -> None:
+    tg_id = callback.from_user.id
+    track(tg_id, "user_connected")
+    users_repo = UsersRepository(db)
+    user = await users_repo.get_by_tg_id(tg_id)
+    is_trial = str((user or {}).get("plan") or "") == "trial"
+    if is_trial:
+        text = (
+            "🎉 <b>Отлично! VPN работает.</b>\n\n"
+            "Пробный период — 24 часа. Чтобы продолжить пользоваться без ограничений:\n\n"
+            "💳 <b>Подписка всего 69 ₽/мес</b>\n"
+            "• Без рекламы и слежки\n"
+            "• Серверы в Нидерландах и Польше\n"
+            "• Моментальное подключение"
+        )
+        rows: list[list[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text="💳 Оформить подписку — 69 ₽", callback_data="buy_open", style="success")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")],
+        ]
+    else:
+        text = "🎉 <b>Отлично! VPN работает.</b>\n\nПользуйтесь на здоровье!"
+        rows = [[InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_menu")]]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer("Отлично!")
 
 
 @router.callback_query(F.data == "connect_issues")
