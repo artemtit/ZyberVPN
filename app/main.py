@@ -483,7 +483,7 @@ async def _register_commands(bot: Bot, settings) -> None:
         logging.exception("Failed to register bot commands")
 
 
-async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  # noqa: ARG001
+async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
     vpn_devices_repo = VpnDevicesRepository(db)
@@ -584,6 +584,40 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
                     logging.exception("Failed to send trial 6h notification tg_id=%s", tg_id)
                 await asyncio.sleep(0.1)
 
+            # Trial expiry warning: ~2h before (uses notified_3d_at slot)
+            expiring_trial_2h = await users_repo.get_users_expiring_soon(2)
+            for user in expiring_trial_2h:
+                if str(user.get("plan") or "") != "trial":
+                    continue
+                if user.get("notified_3d_at"):
+                    continue
+                tg_id = int(user["tg_id"])
+                key_id = await _get_trial_key_id(keys_repo, tg_id)
+                has_connected = await _has_trial_connected(vpn_devices_repo, tg_id, key_id)
+                if has_connected:
+                    msg_text = (
+                        "⚡ <b>До конца пробного периода осталось ~2 часа</b>\n\n"
+                        "Понравился ZyberVPN? Продолжите за 69 ₽/мес — это меньше чашки кофе."
+                    )
+                    reply_markup = _buy_keyboard("💳 Оформить подписку — 69 ₽")
+                    log_event = "trial_notify_2h_used"
+                else:
+                    msg_text = (
+                        "⚡ <b>Пробный период заканчивается через ~2 часа</b>\n\n"
+                        "Ещё не подключились? Попробуйте сейчас — настройка займёт 1 минуту."
+                    )
+                    reply_markup = _trial_unused_keyboard(settings, key_id)
+                    log_event = "trial_notify_2h_unused"
+                try:
+                    await bot.send_message(tg_id, msg_text, reply_markup=reply_markup)
+                    await users_repo.set_notified(tg_id, "3d")
+                    logging.info("%s tg_id=%s key_id=%s", log_event, tg_id, key_id)
+                except TelegramForbiddenError:
+                    pass
+                except Exception:
+                    logging.exception("Failed to send trial 2h notification tg_id=%s", tg_id)
+                await asyncio.sleep(0.1)
+
             # Trial expiry warning: ~1h before (uses notified_7d_at slot)
             expiring_trial_1h = await users_repo.get_users_expiring_soon(1)
             for user in expiring_trial_1h:
@@ -642,21 +676,37 @@ async def _expiry_notification_loop(bot: Bot, db: Database, settings) -> None:  
 
 async def _trial_followup_loop(bot: Bot, db: Database, interval_seconds: int = 300) -> None:
     users_repo = UsersRepository(db)
+    keys_repo = KeysRepository(db)
+    vpn_devices_repo = VpnDevicesRepository(db)
     while True:
         try:
             users = await users_repo.get_trial_users_needing_followup()
             for user in users:
                 tg_id = int(user["tg_id"])
                 try:
-                    await bot.send_message(
-                        tg_id,
-                        "Привет! Ты получил пробный период, но ещё не подключился к ZyberVPN 👀\n"
-                        "Это займёт 1 минуту — попробуй прямо сейчас!",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text="📲 Подключиться", callback_data="connect_instruction"),
-                        ]]),
-                    )
+                    key_id = await _get_trial_key_id(keys_repo, tg_id)
+                    has_connected = await _has_trial_connected(vpn_devices_repo, tg_id, key_id)
+                    if has_connected:
+                        msg_text = (
+                            "👋 Как ощущения? Надеемся, ZyberVPN работает хорошо!\n\n"
+                            "Пробный период даётся на 24 часа. Чтобы продолжить без ограничений:"
+                        )
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="💳 Оформить подписку — 69 ₽", callback_data="buy_open", style="success"),
+                        ]])
+                        log_event = "trial_followup_connected"
+                    else:
+                        msg_text = (
+                            "👋 Ещё не настроили ZyberVPN?\n\n"
+                            "Подключение занимает 1 минуту — покажем пошагово."
+                        )
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="📲 Настроить VPN", callback_data="connect_instruction"),
+                        ]])
+                        log_event = "trial_followup_not_connected"
+                    await bot.send_message(tg_id, msg_text, reply_markup=markup)
                     await users_repo.mark_trial_followup(tg_id)
+                    logging.info("%s tg_id=%s key_id=%s", log_event, tg_id, key_id)
                 except TelegramForbiddenError:
                     await users_repo.mark_trial_followup(tg_id)
                 except Exception:
