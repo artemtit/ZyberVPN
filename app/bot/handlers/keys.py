@@ -243,7 +243,7 @@ async def _build_key_card(
 
     trial_notice = "\n\n⚠️ <i>Пробный ключ — продление недоступно.\nКупите подписку, чтобы продолжить пользоваться VPN.</i>" if is_trial else ""
 
-    devices_line = f"📱 Устройств за 24ч: {online_devices}/3"
+    devices_line = f"📱 Устройств за 7 дней: {online_devices}/3"
     device_limit_notice = (
         "\n⚠️ <b>Лимит устройств!</b> Для подключения ещё одного устройства купите дополнительный ключ."
         if online_devices >= 3 else ""
