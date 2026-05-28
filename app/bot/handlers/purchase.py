@@ -94,6 +94,7 @@ async def buy_command(message: Message, state: FSMContext, settings: Settings) -
     await state.clear()
     await state.update_data(purchase_type="new", renew_key_id=None)
     is_admin = message.from_user.id in settings.admin_ids
+    track(message.from_user.id, "pricing_viewed", {"purchase_type": "new"})
     await message.answer(
         "🔑 <b>Новый ключ</b>\n\nВыберите тариф:",
         reply_markup=tariffs_keyboard(is_admin=is_admin),
@@ -105,6 +106,7 @@ async def buy_new_key(callback: CallbackQuery, state: FSMContext, settings: Sett
     await state.clear()
     await state.update_data(purchase_type="new", renew_key_id=None)
     is_admin = callback.from_user.id in settings.admin_ids
+    track(callback.from_user.id, "pricing_viewed", {"purchase_type": "new"})
     await photo_to_text(
         callback.message,
         "🔑 <b>Новый ключ</b>\n\nВыберите тариф:",
@@ -129,6 +131,7 @@ async def buy_renew_key(callback: CallbackQuery, state: FSMContext, db: Database
     await state.clear()
     await state.update_data(purchase_type="renewal", renew_key_id=key_id)
     is_admin = callback.from_user.id in settings.admin_ids
+    track(callback.from_user.id, "pricing_viewed", {"purchase_type": "renewal", "key_id": key_id})
     await callback.message.edit_text(
         f"🔄 <b>Продление ключа #{key_id}</b>\n\nВыберите тариф:",
         reply_markup=tariffs_keyboard(is_admin=is_admin),
@@ -173,6 +176,12 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext, db: Database
         f"💰 К оплате: <s>{base_price} ₽</s> → <b>{price} ₽</b>  (−{discount_percent}% промокод)"
         if discount_percent > 0 else f"💰 К оплате: <b>{price} ₽</b>"
     )
+    track(callback.from_user.id, "checkout_started", {
+        "tariff_code": tariff_code,
+        "plan_name": title,
+        "value": price,
+        "purchase_type": purchase_type,
+    })
     await callback.message.edit_text(
         f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(
@@ -239,6 +248,12 @@ async def choose_plan(callback: CallbackQuery, state: FSMContext, db: Database, 
         f"💰 К оплате: <s>{base_price} ₽</s> → <b>{price} ₽</b>  (−{discount_percent}% промокод)"
         if discount_percent > 0 else f"💰 К оплате: <b>{price} ₽</b>"
     )
+    track(callback.from_user.id, "checkout_started", {
+        "tariff_code": plan["tariff_code"],
+        "plan_name": title,
+        "value": price,
+        "purchase_type": purchase_type,
+    })
     await callback.message.edit_text(
         f"📦 <b>{title}</b>\n{price_line}\n\nВыберите удобный способ оплаты:",
         reply_markup=payment_keyboard(
@@ -425,7 +440,7 @@ async def pay_other_methods(callback: CallbackQuery, state: FSMContext, db: Data
         return
 
     tg_id = int(processed["tg_id"])
-    track(tg_id, "payment_completed", {"method": "sbp", "tariff_code": processed.get("tariff_code")})
+    track(tg_id, "payment_completed", {"method": "sbp", "tariff_code": tariff_code, "value": processed.get("amount"), "purchase_type": processed.get("purchase_type", "new")})
     purchase_type = str(processed.get("purchase_type") or "new")
     renew_key_id = processed.get("renew_key_id")
     user = await users_repo.get_by_tg_id(tg_id)
@@ -716,7 +731,7 @@ async def pay_with_balance(callback: CallbackQuery, state: FSMContext, db: Datab
         return
 
     tg_id = int(processed["tg_id"])
-    track(tg_id, "payment_completed", {"method": "balance", "tariff_code": processed.get("tariff_code")})
+    track(tg_id, "payment_completed", {"method": "balance", "tariff_code": plan["tariff_code"], "value": processed.get("amount"), "purchase_type": processed.get("purchase_type", "new")})
     purchase_type = str(processed.get("purchase_type") or "new")
     renew_key_id = processed.get("renew_key_id")
     user = await users_repo.get_by_tg_id(tg_id)

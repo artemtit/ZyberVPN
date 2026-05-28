@@ -290,8 +290,8 @@ async def process_successful_payment(message: Message, db: Database, settings: S
 
     logger.info("Payment processed idempotently payload=%s tg_id=%s", payment_info.invoice_payload, processed["tg_id"])
     tg_id = int(processed["tg_id"])
-    track(tg_id, "payment_completed", {"method": "stars", "tariff_code": processed.get("tariff_code")})
     purchase_type = str(processed.get("purchase_type") or "new")
+    track(tg_id, "payment_completed", {"method": "stars", "tariff_code": processed.get("tariff_code"), "value": processed.get("amount"), "purchase_type": purchase_type})
     renew_key_id = processed.get("renew_key_id")
 
     user = await users_repo.get_by_tg_id(tg_id)

@@ -54,7 +54,7 @@ async def cmd_start(message: Message, command: CommandObject, db: Database, sett
     is_new = existing is None
 
     await users_repo.get_or_create(message.from_user.id, ref_tg_id=ref_tg_id, ref_label=ref_label)
-    track(message.from_user.id, "bot_start", {"is_new": is_new})
+    track(message.from_user.id, "bot_start", {"is_new": is_new, "ref_label": ref_label})
     await users_repo.update_user_info(
         message.from_user.id,
         username=message.from_user.username,

@@ -30,6 +30,7 @@ async def trial_start(callback: CallbackQuery, db: Database, settings: Settings)
     users_repo = UsersRepository(db)
     keys_repo = KeysRepository(db)
 
+    track(tg_id, "trial_button_clicked")
     eligible = await is_trial_eligible(tg_id, db)
     if not eligible:
         await callback.answer(

@@ -368,6 +368,7 @@ async def connect_copy_sub(callback: CallbackQuery, state: FSMContext, db: Datab
         f"🔗 Subscription URL:\n<code>{escape(str(sub_url))}</code>",
         reply_markup=get_main_menu_keyboard(),
     )
+    track(callback.from_user.id, "link_copied", {"type": "sub_url"})
     await callback.answer("Ссылка отправлена")
 
 
@@ -385,6 +386,7 @@ async def connect_copy_key(callback: CallbackQuery, state: FSMContext) -> None:
         rendered = "\n".join(f"<code>{escape(item)}</code>" for item in vpn_configs[:6])
         text += f"\n\nВсе конфиги:\n{rendered}"
     await callback.message.answer(text, reply_markup=get_main_menu_keyboard())
+    track(callback.from_user.id, "link_copied", {"type": "vpn_key"})
     await callback.answer("Ключ отправлен")
 
 
