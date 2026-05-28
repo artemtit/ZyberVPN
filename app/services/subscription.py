@@ -214,13 +214,6 @@ class SubscriptionService:
         except Exception:
             pass
 
-        download_bytes = 0
-        try:
-            bytes_used, _ = await self._vpn_manager.get_client_stats(tg_id, key_id=key_id)
-            download_bytes = bytes_used
-        except Exception:
-            pass
-        traffic_limit_gb = int(key_row.get("traffic_limit_gb") or 60)
         expire_ts = 0
         try:
             expires_raw = key_row.get("expires_at") or user.get("expires_at")
@@ -231,8 +224,8 @@ class SubscriptionService:
         return {
             "remarks": "ZyberVPN",
             "upload": 0,
-            "download": download_bytes,
-            "total": traffic_limit_gb * 1024 ** 3,
+            "download": 0,
+            "total": 0,
             "expire": expire_ts,
             "servers": links,
         }
@@ -252,13 +245,6 @@ class SubscriptionService:
         if not links:
             raise LookupError("vpn access not found")
         links.extend(_STATIC_LINKS)
-        download_bytes = 0
-        try:
-            bytes_used, _ = await self._vpn_manager.get_client_stats(tg_id)
-            download_bytes = bytes_used
-        except Exception:
-            pass
-        traffic_limit_gb = int(user.get("traffic_limit_gb") or 60)
         expire_ts = 0
         try:
             if user.get("expires_at"):
@@ -268,8 +254,8 @@ class SubscriptionService:
         return {
             "remarks": "ZyberVPN",
             "upload": 0,
-            "download": download_bytes,
-            "total": traffic_limit_gb * 1024 ** 3,
+            "download": 0,
+            "total": 0,
             "expire": expire_ts,
             "servers": links,
         }

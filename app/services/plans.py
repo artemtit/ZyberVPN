@@ -16,10 +16,10 @@ class Plan:
 
 
 _PLANS: tuple[Plan, ...] = (
-    Plan(id=1, tariff_code="m1", name="1 месяц", duration_days=30, traffic_gb=60, price_rub=69, price_stars=39),
-    Plan(id=2, tariff_code="m3", name="3 месяца", duration_days=90, traffic_gb=180, price_rub=189, price_stars=109),
-    Plan(id=3, tariff_code="m6", name="6 месяцев", duration_days=180, traffic_gb=360, price_rub=349, price_stars=209),
-    Plan(id=99, tariff_code="admin1", name="[Admin] 1 месяц", duration_days=30, traffic_gb=60, price_rub=1, price_stars=1, admin_only=True),
+    Plan(id=1, tariff_code="m1", name="1 месяц", duration_days=30, traffic_gb=0, price_rub=69, price_stars=39),
+    Plan(id=2, tariff_code="m3", name="3 месяца", duration_days=90, traffic_gb=0, price_rub=189, price_stars=109),
+    Plan(id=3, tariff_code="m6", name="6 месяцев", duration_days=180, traffic_gb=0, price_rub=349, price_stars=209),
+    Plan(id=99, tariff_code="admin1", name="[Admin] 1 месяц", duration_days=30, traffic_gb=0, price_rub=1, price_stars=1, admin_only=True),
 )
 
 

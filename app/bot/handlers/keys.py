@@ -201,11 +201,8 @@ async def _build_key_card(
 
     days, hours, minutes = _remaining_parts(expires_at)
 
-    # Per-key traffic limit (stored in keys table); fall back to users.traffic_limit_gb.
+    # Per-key traffic limit — 0 means unlimited.
     traffic_limit_gb = int((key_data or {}).get("traffic_limit_gb") or 0)
-    if not traffic_limit_gb:
-        supabase_user = await users_repo.get_by_tg_id(tg_id)
-        traffic_limit_gb = int((supabase_user or {}).get("traffic_limit_gb") or 60)
 
     # Per-key sub_token: generate one on first access if missing
     key_sub_token = str(key_data.get("sub_token") or "")
@@ -216,14 +213,12 @@ async def _build_key_card(
             logger.warning("Failed to generate sub_token for key_id=%s tg_id=%s", key_id, tg_id)
     sub_url = f"{settings.public_base_url}/sub/{key_sub_token}" if key_sub_token and settings.public_base_url else ""
 
-    traffic_used_gb = 0.0
     online_devices = 0
     limit_exceeded = False
     try:
         manager = build_vpn_manager(db, settings, bot=bot)
         bytes_used, online_devices = await manager.get_client_stats(tg_id, key_id=key_id)
-        traffic_used_gb = round(bytes_used / (1024 ** 3), 2)
-        if bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
+        if traffic_limit_gb > 0 and bytes_used > 0 and bytes_used >= traffic_limit_gb * 1024 ** 3:
             limit_exceeded = True
             async def _enforce() -> None:
                 try:
@@ -248,13 +243,20 @@ async def _build_key_card(
 
     trial_notice = "\n\n⚠️ <i>Пробный ключ — продление недоступно.\nКупите подписку, чтобы продолжить пользоваться VPN.</i>" if is_trial else ""
 
+    devices_line = f"📱 Устройств за 24ч: {online_devices}/3"
+    device_limit_notice = (
+        "\n⚠️ <b>Лимит устройств!</b> Для подключения ещё одного устройства купите дополнительный ключ."
+        if online_devices >= 3 else ""
+    )
+
     text = (
         f"🔑 Ключ #{display_num}\n\n"
         f"{status_emoji} Статус: {status_text}\n"
         f"⏳ Истекает: {to_moscow(expires_at).strftime('%d.%m.%Y %H:%M')} МСК "
         f"({_fmt_remaining(days, hours, minutes)})\n"
         f"{sub_line}\n"
-        f"📡 Трафик: {traffic_used_gb:.1f} / {traffic_limit_gb} ГБ"
+        f"{devices_line}"
+        f"{device_limit_notice}"
         f"{comment_line}"
         f"{trial_notice}"
     )

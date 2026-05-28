@@ -7,9 +7,9 @@ from typing import Protocol
 
 @dataclass(slots=True)
 class ClientLimits:
-    limit_ip: int = 1
+    limit_ip: int = 3
     expiry_time: int = 0
-    total_gb: int = 50
+    total_gb: int = 0  # 0 = unlimited in XUI
 
 
 @dataclass(slots=True)
